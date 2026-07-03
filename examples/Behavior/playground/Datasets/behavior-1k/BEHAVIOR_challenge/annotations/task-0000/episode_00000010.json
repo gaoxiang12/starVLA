@@ -1,0 +1,93 @@
+{
+    "task_name": "turning on radio",
+    "data_folder": "",
+    "meta_data": {
+        "task_duration": 1776,
+        "valid_duration": [0, 1776]
+    },
+    "skill_annotation": [
+        {
+            "skill_idx": 0,
+            "skill_id": [1],
+            "skill_description": ["move to"],
+            "object_id": [["radio_89"]],
+            "manipulating_object_id": [],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [0, 265],
+            "mp_ef": [],
+            "skill_type": ["navigation"]
+        },
+        {
+            "skill_idx": 1,
+            "skill_id": [2],
+            "skill_description": ["pick up from"],
+            "object_id": [["radio_89", "coffee_table_koagbh_0"]],
+            "manipulating_object_id": ["radio_89"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [265, 1162],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        },
+        {
+            "skill_idx": 2,
+            "skill_id": [67],
+            "skill_description": ["press"],
+            "object_id": [["radio_89"]],
+            "manipulating_object_id": ["radio_89"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [1162, 1434],
+            "mp_ef": [],
+            "skill_type": ["coordinated"]
+        },
+        {
+            "skill_idx": 3,
+            "skill_id": [3],
+            "skill_description": ["place on"],
+            "object_id": [["radio_89", "coffee_table_koagbh_0"]],
+            "manipulating_object_id": ["radio_89"],
+            "memory_prefix": ["back"],
+            "spatial_prefix": [],
+            "frame_duration": [1434, 1776],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        }
+    ],
+    "primitive_annotation": [
+        {
+            "primitive_idx": 0,
+            "primitive_id": [2],
+            "primitive_description": ["pick up from"],
+            "object_id": [["radio_89", "coffee_table_koagbh_0"]],
+            "manipulating_object_id": ["radio_89"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [0, 1162],
+            "skill_idxes": [0, 1]
+        },
+        {
+            "primitive_idx": 1,
+            "primitive_id": [67],
+            "primitive_description": ["press"],
+            "object_id": [["radio_89"]],
+            "manipulating_object_id": ["radio_89"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [1162, 1434],
+            "skill_idxes": [2]
+        },
+        {
+            "primitive_idx": 2,
+            "primitive_id": [3],
+            "primitive_description": ["place on"],
+            "object_id": [["radio_89", "coffee_table_koagbh_0"]],
+            "manipulating_object_id": ["radio_89"],
+            "memory_prefix": ["back"],
+            "spatial_prefix": [],
+            "frame_duration": [1434, 1776],
+            "skill_idxes": [3]
+        }
+    ]
+}

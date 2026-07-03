@@ -1,15 +1,18 @@
 #!/bin/bash
 
 ### MANUALLY SET THESE ###
-# set the environment variables
-export star_vla_python=/root/miniconda3/envs/starVLA/bin/python
-export sim_python=/root/miniconda3/envs/behavior/bin/python
-export TASKS_JSONL_PATH=/workspace/llavavla0/examples/Behavior/tasks.jsonl
-export BEHAVIOR_ASSET_PATH=/workspace/llavavla0/BEHAVIOR-1K/datasets
-export PYTHONPATH=$(pwd):${PYTHONPATH}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# set the environment variables (can be overridden from shell)
+export star_vla_python="${star_vla_python:-$(command -v python)}"
+export sim_python="${sim_python:-python}"
+export TASKS_JSONL_PATH="${TASKS_JSONL_PATH:-${SCRIPT_DIR}/tasks.jsonl}"
+export BEHAVIOR_ASSET_PATH="${BEHAVIOR_ASSET_PATH:-${REPO_ROOT}/BEHAVIOR-1K/datasets}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 # set the eval parameters
-MODEL_PATH=/workspace/llavavla0/playground/Checkpoints/BEHAVIOR-QwenDual-Pretrained-224/checkpoints/steps_300000_pytorch_model.pt
+MODEL_PATH="${MODEL_PATH:-${REPO_ROOT}/playground/Checkpoints/BEHAVIOR-QwenDual-Pretrained-224/checkpoints/steps_300000_pytorch_model.pt}"
 base_port=10197
 WRAPPERS="DefaultWrapper" # DefaultWrapper, RGBLowResWrapper or RichObservationWrapper
 USE_STATE=True # whether to use state as part of the observation
@@ -34,7 +37,6 @@ run_count=0
 declare -a used_ports=()
 
 # Source the port utility function
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/port_utils.sh"
 
 if [ -z "$MODEL_PATH" ]; then

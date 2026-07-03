@@ -4,15 +4,18 @@
 echo "Using Python: $(which python)"
 
 ### MANUALLY SET THESE ###
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 # set necessary environment variables
-export star_vla_python=
-export sim_python=
-export TASKS_JSONL_PATH=
-export BEHAVIOR_ASSET_PATH=
-export PYTHONPATH=$(pwd):${PYTHONPATH}
+export star_vla_python="${star_vla_python:-$(command -v python)}"
+export sim_python="${sim_python:-python}"
+export TASKS_JSONL_PATH="${TASKS_JSONL_PATH:-${SCRIPT_DIR}/tasks.jsonl}"
+export BEHAVIOR_ASSET_PATH="${BEHAVIOR_ASSET_PATH:-${REPO_ROOT}/BEHAVIOR-1K/datasets}"
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 # set model path and port
-MODEL_PATH="/workspace/llavavla0/playground/Checkpoints/BEHAVIOR-QwenDual-Pretrained-224/checkpoints/steps_300000_pytorch_model.pt"
+MODEL_PATH="${MODEL_PATH:-${REPO_ROOT}/playground/Checkpoints/BEHAVIOR-QwenDual-Pretrained-224/checkpoints/steps_300000_pytorch_model.pt}"
 PORT=10197
 WRAPPERS="RGBLowResWrapper" # DefaultWrapper, RGBLowResWrapper or RichObservationWrapper
 USE_STATE=True  

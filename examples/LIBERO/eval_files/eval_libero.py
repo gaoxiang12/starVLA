@@ -8,8 +8,23 @@ import time
 
 import imageio
 import numpy as np
+import torch
 import tqdm
 import tyro
+
+# PyTorch >= 2.6 defaults `torch.load(..., weights_only=True)`, which rejects the
+# numpy-pickled LIBERO init-state files. These ship with the (trusted, local)
+# LIBERO benchmark, so restore the legacy full-unpickle behavior for them.
+_ORIG_TORCH_LOAD = torch.load
+
+
+def _torch_load_full(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _ORIG_TORCH_LOAD(*args, **kwargs)
+
+
+torch.load = _torch_load_full
+
 from libero.libero import benchmark, get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 
@@ -219,6 +234,8 @@ def eval_libero(args: Args) -> None:
                 pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
                 [np.asarray(x) for x in replay_images],
                 fps=10,
+                format="FFMPEG",
+                macro_block_size=1,
             )
 
             full_actions = np.stack(full_actions)

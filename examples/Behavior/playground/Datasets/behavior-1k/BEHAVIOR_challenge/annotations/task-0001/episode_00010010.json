@@ -1,0 +1,211 @@
+{
+    "task_name": "picking up trash",
+    "data_folder": "",
+    "meta_data": {
+        "task_duration": 7508,
+        "valid_duration": [0, 7508]
+    },
+    "skill_annotation": [
+        {
+            "skill_idx": 0,
+            "skill_id": [1],
+            "skill_description": ["move to"],
+            "object_id": [["trash_can_116"]],
+            "manipulating_object_id": [],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [0, 325],
+            "mp_ef": [],
+            "skill_type": ["navigation"]
+        },
+        {
+            "skill_idx": 1,
+            "skill_id": [2],
+            "skill_description": ["pick up from"],
+            "object_id": [["trash_can_116", "floors_zqjkvm_0"]],
+            "manipulating_object_id": ["trash_can_116"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [642, 981],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        },
+        {
+            "skill_idx": 2,
+            "skill_id": [1],
+            "skill_description": ["move to"],
+            "object_id": [["can_of_soda_114"]],
+            "manipulating_object_id": [],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [982, 1958],
+            "mp_ef": [],
+            "skill_type": ["navigation"]
+        },
+        {
+            "skill_idx": 3,
+            "skill_id": [2],
+            "skill_description": ["pick up from"],
+            "object_id": [["can_of_soda_114", "floors_ulujpr_0"]],
+            "manipulating_object_id": ["can_of_soda_114"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [2215, 2850],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        },
+        {
+            "skill_idx": 4,
+            "skill_id": [4],
+            "skill_description": ["place in"],
+            "object_id": [["can_of_soda_114", "trash_can_116"]],
+            "manipulating_object_id": ["can_of_soda_114"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [2853, 3096],
+            "mp_ef": [],
+            "skill_type": ["coordinated"]
+        },
+        {
+            "skill_idx": 5,
+            "skill_id": [1],
+            "skill_description": ["move to"],
+            "object_id": [["can_of_soda_115"]],
+            "manipulating_object_id": [],
+            "memory_prefix": ["the other"],
+            "spatial_prefix": [],
+            "frame_duration": [3319, 4119],
+            "mp_ef": [],
+            "skill_type": ["navigation"]
+        },
+        {
+            "skill_idx": 6,
+            "skill_id": [2],
+            "skill_description": ["pick up from"],
+            "object_id": [["can_of_soda_115", "floors_ulujpr_0"]],
+            "manipulating_object_id": ["can_of_soda_115"],
+            "memory_prefix": ["the other"],
+            "spatial_prefix": [],
+            "frame_duration": [4529, 4953],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        },
+        {
+            "skill_idx": 7,
+            "skill_id": [4],
+            "skill_description": ["place in"],
+            "object_id": [["can_of_soda_115", "trash_can_116"]],
+            "manipulating_object_id": ["can_of_soda_115"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [4960, 5222],
+            "mp_ef": [],
+            "skill_type": ["coordinated"]
+        },
+        {
+            "skill_idx": 8,
+            "skill_id": [1],
+            "skill_description": ["move to"],
+            "object_id": [["can_of_soda_113"]],
+            "manipulating_object_id": [],
+            "memory_prefix": ["the other"],
+            "spatial_prefix": [],
+            "frame_duration": [5413, 5731],
+            "mp_ef": [],
+            "skill_type": ["navigation"]
+        },
+        {
+            "skill_idx": 9,
+            "skill_id": [2],
+            "skill_description": ["pick up from"],
+            "object_id": [["can_of_soda_113", "floors_ulujpr_0"]],
+            "manipulating_object_id": ["can_of_soda_113"],
+            "memory_prefix": ["the other"],
+            "spatial_prefix": [],
+            "frame_duration": [5943, 6607],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        },
+        {
+            "skill_idx": 10,
+            "skill_id": [4],
+            "skill_description": ["place in"],
+            "object_id": [["can_of_soda_113", "trash_can_116"]],
+            "manipulating_object_id": ["can_of_soda_113"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [6607, 6813],
+            "mp_ef": [],
+            "skill_type": ["coordinated"]
+        },
+        {
+            "skill_idx": 11,
+            "skill_id": [3],
+            "skill_description": ["place on"],
+            "object_id": [["trash_can_116", "floors_ulujpr_0"]],
+            "manipulating_object_id": ["trash_can_116"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [6817, 7508],
+            "mp_ef": [],
+            "skill_type": ["uncoordinated"]
+        }
+    ],
+    "primitive_annotation": [
+        {
+            "primitive_idx": 0,
+            "primitive_id": [2],
+            "primitive_description": ["pick up from"],
+            "object_id": [["trash_can_116", "floors_zqjkvm_0"]],
+            "manipulating_object_id": ["trash_can_116"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [0, 981],
+            "skill_idxes": [0, 1]
+        },
+        {
+            "primitive_idx": 1,
+            "primitive_id": [2, 4],
+            "primitive_description": ["pick up from", "place in"],
+            "object_id": [["can_of_soda_114", "floors_ulujpr_0"], ["can_of_soda_114", "trash_can_116"]],
+            "manipulating_object_id": ["can_of_soda_114", "can_of_soda_114"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [982, 3096],
+            "skill_idxes": [2, 3, 4]
+        },
+        {
+            "primitive_idx": 2,
+            "primitive_id": [2, 4],
+            "primitive_description": ["pick up from", "place in"],
+            "object_id": [["can_of_soda_115", "floors_ulujpr_0"], ["can_of_soda_115", "trash_can_116"]],
+            "manipulating_object_id": ["can_of_soda_115", "can_of_soda_115"],
+            "memory_prefix": ["the other", ""],
+            "spatial_prefix": [],
+            "frame_duration": [3319, 5222],
+            "skill_idxes": [5, 6, 7]
+        },
+        {
+            "primitive_idx": 3,
+            "primitive_id": [2, 4],
+            "primitive_description": ["pick up from", "place in"],
+            "object_id": [["can_of_soda_113", "floors_ulujpr_0"], ["can_of_soda_113", "trash_can_116"]],
+            "manipulating_object_id": ["can_of_soda_113", "can_of_soda_113"],
+            "memory_prefix": ["the other", ""],
+            "spatial_prefix": [],
+            "frame_duration": [5413, 6813],
+            "skill_idxes": [8, 9, 10]
+        },
+        {
+            "primitive_idx": 4,
+            "primitive_id": [3],
+            "primitive_description": ["place on"],
+            "object_id": [["trash_can_116", "floors_ulujpr_0"]],
+            "manipulating_object_id": ["trash_can_116"],
+            "memory_prefix": [],
+            "spatial_prefix": [],
+            "frame_duration": [6817, 7508],
+            "skill_idxes": [11]
+        }
+    ]
+}

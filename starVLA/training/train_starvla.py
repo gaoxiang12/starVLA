@@ -329,7 +329,9 @@ class VLATrainer(TrainerUtils):
         progress_bar = tqdm(
             total=self.config.trainer.max_train_steps,
             initial=self.completed_steps,
-            disable=not self.accelerator.is_local_main_process,
+            disable=(not self.accelerator.is_local_main_process)
+            or os.environ.get("STARVLA_DISABLE_TQDM", "0") == "1",
+            mininterval=float(os.environ.get("STARVLA_TQDM_MININTERVAL", "5.0")),
         )
 
         while self.completed_steps < self.config.trainer.max_train_steps:
@@ -420,9 +422,14 @@ class VLATrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
 
-        return {
-            "action_dit_loss": action_loss.item(),
-        }
+        step_log = {"action_dit_loss": action_loss.item()}
+        # Surface any auxiliary scalar losses the framework reports (e.g. the
+        # world-model flow_latent_loss / flow_action_loss for LeWM-OFT).
+        for k in ("l1_action_loss", "flow_latent_loss", "flow_action_loss", "state_loss"):
+            v = output_dict.get(k) if isinstance(output_dict, dict) else None
+            if torch.is_tensor(v):
+                step_log[k] = v.item()
+        return step_log
 
     def _finalize_training(self):
         """Training end processing."""

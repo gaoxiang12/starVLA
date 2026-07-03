@@ -30,5 +30,9 @@ def get_world_model(config):
         from .Wan2 import _Wan2_Interface
 
         return _Wan2_Interface(config)
+    elif "lewm" in wm_name.lower() or "le-wm" in wm_name.lower() or "vit-tiny" in wm_name.lower():
+        from .LeWM import _LeWM_Interface
+
+        return _LeWM_Interface(config)
     else:
         raise NotImplementedError(f"World model {wm_name} not implemented")

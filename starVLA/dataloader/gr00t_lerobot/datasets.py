@@ -1397,6 +1397,28 @@ class LeRobotSingleDataset(Dataset):
             "robot_tag": self.tag
         }
 
+        # Optional future-frame packing (for latent world-model training). When
+        # the video modality loads multiple frames (delta_indices = [0, k, ...])
+        # and ``future_obs_frames`` is enabled, expose frames [1:] as
+        # ``future_images[t] = [view0_t, view1_t, ...]`` (one entry per future
+        # step, each a list of views). Frameworks without world-model training
+        # simply ignore this key.
+        if self.data_cfg is not None and self.data_cfg.get("future_obs_frames", False) not in ["False", False]:
+            future_per_view = []  # list over views of list-over-future-steps PIL
+            for video_key in self.modality_keys["video"]:
+                frames = data[video_key]  # (T, H, W, C)
+                fut = [
+                    Image.fromarray(frames[t]).resize((224, 224))
+                    for t in range(1, len(frames))
+                ]
+                future_per_view.append(fut)
+            n_future = len(future_per_view[0]) if future_per_view else 0
+            if n_future > 0:
+                sample["future_images"] = [
+                    [future_per_view[v][t] for v in range(len(future_per_view))]
+                    for t in range(n_future)
+                ]
+
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []
             for state_key in self.modality_keys.get("state", []):
