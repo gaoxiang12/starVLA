@@ -1,19 +1,22 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
 """
-LeWM-Flow Framework — LeWorldModel ViT encoder + flow-matching world model.
+LeWM-OFT Framework — LeWorldModel ViT encoder + flow-matching world model.
 
-Uses the LeWM front-end (a pretrained ViT encoder) as the perception backbone
-and a Wan-style flow-matching world model that both rolls out future latents
-and flow-samples the action chunk. Actions come entirely from the world
-model's flow head (the previous OFT / MLP regression head has been removed).
+Uses the LeWM front-end (a pretrained ViT encoder) as the perception backbone,
+a Wan-style flow-matching world model to roll out future latents, and an
+OFT-style MLP regression head for action prediction. The world model's action
+flow loss is kept as an auxiliary objective and can still be used directly for
+flow-only ablations via ``world_model.action_source: flow``.
 
 Architecture:
   ViT encoder → per-view latent concat[CLS, mean-pool] → [B, V, 2*hidden]
     → view fusion → [B, 1+Tf, hidden]
     → WanWorldModel flow predictor
         → future latents          (flow_latent_loss)
-        → flow-sampled actions    (flow_action_loss)
+        → flow-sampled actions    (flow_action_loss, auxiliary)
+        → OFT MLP action head from [current raw latent, predicted future latent]
+                → l1_action_loss
     → optional state probe on [current, predicted future] latents (state_loss)
 
 The ViT encoder is frozen by default; set ``world_model.train_encoder: true``
@@ -45,6 +48,7 @@ IGNORE_INDEX = -100
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import merge_framework_config
+from starVLA.model.modules.action_model.MLP_ActionHeader import get_action_model
 from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.world_model.wan_world_model import WanWorldModel
 from starVLA.model.tools import FRAMEWORK_REGISTRY
@@ -78,6 +82,7 @@ class LeWMOFTDefaultConfig:
             "flow_sample_steps": 10,
             "loss_latent_weight": 1.0,
             "loss_action_weight": 1.0,
+            "action_source": "oft",
             # === Optional state probe (align latents to future proprio) ===
             "use_state_probe": False,
             "state_dim": 8,
@@ -126,10 +131,30 @@ class LeWM_OFT(baseframework):
         self.backbone = get_world_model(config=self.config)
 
         wm_hidden = self.backbone.model.config.hidden_size
+        wm_cfg = self.config.framework.get("world_model", {}) or {}
+        self.num_views = int(wm_cfg.get("num_views", 2))
 
         # `action_horizon` is the single source of truth for chunk length;
         # legacy aliases are normalised upstream by share_tools.apply_config_compat.
         self.action_horizon = int(self.config.framework.action_model.action_horizon)
+        self.chunk_len = self.action_horizon
+
+        self.config.framework.action_model.action_hidden_dim = wm_hidden
+        self.action_model = get_action_model(config=self.config)
+        self.action_hidden_dim = wm_hidden
+        # Keep the OFT projection shape compatible with vfuse checkpoints:
+        # raw LeWM features are concatenated across views (V * wm_hidden), then
+        # projected to per-action tokens of width wm_hidden.
+        self.action_context_dim = self.num_views * wm_hidden
+        self.action_query_proj = nn.Linear(self.num_views * wm_hidden, self.chunk_len * wm_hidden)
+        self.future_action_context_proj = nn.Linear(wm_hidden, self.action_context_dim)
+        with torch.no_grad():
+            self.future_action_context_proj.weight.zero_()
+            eye = torch.eye(wm_hidden)
+            for v in range(self.num_views):
+                self.future_action_context_proj.weight[v * wm_hidden : (v + 1) * wm_hidden, :] = eye
+            self.future_action_context_proj.bias.zero_()
+        self.l1_loss = nn.L1Loss()
 
         # === Language / task conditioning ===
         # Hash each instruction into a fixed bucket and look up a learnable task
@@ -146,7 +171,11 @@ class LeWM_OFT(baseframework):
         # === Flow-matching latent world model (le-wm WanPredictor) ===
         # Predicts future latents so the OFT head can "see the future" before
         # producing actions, and supplies a real latent-prediction loss.
-        wm_cfg = self.config.framework.get("world_model", {}) or {}
+        self.action_source = str(wm_cfg.get("action_source", "oft")).lower()
+        if self.action_source not in {"oft", "flow"}:
+            raise ValueError(
+                f"LeWMOFT world_model.action_source must be 'oft' or 'flow', got {self.action_source!r}"
+            )
         self.use_future_latent = bool(wm_cfg.get("use_future_latent", True))
         if self.use_future_latent:
             self.n_future = int(wm_cfg.get("n_future", 2))
@@ -173,12 +202,11 @@ class LeWM_OFT(baseframework):
 
             # === Multi-view fusion ===
             # encode_frames concatenates the V camera views per frame
-            # (V * wm_hidden). Project back to wm_hidden so the world model and
-            # action head keep their original width. Initialized to equal-weight
+            # (V * wm_hidden). Project back to wm_hidden so the world model keeps
+            # its original width. Initialized to equal-weight
             # averaging so the fused latent initially reproduces the previous
             # mean-over-views behavior exactly -> smooth warm-start from a
             # mean-pool checkpoint; the model then learns per-view weighting.
-            self.num_views = int(wm_cfg.get("num_views", 2))
             self.view_fuse = nn.Linear(self.num_views * wm_hidden, wm_hidden)
             with torch.no_grad():
                 self.view_fuse.weight.zero_()
@@ -205,9 +233,20 @@ class LeWM_OFT(baseframework):
         else:
             self.use_state_probe = False
 
-        # Actions are produced entirely by the world model's flow head; there
-        # is no longer an OFT / MLP action head to switch between at inference.
-        logger.info("[LeWMOFT] action source = flow (world-model flow head)")
+        logger.info(f"[LeWMOFT] action source = {self.action_source}")
+
+    def _pool_to_action_queries(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        B = hidden_states.shape[0]
+        pooled = hidden_states.mean(dim=1)
+        queries = self.action_query_proj(pooled)
+        return queries.view(B, self.chunk_len, self.action_hidden_dim)
+
+    def _build_oft_context(
+        self, raw_latent: torch.Tensor, pred_future_latent: torch.Tensor
+    ) -> torch.Tensor:
+        current_latent = raw_latent[:, : self.wm_ctx_len]
+        future_latent = self.future_action_context_proj(pred_future_latent)
+        return torch.cat([current_latent, future_latent], dim=1)
 
     def _hash_instruction(self, instruction: Optional[str]) -> int:
         """Map an instruction string to a stable embedding-table bucket.
@@ -249,11 +288,11 @@ class LeWM_OFT(baseframework):
             frames_per_example.append([current] + list(future))
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            latent = self.backbone.encode_frames(frames_per_example)  # (B, 1+Tf, V*C)
+            raw_latent = self.backbone.encode_frames(frames_per_example)  # (B, 1+Tf, V*C)
 
         with torch.autocast("cuda", dtype=torch.float32):
-            latent = latent.float()
-            latent = self.view_fuse(latent)  # fuse camera views -> (B, 1+Tf, C)
+            raw_latent = raw_latent.float()
+            latent = self.view_fuse(raw_latent)  # fuse camera views -> (B, 1+Tf, C)
             task_emb = self._embed_task(instructions, device=latent.device)
 
             # Macro-actions: split the per-step action chunk into n_future
@@ -271,12 +310,18 @@ class LeWM_OFT(baseframework):
             # State-probe input: [current real latent, predicted future latents].
             head_tokens = torch.cat([latent[:, : self.wm_ctx_len], pred_future_latent], dim=1)
 
+            oft_context = self._build_oft_context(raw_latent, pred_future_latent)
+            action_queries = self._pool_to_action_queries(oft_context)
+            pred_actions = self.action_model.predict_action(action_queries)
+            l1_action_loss = self.l1_loss(pred_actions, actions_target)
+
             flow_latent_loss = wm_out["flow_latent_loss"]
             flow_action_loss = wm_out["flow_action_loss"]
-            total_loss = (
-                self.loss_latent_weight * flow_latent_loss
-                + self.loss_action_weight * flow_action_loss
-            )
+            flow_aux_loss = self.loss_latent_weight * flow_latent_loss + self.loss_action_weight * flow_action_loss
+            if self.action_source == "oft":
+                total_loss = l1_action_loss + flow_aux_loss
+            else:
+                total_loss = flow_aux_loss
 
             # === State probe: ground latents in (future) physical state ===
             # Decode [current real latent, predicted future latents] back to the
@@ -301,6 +346,7 @@ class LeWM_OFT(baseframework):
 
         out = {
             "action_loss": total_loss,
+            "l1_action_loss": l1_action_loss.detach(),
             "flow_latent_loss": flow_latent_loss.detach(),
             "flow_action_loss": flow_action_loss.detach(),
         }
@@ -322,20 +368,25 @@ class LeWM_OFT(baseframework):
         # === World-model path: imagine future latents + flow-sample actions ===
         frames_per_example = [[imgs] for imgs in batch_images]  # only current frame
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            latent = self.backbone.encode_frames(frames_per_example)  # (B, 1, V*C)
+            raw_latent = self.backbone.encode_frames(frames_per_example)  # (B, 1, V*C)
 
         with torch.autocast("cuda", dtype=torch.float32):
-            latent = latent.float()
-            latent = self.view_fuse(latent)  # fuse camera views -> (B, 1, C)
+            raw_latent = raw_latent.float()
+            latent = self.view_fuse(raw_latent)  # fuse camera views -> (B, 1, C)
             task_emb = self._embed_task(instructions, device=latent.device)
-            _, pred_future_action = self.world_model.sample_future(
+            pred_future_latent, pred_future_action = self.world_model.sample_future(
                 latent, goal=task_emb, n_future=self.n_future, return_action=True
             )  # (B, Tf, wm_segment_len*action_dim)
-            # Reshape the flow macro-actions into a per-step chunk:
-            # (B, n_future, seg*A) -> (B, horizon, A).
             B = latent.shape[0]
             raw_action_dim = int(self.config.framework.action_model.action_dim)
-            pred_actions = pred_future_action.reshape(B, self.action_horizon, raw_action_dim)
+            if self.action_source == "flow":
+                # Reshape the flow macro-actions into a per-step chunk:
+                # (B, n_future, seg*A) -> (B, horizon, A).
+                pred_actions = pred_future_action.reshape(B, self.action_horizon, raw_action_dim)
+            else:
+                oft_context = self._build_oft_context(raw_latent, pred_future_latent)
+                action_queries = self._pool_to_action_queries(oft_context)
+                pred_actions = self.action_model.predict_action(action_queries)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}
