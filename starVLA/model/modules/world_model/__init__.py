@@ -30,7 +30,16 @@ def get_world_model(config):
         from .Wan2 import _Wan2_Interface
 
         return _Wan2_Interface(config)
-    elif "lewm" in wm_name.lower() or "le-wm" in wm_name.lower() or "vit-tiny" in wm_name.lower():
+    elif (
+        "lewm" in wm_name.lower()
+        or "le-wm" in wm_name.lower()
+        or "vit" in wm_name.lower()
+        or "dino" in wm_name.lower()
+    ):
+        # _LeWM_Interface wraps any HuggingFace ViT-style encoder via AutoModel:
+        # ViT (WinKawaks/vit-*, google/vit-*), DINO v1 (facebook/dino-vit*),
+        # and DINOv2 (facebook/dinov2-*). Every downstream width is derived from
+        # the encoder hidden size, so no other change is needed to swap encoders.
         from .LeWM import _LeWM_Interface
 
         return _LeWM_Interface(config)
