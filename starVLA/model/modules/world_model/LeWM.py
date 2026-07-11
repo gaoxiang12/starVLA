@@ -21,6 +21,7 @@ The ViT is frozen by default; set ``world_model.train_encoder: true`` in the
 framework config to keep the joint fine-tuning interface open.
 """
 
+import os
 from typing import List, Optional
 
 import torch
@@ -45,26 +46,41 @@ class _LeWM_Interface(nn.Module):
         self.config = config
         self.train_encoder = bool(wm_cfg.get("train_encoder", False))
 
-        from transformers import AutoImageProcessor, AutoModel
+        # DINOv3 ships as raw facebookresearch/dinov3 torchhub ``.pth`` files
+        # (not HF format) whose token layout is [CLS, register_tokens, patches].
+        # Route those through a dedicated converter and record the register
+        # prefix so patch pooling skips them. Everything else (HF ViT / DINO v1 /
+        # DINOv2) keeps the original AutoModel path with a single CLS prefix.
+        is_dinov3_raw = model_name.endswith(".pth") and "dinov3" in os.path.basename(model_name).lower()
+        if is_dinov3_raw:
+            from .dinov3_loader import load_dinov3
 
-        logger.info(f"Loading LeWM vision encoder from {model_name}")
+            logger.info(f"Loading DINOv3 vision encoder from raw checkpoint {model_name}")
+            self.encoder, self.processor, num_register = load_dinov3(model_name)
+            self.num_prefix_tokens = 1 + num_register
+        else:
+            from transformers import AutoImageProcessor, AutoModel
 
-        # AutoModel resolves the right class from the checkpoint config, so the
-        # same code path supports ViT (WinKawaks/vit-*, google/vit-*), DINO v1
-        # (facebook/dino-vit*) and DINOv2 (facebook/dinov2-*). DINOv2's
-        # Dinov2Model does not accept ``add_pooling_layer``; fall back without it.
-        try:
-            self.encoder = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
-        except TypeError:
-            self.encoder = AutoModel.from_pretrained(model_name)
-        try:
-            # use_fast=True selects ViTImageProcessorFast, which batches
-            # resize/normalize as tensor ops (optionally on GPU) instead of a
-            # per-image PIL/numpy loop. The slow processor is a severe CPU
-            # bottleneck when encoding B*T*V views per forward pass.
-            self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
-        except Exception:  # pragma: no cover - fall back to default ImageNet stats
-            self.processor = None
+            logger.info(f"Loading LeWM vision encoder from {model_name}")
+
+            # AutoModel resolves the right class from the checkpoint config, so the
+            # same code path supports ViT (WinKawaks/vit-*, google/vit-*), DINO v1
+            # (facebook/dino-vit*) and DINOv2 (facebook/dinov2-*). DINOv2's
+            # Dinov2Model does not accept ``add_pooling_layer``; fall back without it.
+            try:
+                self.encoder = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
+            except TypeError:
+                self.encoder = AutoModel.from_pretrained(model_name)
+            try:
+                # use_fast=True selects ViTImageProcessorFast, which batches
+                # resize/normalize as tensor ops (optionally on GPU) instead of a
+                # per-image PIL/numpy loop. The slow processor is a severe CPU
+                # bottleneck when encoding B*T*V views per forward pass.
+                self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
+            except Exception:  # pragma: no cover - fall back to default ImageNet stats
+                self.processor = None
+            # HF ViT / DINO v1 / DINOv2 emit [CLS, patches] (no register tokens).
+            self.num_prefix_tokens = 1
 
         vit_hidden = self.encoder.config.hidden_size
         # LeWM latent = concat(cls, mean-pool patches) -> 2 * hidden
@@ -163,9 +179,9 @@ class _LeWM_Interface(nn.Module):
 
         with torch.set_grad_enabled(self.train_encoder):
             out = self.encoder(pixel_values=pixel_values)
-            hidden = out.last_hidden_state            # (B*T*V, 1+N, D)
+            hidden = out.last_hidden_state            # (B*T*V, prefix+N, D)
             cls = hidden[:, 0]                         # (B*T*V, D)
-            pooled = hidden[:, 1:].mean(dim=1)         # (B*T*V, D)
+            pooled = hidden[:, self.num_prefix_tokens:].mean(dim=1)  # (B*T*V, D)
             vec = torch.cat([cls, pooled], dim=-1)     # (B*T*V, 2D)
 
         B = len(frames_per_example)
@@ -174,6 +190,31 @@ class _LeWM_Interface(nn.Module):
         # framework fuses V*2D -> 2D via a learned projection.
         vec = vec.view(B, T, V, vec.shape[-1]).reshape(B, T, V * vec.shape[-1])  # (B, T, V*2D)
         return vec
+
+    def encode_patch_frames(self, frames_per_example: List) -> torch.Tensor:
+        """Encode frames into raw per-view patch tokens.
+
+        ``frames_per_example`` has the same structure as ``encode_frames``.
+        Returns ``patches (B, T, V, N, D)`` where ``N`` is the encoder patch
+        grid length and ``D`` is the ViT/DINO hidden size.
+        """
+        flat, T, V = [], None, None
+        for frames in frames_per_example:
+            T = len(frames) if T is None else T
+            for frame in frames:
+                views = frame if isinstance(frame, (list, tuple)) else [frame]
+                V = len(views) if V is None else V
+                flat.extend(views)
+
+        device = next(self.encoder.parameters()).device
+        pixel_values = self._to_pixel_values(flat, device).to(device)
+
+        with torch.set_grad_enabled(self.train_encoder):
+            out = self.encoder(pixel_values=pixel_values)
+            patches = out.last_hidden_state[:, self.num_prefix_tokens:]  # (B*T*V, N, D)
+
+        B = len(frames_per_example)
+        return patches.view(B, T, V, patches.shape[-2], patches.shape[-1])
 
     def forward(self, **kwargs):
         """Encode views; return hidden states (B, V, 2*hidden) for the action head."""
@@ -185,9 +226,9 @@ class _LeWM_Interface(nn.Module):
 
         with torch.set_grad_enabled(self.train_encoder):
             out = self.encoder(pixel_values=pixel_values)
-            hidden = out.last_hidden_state            # (BV, 1+N, D)
+            hidden = out.last_hidden_state            # (BV, prefix+N, D)
             cls = hidden[:, 0]                         # (BV, D)
-            pooled = hidden[:, 1:].mean(dim=1)         # (BV, D)
+            pooled = hidden[:, self.num_prefix_tokens:].mean(dim=1)  # (BV, D)
             vec = torch.cat([cls, pooled], dim=-1)     # (BV, 2D)
 
         bv = vec.shape[0]

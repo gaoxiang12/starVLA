@@ -346,6 +346,36 @@ class PolicyNormProcessor:
     def transform(self) -> ComposedModalityTransform:
         return self._transform
 
+    def apply_state(self, raw_state: np.ndarray) -> np.ndarray:
+        """Normalize env-space proprio state with the training-time transform."""
+        raw_state = np.asarray(raw_state, dtype=np.float32)
+        squeeze = raw_state.ndim == 1
+        if squeeze:
+            raw_state = raw_state[None]
+        if raw_state.ndim != 2:
+            raise ValueError(f"Expected state shape (D,) or (T, D), got {raw_state.shape}")
+
+        data: Dict[str, np.ndarray] = {}
+        cursor = 0
+        for full_key in self._state_keys:
+            dim_k = self._state_key_dims.get(full_key, 1)
+            data[full_key] = raw_state[..., cursor : cursor + dim_k].copy()
+            cursor += dim_k
+        if cursor != raw_state.shape[-1]:
+            raise ValueError(
+                f"Sum of state key dims ({cursor}) != state dim ({raw_state.shape[-1]})"
+            )
+
+        out = self._transform.apply(data)
+        parts = []
+        for full_key in self._state_keys:
+            value = out[full_key]
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().numpy()
+            parts.append(np.asarray(value))
+        normalized = np.concatenate(parts, axis=-1)
+        return normalized[0] if squeeze else normalized
+
     # ------------------------------------------------------------------
     # Inverse path (model output → env action)
     # ------------------------------------------------------------------

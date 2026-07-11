@@ -152,6 +152,16 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
+        if getattr(self._framework, "expects_normalized_state", False):
+            normalized_examples = []
+            for example in examples:
+                if example.get("state") is None:
+                    raise KeyError("This policy requires proprio state in every example")
+                normalized = dict(example)
+                normalized["state"] = proc.apply_state(example["state"])
+                normalized_examples.append(normalized)
+            examples = normalized_examples
+
         out = self._framework.predict_action(examples=examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
 

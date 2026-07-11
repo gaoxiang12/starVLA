@@ -5,6 +5,7 @@ Utility classes defining a Metrics container and multiple Trackers to enable mod
 endpoints (e.g., JSONL local logs, Weights & Biases).
 """
 
+from collections.abc import Mapping
 from typing import Tuple
 import re
 import json
@@ -110,6 +111,14 @@ def build_param_lr_groups(model, cfg):
     frozen_params = set()
     param_groups = []
 
+    def iter_module_lrs(mapping, prefix=""):
+        for name, value in mapping.items():
+            module_name = f"{prefix}.{name}" if prefix else name
+            if isinstance(value, Mapping) or hasattr(value, "items"):
+                yield from iter_module_lrs(value, module_name)
+            else:
+                yield module_name, value
+
     for freeze_path in freeze_patterns:
         module = model
         try:
@@ -120,7 +129,7 @@ def build_param_lr_groups(model, cfg):
             print(f"⚠️ freeze module path does not exist: {freeze_path}")
             continue
 
-    for module_name, lr in lr_cfg.items():
+    for module_name, lr in iter_module_lrs(lr_cfg):
         if module_name == "base":
             continue
         # try to find the module under vla by module_name (support nested paths)
@@ -292,9 +301,23 @@ class TrainerUtils:
                     print(f"❌ cannot find module path: {path}")
         else:  # full load
             try:
-                model.load_state_dict(checkpoint, strict=False)
+                model_state = model.state_dict()
+                compatible_checkpoint = {}
+                skipped = []
+                for name, value in checkpoint.items():
+                    target = model_state.get(name)
+                    if target is not None and target.shape == value.shape:
+                        compatible_checkpoint[name] = value
+                    else:
+                        skipped.append((name, tuple(value.shape), None if target is None else tuple(target.shape)))
+
+                model.load_state_dict(compatible_checkpoint, strict=False)
                 if dist.get_rank() == 0:
                     print("✅ loaded <full_model> model parameters")
+                    if skipped:
+                        print(f"⚠️ skipped {len(skipped)} incompatible or unexpected checkpoint parameters")
+                        for name, source_shape, target_shape in skipped[:12]:
+                            print(f"   - {name}: checkpoint={source_shape}, model={target_shape}")
                 loaded_modules = ["<full_model>"]
             except Exception as e:
                 raise RuntimeError(f"❌ loading full model failed: {e}")

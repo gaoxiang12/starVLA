@@ -71,6 +71,10 @@ class Args:
 
     post_process_action: bool = True
 
+    # Number of predicted actions to execute before replanning. None uses the
+    # model's full action chunk (8 for the current LIBERO policy).
+    execute_horizon: int | None = None
+
     job_name: str = "test"
 
 
@@ -107,6 +111,7 @@ def eval_libero(args: Args) -> None:
         host=args.host,
         port=args.port,
         unnorm_key=args.unnorm_key,
+        execute_horizon=args.execute_horizon,
     )
 
     # Optional smoke-test cap (still useful for quick verification with -1 = full run).
@@ -182,6 +187,7 @@ def eval_libero(args: Args) -> None:
                 example_dict = {
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
                     "lang": observation["instruction"][0],
+                    "state": observation["observation.state"][0],
                 }
 
                 start_time = time.time()

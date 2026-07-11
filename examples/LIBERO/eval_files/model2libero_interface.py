@@ -36,6 +36,7 @@ class ModelClient:
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
         adaptive_ensemble_alpha: float = 0.1,
+        execute_horizon: Optional[int] = None,
         host: str = "0.0.0.0",
         port: int = 10095,
         image_size: Sequence[int] = (224, 224),
@@ -44,6 +45,14 @@ class ModelClient:
         self.client = WebsocketClientPolicy(host, port)
         meta = self.client.get_server_metadata()
         self.action_chunk_size = int(meta["action_chunk_size"])
+        self.execute_horizon = (
+            self.action_chunk_size if execute_horizon is None else int(execute_horizon)
+        )
+        if not 1 <= self.execute_horizon <= self.action_chunk_size:
+            raise ValueError(
+                "execute_horizon must be between 1 and the model action chunk size "
+                f"({self.action_chunk_size}), got {self.execute_horizon}"
+            )
         self._server_metadata = meta
 
         self.image_size: tuple = tuple(image_size)
@@ -52,6 +61,7 @@ class ModelClient:
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
+            f"execute_horizon: {self.execute_horizon}, "
             f"server_meta: {meta} ***"
         )
 
@@ -79,7 +89,8 @@ class ModelClient:
             self.action_ensembler = None
         self.num_image_history = 0
 
-        # Cached unnormalized chunk; refreshed every `action_chunk_size` steps.
+        # Cached unnormalized chunk; only its first `execute_horizon` actions
+        # are executed before incorporating a fresh observation.
         self.raw_actions: Optional[np.ndarray] = None
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
@@ -128,7 +139,8 @@ class ModelClient:
             example = {**example, "image": resized}
 
         # Refresh chunk if needed.
-        if step % self.action_chunk_size == 0 or self.raw_actions is None:
+        chunk_offset = step % self.execute_horizon
+        if chunk_offset == 0 or self.raw_actions is None:
             vla_input = {
                 "examples": [example],
                 "unnorm_key": self.unnorm_key,
@@ -146,7 +158,7 @@ class ModelClient:
                 )
             self.raw_actions = np.asarray(actions_batch)[0]  # (T, D)
 
-        raw_actions = self.raw_actions[step % self.action_chunk_size][None]
+        raw_actions = self.raw_actions[chunk_offset][None]
         raw_action = {
             "world_vector": np.array(raw_actions[0, :3]),
             "rotation_delta": np.array(raw_actions[0, 3:6]),

@@ -48,7 +48,9 @@ from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, w
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
 deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
+# The trainer owns scheduler stepping below. Disabling Accelerate's automatic
+# coupling prevents AcceleratedScheduler from stepping once per process.
+accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin, step_scheduler_with_optimizer=False)
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -146,12 +148,17 @@ class VLATrainer(TrainerUtils):
         self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
         self.print_trainable_parameters(self.model)
 
-        self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
+        self.model, self.optimizer, self.vla_train_dataloader, self.lr_scheduler = self.setup_distributed_training(
             self.accelerator,
             self.model,
             self.optimizer,
             self.vla_train_dataloader,
+            self.lr_scheduler,
         )
+
+        if self.resume_training_state:
+            self._load_checkpoint(self.resume_training_state)
+            self._repair_lr_scheduler_after_resume()
 
         self._init_wandb()
 
@@ -220,12 +227,25 @@ class VLATrainer(TrainerUtils):
         pretrained_checkpoint = getattr(self.config.trainer, "pretrained_checkpoint", None)
         is_resume = getattr(self.config.trainer, "is_resume", False)
         self.resume_from_checkpoint = pretrained_checkpoint
+        self.resume_training_state = None
 
         if is_resume:
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
-                self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
+                training_state = os.path.join(
+                    self.checkpoint_dir, f"steps_{self.completed_steps}_training_state"
+                )
+                if os.path.isdir(training_state):
+                    self.resume_training_state = training_state
+                else:
+                    self.model = self.load_pretrained_backbones(
+                        self.model, self.resume_from_checkpoint, reload_modules=None
+                    )
+                    logger.warning(
+                        "No full training state found for step %s; falling back to weights-only resume",
+                        self.completed_steps,
+                    )
                 logger.info(
                     f"Resuming training from checkpoint: {self.resume_from_checkpoint}, steps: {self.completed_steps}"
                 )
@@ -245,8 +265,8 @@ class VLATrainer(TrainerUtils):
             self.completed_steps = 0
 
     def _adjust_lr_scheduler_for_resume(self):
-        """Adjust LR scheduler state after resuming from non-zero steps."""
-        if self.completed_steps > 0:
+        """Advance the scheduler only for legacy weights-only resumes."""
+        if self.completed_steps > 0 and not self.resume_training_state:
             logger.info(f"Adjusting LR scheduler for resume from step {self.completed_steps}")
             for _ in range(self.completed_steps):
                 self.lr_scheduler.step()
@@ -259,11 +279,29 @@ class VLATrainer(TrainerUtils):
         self.accelerator.load_state(checkpoint_path)
         self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
 
+    def _repair_lr_scheduler_after_resume(self):
+        """Rewind scheduler states saved with Accelerate's per-process stepping."""
+        repair_scheduler = bool(
+            getattr(self.config.trainer, "repair_lr_scheduler_on_resume", False)
+        )
+        if not repair_scheduler:
+            return
+
+        scheduler = getattr(self.lr_scheduler, "scheduler", self.lr_scheduler)
+        scheduler.step(self.completed_steps)
+        if hasattr(scheduler, "_step_count"):
+            scheduler._step_count = self.completed_steps + 1
+        logger.warning(
+            "Repaired LR scheduler to external step %s; current LR: %s",
+            self.completed_steps,
+            scheduler.get_last_lr(),
+        )
+
     def _save_checkpoint(self):
         """Save current training state."""
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
         if self.accelerator.is_main_process:
             save_format = getattr(self.config.trainer, "save_format", "pt")
-            checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
 
             state_dict = self.accelerator.get_state_dict(self.model)
             if save_format == "safetensors":
@@ -287,6 +325,10 @@ class VLATrainer(TrainerUtils):
                 logger.info("✅ Configuration files saved")
 
         self.accelerator.wait_for_everyone()
+        training_state_path = checkpoint_path + "_training_state"
+        self.accelerator.save_state(training_state_path)
+        self.accelerator.wait_for_everyone()
+        self.accelerator.print(f"✅ Full training state saved at {training_state_path}")
 
     def _log_metrics(self, metrics):
         """Record training metrics."""
@@ -425,7 +467,34 @@ class VLATrainer(TrainerUtils):
         step_log = {"action_dit_loss": action_loss.item()}
         # Surface any auxiliary scalar losses the framework reports (e.g. the
         # world-model flow_latent_loss / flow_action_loss for LeWM-OFT).
-        for k in ("l1_action_loss", "flow_latent_loss", "flow_action_loss", "state_loss"):
+        for k in (
+            "l1_action_loss",
+            "flow_latent_loss",
+            "flow_action_loss",
+            "delta_latent_loss",
+            "delta_sigreg_loss",
+            "delta_scale",
+            "delta_target_rms",
+            "delta_pred_rms",
+            "delta_copy_mse",
+            "delta_pred_mse",
+            "delta_mean_baseline_mse",
+            "delta_to_copy_ratio",
+            "delta_direction_cosine",
+            "visual_token_diversity_loss",
+            "visual_token_variance_loss",
+            "visual_token_mean_cosine",
+            "visual_content_spatial_std",
+            "visual_content_sample_std",
+            "visual_content_mean_cosine",
+            "visual_content_effective_rank",
+            "visual_pred_content_spatial_std",
+            "visual_pred_content_mean_cosine",
+            "visual_pred_content_effective_rank",
+            "future_action_sensitivity",
+            "future_action_sensitivity_ratio",
+            "state_loss",
+        ):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):
                 step_log[k] = v.item()
