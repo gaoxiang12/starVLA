@@ -892,15 +892,20 @@ class LeWM_OFT(baseframework):
     def predict_action(self, examples: List[dict], **kwargs) -> np.ndarray:
         if type(examples) is not list:
             examples = [examples]
-        batch_images = [to_pil_preserve(example["image"]) for example in examples]
         instructions = [example["lang"] for example in examples]
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
-        if train_obs_image_size:
-            batch_images = resize_images(batch_images, target_size=train_obs_image_size)
+        frames_per_example = []
+        for example in examples:
+            history = example.get("image_history") or [example["image"]]
+            frames = [to_pil_preserve(frame) for frame in history[-self.wm_ctx_len :]]
+            if len(frames) < self.wm_ctx_len:
+                frames = [frames[0]] * (self.wm_ctx_len - len(frames)) + frames
+            if train_obs_image_size:
+                frames = resize_images(frames, target_size=train_obs_image_size)
+            frames_per_example.append(frames)
 
         # === World-model path: imagine future latents + flow-sample actions ===
-        frames_per_example = [[imgs] for imgs in batch_images]  # only current frame
         with torch.autocast("cuda", dtype=torch.bfloat16):
             if self.use_visual_token_wm:
                 patch_tokens = self.backbone.encode_patch_frames(frames_per_example)  # (B, 1, V, N, D)

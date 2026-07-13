@@ -45,6 +45,7 @@ class ModelClient:
         self.client = WebsocketClientPolicy(host, port)
         meta = self.client.get_server_metadata()
         self.action_chunk_size = int(meta["action_chunk_size"])
+        self.visual_context_length = int(meta.get("visual_context_length", 1))
         self.execute_horizon = (
             self.action_chunk_size if execute_horizon is None else int(execute_horizon)
         )
@@ -61,6 +62,7 @@ class ModelClient:
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
+            f"visual_context_length: {self.visual_context_length}, "
             f"execute_horizon: {self.execute_horizon}, "
             f"server_meta: {meta} ***"
         )
@@ -80,7 +82,7 @@ class ModelClient:
         self.previous_gripper_action = None
 
         self.task_description = None
-        self.image_history = deque(maxlen=self.horizon)
+        self.image_history = deque(maxlen=self.visual_context_length)
         if self.action_ensemble:
             self.action_ensembler = AdaptiveEnsembler(
                 self.action_ensemble_horizon, self.adaptive_ensemble_alpha
@@ -95,7 +97,9 @@ class ModelClient:
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
-        self.num_image_history = min(self.num_image_history + 1, self.horizon)
+        self.num_image_history = min(
+            self.num_image_history + 1, self.visual_context_length
+        )
 
     def reset(self, task_description: str) -> None:
         self.task_description = task_description
@@ -138,11 +142,18 @@ class ModelClient:
                 resized.append(arr)
             example = {**example, "image": resized}
 
+        self._add_image_to_history(example["image"])
+
         # Refresh chunk if needed.
         chunk_offset = step % self.execute_horizon
         if chunk_offset == 0 or self.raw_actions is None:
+            context_frames = list(self.image_history)
+            if len(context_frames) < self.visual_context_length:
+                context_frames = [context_frames[0]] * (
+                    self.visual_context_length - len(context_frames)
+                ) + context_frames
             vla_input = {
-                "examples": [example],
+                "examples": [{**example, "image_history": context_frames}],
                 "unnorm_key": self.unnorm_key,
                 "do_sample": False,
                 "use_ddim": self.use_ddim,

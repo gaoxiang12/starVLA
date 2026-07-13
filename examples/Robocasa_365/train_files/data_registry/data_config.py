@@ -7,7 +7,7 @@ Schema follows the official robocasa LeRobot conversion (see
 
 * observation.state (16d): base_position(3) + base_rotation(4) + eef_pos_rel(3) + eef_rot_rel(4) + gripper_qpos(2)
 * action (12d): eef_pos(3) + eef_rot(3) + gripper_close(1) + base_motion(4) + control_mode(1)
-* 3 cameras at 256x256, 20 fps. We only use ``robot0_agentview_left`` for training.
+* 3 cameras at 256x256, 20 fps.
 """
 
 from starVLA.dataloader.gr00t_lerobot.datasets import ModalityConfig
@@ -84,8 +84,23 @@ class PandaOmronRoboCasa365DataConfig:
         ])
 
 
+class PandaOmronRoboCasa365WMDataConfig(PandaOmronRoboCasa365DataConfig):
+    """LeWM schema with current, midpoint, and horizon-end camera frames."""
+
+    video_indices = [0, 8, 16]
+
+    def modality_config(self):
+        config = super().modality_config()
+        config["video"] = ModalityConfig(
+            delta_indices=self.video_indices,
+            modality_keys=self.video_keys,
+        )
+        return config
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "panda_omron_robocasa365": PandaOmronRoboCasa365DataConfig(),
+    "panda_omron_robocasa365_wm": PandaOmronRoboCasa365WMDataConfig(),
 }
 
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
@@ -105,6 +120,7 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
 #   python -m robocasa.utils.dataset_registry  # has constants
 #   # or run the helper at examples/Robocasa_365/train_files/dump_target_human_paths.py
 _ROBOT_TAG = "panda_omron_robocasa365"
+_ROBOT_WM_TAG = "panda_omron_robocasa365_wm"
 
 # Atomic single-skill tasks (target/human split, 18 tasks).
 _TARGET_HUMAN_ATOMIC = {
@@ -167,9 +183,9 @@ _TARGET_HUMAN_COMPOSITE = {
 }
 
 
-def _entries(path_dict):
+def _entries(path_dict, robot_tag=_ROBOT_TAG):
     """Build mixture entries (relpath/lerobot, weight=1.0, robot_tag) from a path dict."""
-    return [(f"{p}/lerobot", 1.0, _ROBOT_TAG) for p in path_dict.values()]
+    return [(f"{p}/lerobot", 1.0, robot_tag) for p in path_dict.values()]
 
 
 DATASET_NAMED_MIXTURES = {
@@ -179,6 +195,7 @@ DATASET_NAMED_MIXTURES = {
     ],
     # ------- full mixtures (each task weighted 1.0; equal sampling per task) -------
     "robocasa365_atomic_target_human_all":    _entries(_TARGET_HUMAN_ATOMIC),
+    "robocasa365_atomic_target_human_wm":     _entries(_TARGET_HUMAN_ATOMIC, _ROBOT_WM_TAG),
     "robocasa365_composite_target_human_all": _entries(_TARGET_HUMAN_COMPOSITE),
     "robocasa365_target_human_all":           _entries({**_TARGET_HUMAN_ATOMIC,
                                                        **_TARGET_HUMAN_COMPOSITE}),

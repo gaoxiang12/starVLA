@@ -112,9 +112,19 @@ class Libero4in1WMDataConfig(Libero4in1DataConfig):
         ])
 
 
+class Libero4in1WMContext2Horizon20DataConfig(Libero4in1WMDataConfig):
+    """LIBERO WM samples aligned to a 20-step action chunk and two-frame context."""
+
+    observation_indices = [0, 1, 5, 10, 15, 20]
+    video_indices = [0, 1, 5, 10, 15, 20]
+    action_indices = list(range(1, 21))
+    state_indices = [1]
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
     "libero_franka_wm": Libero4in1WMDataConfig(),
+    "libero_franka_wm_ctx2_h20": Libero4in1WMContext2Horizon20DataConfig(),
 }
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     # Per Proposal A, embodiment_tag now lives as a classvar on each DataConfig.
@@ -141,6 +151,12 @@ DATASET_NAMED_MIXTURES = {
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
         ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
         ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+    ],
+    "libero_all_wm_ctx2_h20": [
+        ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
     ],
     "libero_goal_wm": [
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),

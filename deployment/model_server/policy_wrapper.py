@@ -58,6 +58,8 @@ class PolicyServerWrapper:
 
         # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
+        world_model_cfg = model_cfg["framework"].get("world_model", {})
+        self._visual_context_length = int(world_model_cfg.get("ctx_len", 1))
         
         if "action_horizon" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])
@@ -113,6 +115,7 @@ class PolicyServerWrapper:
             "env": "starvla_policy_server",
             "ckpt_path": self._ckpt_path,
             "action_chunk_size": self._action_chunk_size,
+            "visual_context_length": self._visual_context_length,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
         }
