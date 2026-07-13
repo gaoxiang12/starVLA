@@ -55,6 +55,7 @@ class Args:
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
+    start_task: int = 0  # First task index to evaluate (useful for resuming an interrupted suite).
     max_tasks: int = -1  # If > 0, limit the number of tasks evaluated (smoke / quick check). -1 = run all.
 
     #################################################################################################################
@@ -74,6 +75,8 @@ class Args:
     # Number of predicted actions to execute before replanning. None uses the
     # model's full action chunk (8 for the current LIBERO policy).
     execute_horizon: int | None = None
+    temporal_action_ensemble: bool = False
+    adaptive_ensemble_alpha: float = 0.0
 
     job_name: str = "test"
 
@@ -112,15 +115,26 @@ def eval_libero(args: Args) -> None:
         port=args.port,
         unnorm_key=args.unnorm_key,
         execute_horizon=args.execute_horizon,
+        action_ensemble=args.temporal_action_ensemble,
+        adaptive_ensemble_alpha=args.adaptive_ensemble_alpha,
     )
 
-    # Optional smoke-test cap (still useful for quick verification with -1 = full run).
-    n_eval_tasks = num_tasks_in_suite if args.max_tasks <= 0 else min(args.max_tasks, num_tasks_in_suite)
-    logging.info(f"Evaluating {n_eval_tasks} of {num_tasks_in_suite} tasks (max_tasks={args.max_tasks})")
+    if not 0 <= args.start_task < num_tasks_in_suite:
+        raise ValueError(
+            f"start_task must be in [0, {num_tasks_in_suite}), got {args.start_task}"
+        )
+    stop_task = num_tasks_in_suite
+    if args.max_tasks > 0:
+        stop_task = min(args.start_task + args.max_tasks, num_tasks_in_suite)
+    task_ids = range(args.start_task, stop_task)
+    logging.info(
+        f"Evaluating tasks [{args.start_task}, {stop_task}) of {num_tasks_in_suite} "
+        f"(max_tasks={args.max_tasks})"
+    )
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(n_eval_tasks)):
+    for task_id in tqdm.tqdm(task_ids):
         # Get task
         task = task_suite.get_task(task_id)
 

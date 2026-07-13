@@ -56,6 +56,8 @@ framework:
     state_dim: 7
     action_horizon: 8
     action_hidden_dim: 384
+    random_execution_horizons: [1, 2, 4, 8]
+    random_prefix_loss_weight: 0.0
   lang_cond:
     num_buckets: 4096
     embed_dim: 384   # task embedding dim; matches ViT-tiny latent (2*192=384)

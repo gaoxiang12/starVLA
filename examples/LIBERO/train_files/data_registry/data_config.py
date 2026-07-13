@@ -121,9 +121,17 @@ class Libero4in1WMContext2Horizon20DataConfig(Libero4in1WMDataConfig):
     state_indices = [1]
 
 
+class Libero4in1WMContext2Horizon8DataConfig(Libero4in1WMDataConfig):
+    """Two-frame history with the baseline 8-step action and future horizon."""
+
+    video_indices = [-1, 0, 4, 8]
+    state_indices = [0]
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
     "libero_franka_wm": Libero4in1WMDataConfig(),
+    "libero_franka_wm_ctx2_h8": Libero4in1WMContext2Horizon8DataConfig(),
     "libero_franka_wm_ctx2_h20": Libero4in1WMContext2Horizon20DataConfig(),
 }
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
@@ -157,6 +165,12 @@ DATASET_NAMED_MIXTURES = {
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
         ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
         ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),
+    ],
+    "libero_all_wm_ctx2_h8": [
+        ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h8"),
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h8"),
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h8"),
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h8"),
     ],
     "libero_goal_wm": [
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),

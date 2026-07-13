@@ -58,6 +58,31 @@ from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
 
+def prefix_l1_loss(
+    pred_actions: torch.Tensor,
+    target_actions: torch.Tensor,
+    prefix_lengths: torch.Tensor,
+) -> torch.Tensor:
+    """Average L1 loss over a per-sample action prefix."""
+    if pred_actions.shape != target_actions.shape or pred_actions.ndim != 3:
+        raise ValueError(
+            "pred_actions and target_actions must have matching (B, H, D) shapes, "
+            f"got {tuple(pred_actions.shape)} and {tuple(target_actions.shape)}"
+        )
+    batch_size, horizon, action_dim = pred_actions.shape
+    if prefix_lengths.shape != (batch_size,):
+        raise ValueError(
+            f"prefix_lengths must have shape {(batch_size,)}, got {tuple(prefix_lengths.shape)}"
+        )
+    if torch.any(prefix_lengths < 1) or torch.any(prefix_lengths > horizon):
+        raise ValueError(f"prefix lengths must be in [1, {horizon}]")
+
+    steps = torch.arange(horizon, device=pred_actions.device).view(1, horizon, 1)
+    mask = steps < prefix_lengths.to(device=pred_actions.device).view(batch_size, 1, 1)
+    absolute_error = (pred_actions - target_actions).abs()
+    return (absolute_error * mask).sum() / (mask.sum() * action_dim)
+
+
 class VisualTokenPooler(nn.Module):
     """Create spatially anchored tokens from each view's patch grid.
 
@@ -321,6 +346,11 @@ class LeWMOFTDefaultConfig:
             "action_hidden_dim": 384,
             "future_action_window_size": 8,
             "past_action_window_size": 0,
+            # Optional auxiliary objective for policies deployed with shorter
+            # replanning horizons. Empty choices or zero weight preserves the
+            # original full-chunk L1 objective exactly.
+            "random_execution_horizons": [1, 2, 4, 8],
+            "random_prefix_loss_weight": 0.0,
         }
     )
 
@@ -364,6 +394,23 @@ class LeWM_OFT(baseframework):
         # legacy aliases are normalised upstream by share_tools.apply_config_compat.
         self.action_horizon = int(self.config.framework.action_model.action_horizon)
         self.chunk_len = self.action_horizon
+        prefix_choices = self.config.framework.action_model.get(
+            "random_execution_horizons", []
+        )
+        self.random_execution_horizons = tuple(int(value) for value in prefix_choices)
+        self.random_prefix_loss_weight = float(
+            self.config.framework.action_model.get("random_prefix_loss_weight", 0.0)
+        )
+        if self.random_prefix_loss_weight < 0:
+            raise ValueError("random_prefix_loss_weight must be non-negative")
+        if any(
+            horizon < 1 or horizon > self.action_horizon
+            for horizon in self.random_execution_horizons
+        ):
+            raise ValueError(
+                "random_execution_horizons must be between 1 and action_horizon "
+                f"({self.action_horizon}), got {self.random_execution_horizons}"
+            )
 
         self.config.framework.action_model.action_hidden_dim = wm_hidden
         self.action_model = get_action_model(config=self.config)
@@ -782,7 +829,29 @@ class LeWM_OFT(baseframework):
                 oft_context = self._build_oft_context(raw_latent, pred_future_latent)
                 action_queries = self._pool_to_action_queries(oft_context)
             pred_actions = self.action_model.predict_action(action_queries)
-            l1_action_loss = self.l1_loss(pred_actions, actions_target)
+            full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
+            prefix_l1_action_loss = None
+            sampled_prefix_mean = None
+            if self.random_prefix_loss_weight > 0 and self.random_execution_horizons:
+                choices = torch.tensor(
+                    self.random_execution_horizons,
+                    device=pred_actions.device,
+                    dtype=torch.long,
+                )
+                choice_indices = torch.randint(
+                    choices.numel(), (B,), device=pred_actions.device
+                )
+                sampled_prefix_lengths = choices[choice_indices]
+                sampled_prefix_mean = sampled_prefix_lengths.float().mean()
+                prefix_l1_action_loss = prefix_l1_loss(
+                    pred_actions, actions_target, sampled_prefix_lengths
+                )
+                l1_action_loss = (
+                    full_l1_action_loss
+                    + self.random_prefix_loss_weight * prefix_l1_action_loss
+                ) / (1.0 + self.random_prefix_loss_weight)
+            else:
+                l1_action_loss = full_l1_action_loss
             if self.use_visual_token_wm and self.visual_diagnostics:
                 with torch.no_grad():
                     ablated_tokens = head_tokens[:1].detach().clone()
@@ -845,9 +914,13 @@ class LeWM_OFT(baseframework):
         out = {
             "action_loss": total_loss,
             "l1_action_loss": l1_action_loss.detach(),
+            "full_l1_action_loss": full_l1_action_loss.detach(),
             "flow_latent_loss": flow_latent_loss.detach(),
             "flow_action_loss": flow_action_loss.detach(),
         }
+        if prefix_l1_action_loss is not None:
+            out["prefix_l1_action_loss"] = prefix_l1_action_loss.detach()
+            out["sampled_prefix_mean"] = sampled_prefix_mean.detach()
         if delta_latent_loss is not None:
             out["delta_latent_loss"] = delta_latent_loss.detach()
         if delta_sigreg_loss is not None:

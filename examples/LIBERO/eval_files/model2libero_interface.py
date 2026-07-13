@@ -22,7 +22,7 @@ import numpy as np
 from PIL import Image
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
-from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.SimplerEnv.eval_files.adaptive_ensemble import ChunkedAdaptiveEnsembler
 
 
 class ModelClient:
@@ -31,8 +31,7 @@ class ModelClient:
         unnorm_key: Optional[str] = None,
         policy_setup: str = "franka",
         horizon: int = 0,
-        action_ensemble: bool = True,
-        action_ensemble_horizon: Optional[int] = 3,
+        action_ensemble: bool = False,
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
         adaptive_ensemble_alpha: float = 0.1,
@@ -72,7 +71,6 @@ class ModelClient:
         self.horizon = horizon
         self.action_ensemble = action_ensemble
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
-        self.action_ensemble_horizon = action_ensemble_horizon
 
         # Gripper sticky state (kept for parity with the previous client; not
         # currently consumed by LIBERO but other policy_setup paths use it).
@@ -84,8 +82,8 @@ class ModelClient:
         self.task_description = None
         self.image_history = deque(maxlen=self.visual_context_length)
         if self.action_ensemble:
-            self.action_ensembler = AdaptiveEnsembler(
-                self.action_ensemble_horizon, self.adaptive_ensemble_alpha
+            self.action_ensembler = ChunkedAdaptiveEnsembler(
+                self.adaptive_ensemble_alpha
             )
         else:
             self.action_ensembler = None
@@ -168,8 +166,13 @@ class ModelClient:
                     f"full response={response}"
                 )
             self.raw_actions = np.asarray(actions_batch)[0]  # (T, D)
+            if self.action_ensemble:
+                self.action_ensembler.add_chunk(self.raw_actions)
 
-        raw_actions = self.raw_actions[chunk_offset][None]
+        if self.action_ensemble:
+            raw_actions = self.action_ensembler.step()[None]
+        else:
+            raw_actions = self.raw_actions[chunk_offset][None]
         raw_action = {
             "world_vector": np.array(raw_actions[0, :3]),
             "rotation_delta": np.array(raw_actions[0, 3:6]),
