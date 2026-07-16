@@ -13,39 +13,14 @@ framework:
   world_model:
     base_wm: WinKawaks/vit-tiny-patch16-224
     train_encoder: false   # frozen ViT; set true for joint fine-tuning
-    # === flow-matching latent world model (ported le-wm WanPredictor) ===
-    use_future_latent: true   # roll out future latents; flow head predicts actions from them
-    n_future: 2               # number of future latents (must divide action_horizon)
+    n_future: 2               # future visual-token frames predicted in parallel
     ctx_len: 1                # clean context frames (current frame only)
-    predictor_dim: 384
-    predictor_layers: 4
-    predictor_heads: 6
-    predictor_ffn: 1024
-    flow_sample_steps: 10     # denoising steps for inference rollout
-    loss_latent_weight: 0.0   # LATENT FLOW OFF: pooled DINOv2 latent is a bad flow target
-    loss_action_weight: 0.5   # optional action-flow auxiliary / flow-action ablation
-    # === direct delta-regression head (PRIMARY latent predictor) ===
-    # The flow WM never beat copy on the pooled DINOv2 latent (1.57x worse,
-    # cos-dir 0.02). The repo's canonical LeWM/JEPA instead regresses the
-    # future embedding directly (MSE + SIGReg, no flow, no whitening) -> we do
-    # the same: a le-wm ARPredictor-style transformer delta head with a global
-    # residual scale (NO per-dim whitening) + SIGReg anti-collapse. The delta
-    # head must NOT see future actions on the OFT path; otherwise training leaks
-    # GT actions into the future latent before predicting the same actions.
-    # Enable on a NEW run_id / resume with strict=False (old MLP delta_head + new
-    # transformer weights differ).
-    use_delta_head: true
-    loss_delta_weight: 1.0        # delta head is now the primary latent objective
-    delta_head_type: transformer  # "mlp" (legacy) | "transformer" (ARPredictor-style)
-    delta_head_dim: 384
-    delta_head_depth: 4
-    delta_head_heads: 6
-    delta_head_ffn: 1024
-    delta_head_sigreg_weight: 0.02  # SIGReg weight (>0 enables the regularizer)
-    delta_head_condition_on_action: false  # action-free future latent predictor; no GT-action shortcut
-    delta_head_hidden: 1024         # only used by the legacy mlp head
-    delta_head_inference: true      # rollout uses the delta head, not the flow latent
-    oft_future_from_delta: true     # OFT head conditions on the delta future latent
+    loss_latent_weight: 1.0
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    residual_predictor_sigreg_weight: 0.02
     # === state probe: ground predicted future latents in future proprio ===
     use_state_probe: true
     state_dim: 8              # LIBERO proprio: x,y,z,roll,pitch,yaw,pad,gripper

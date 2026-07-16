@@ -1,26 +1,10 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
-"""
-LeWM-OFT Framework — LeWorldModel ViT encoder + flow-matching world model.
+"""LeWM-OFT with deterministic visual-token future prediction.
 
-Uses the LeWM front-end (a pretrained ViT encoder) as the perception backbone,
-a Wan-style flow-matching world model to roll out future latents, and an
-OFT-style MLP regression head for action prediction. The world model's action
-flow loss is kept as an auxiliary objective and can still be used directly for
-flow-only ablations via ``world_model.action_source: flow``.
-
-Architecture:
-  ViT encoder → per-view latent concat[CLS, mean-pool] → [B, V, 2*hidden]
-    → view fusion → [B, 1+Tf, hidden]
-    → WanWorldModel flow predictor
-        → future latents          (flow_latent_loss)
-        → flow-sampled actions    (flow_action_loss, auxiliary)
-        → OFT MLP action head from [current raw latent, predicted future latent]
-                → l1_action_loss
-    → optional state probe on [current, predicted future] latents (state_loss)
-
-The ViT encoder is frozen by default; set ``world_model.train_encoder: true``
-to keep the joint fine-tuning interface available.
+A ViT encodes spatially anchored tokens for every camera view. An action-free
+transformer predicts all future-token residuals in one pass, and an OFT head
+cross-attends current and predicted tokens to produce the action chunk.
 """
 
 import hashlib
@@ -52,8 +36,9 @@ from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import merge_framework_config
 from starVLA.model.modules.action_model.MLP_ActionHeader import get_action_model
 from starVLA.model.modules.world_model import get_world_model
-from starVLA.model.modules.world_model.token_wan_world_model import TokenWanWorldModel
-from starVLA.model.modules.world_model.wan_world_model import WanWorldModel
+from starVLA.model.modules.world_model.visual_token_delta_world_model import (
+    VisualTokenLatentWorldModel,
+)
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
@@ -269,47 +254,14 @@ class LeWMOFTDefaultConfig:
             "base_wm": "WinKawaks/vit-tiny-patch16-224",
             "train_encoder": False,  # frozen ViT by default; flip for joint finetune
             "num_views": 2,          # camera views per frame (e.g. primary + wrist)
-            # === flow-matching latent world model (ported le-wm WanPredictor) ===
-            # When ``use_future_latent`` is on, a Wan-style predictor rolls out
-            # future latents (flow_latent_loss) and the OFT head conditions on
-            # ``[current latent, predicted future latents]`` before producing the
-            # action chunk. Requires the dataloader to supply ``future_images``.
-            "use_future_latent": True,
             "n_future": 2,            # number of future latents to predict
             "ctx_len": 1,             # clean context frames (current frame only)
-            "predictor_dim": 384,
-            "predictor_layers": 4,
-            "predictor_heads": 6,
-            "predictor_ffn": 1024,
-            "flow_sample_steps": 20,
-            # lingbot-va scheduler recipe: separate SNR shifts for latent vs
-            # action flow + noisy-context augmentation probability.
-            "latent_snr_shift": 5.0,
-            "action_snr_shift": 0.05,
-            "noisy_cond_prob": 0.5,
-            # === Direct delta-regression auxiliary head (oracle-probe inspired) ===
-            # Deterministically predicts future latent residuals from the current
-            # latent (+goal) by default. Keep action conditioning off for the
-            # deployed OFT path, otherwise GT actions leak through the future latent.
-            "use_delta_head": False,
-            "loss_delta_weight": 0.5,
-            "delta_head_hidden": 1024,
-            "delta_head_inference": False,  # replace flow-sampled latent at rollout
-            # transformer delta head (le-wm ARPredictor style) + SIGReg; when
-            # ``oft_future_from_delta`` the OFT head conditions on the delta
-            # head's future latent instead of the flow-sampled one.
-            "delta_head_type": "mlp",       # "mlp" | "transformer"
-            "delta_head_dim": 384,
-            "delta_head_depth": 4,
-            "delta_head_heads": 6,
-            "delta_head_ffn": 1024,
-            "delta_head_sigreg_weight": 0.0,
-            "delta_head_condition_on_action": False,
-            "oft_future_from_delta": False,
             "loss_latent_weight": 1.0,
-            "loss_action_weight": 1.0,
-            "action_source": "oft",
-            "use_visual_token_wm": False,
+            "residual_predictor_dim": 384,
+            "residual_predictor_depth": 4,
+            "residual_predictor_heads": 6,
+            "residual_predictor_ffn": 1024,
+            "residual_predictor_sigreg_weight": 0.0,
             # Spatial tokens are fixed grid cells, not learned pooling queries.
             # ``num_visual_tokens`` remains a legacy alias for per-view count.
             "visual_tokens_per_view": 16,
@@ -338,7 +290,7 @@ class LeWMOFTDefaultConfig:
         }
     )
 
-    # === Action shape config (action_dim / horizon consumed by the flow model) ===
+    # === Action shape config ===
     action_model: dict = field(
         default_factory=lambda: {
             "action_model_type": "MLP",
@@ -369,7 +321,7 @@ class LeWMOFTDefaultConfig:
 
 @FRAMEWORK_REGISTRY.register("LeWMOFT")
 class LeWM_OFT(baseframework):
-    """World-Model-for-Action framework: LeWM ViT encoder + flow-matching world model."""
+    """LeWM visual encoder + deterministic latent predictor + OFT action head."""
 
     def __init__(self, config: Optional[dict] = None, **kwargs) -> None:
         super().__init__()
@@ -381,12 +333,8 @@ class LeWM_OFT(baseframework):
         wm_cfg = self.config.framework.get("world_model", {}) or {}
         self.num_views = int(wm_cfg.get("num_views", 2))
 
-        # 是否使用visual token, 有的话visual_token_dim就是visual token的维度, 没有的话就是wm_hidden
-        self.use_visual_token_wm = bool(wm_cfg.get("use_visual_token_wm", False))
         self.use_state_cond = bool(wm_cfg.get("use_state_cond", False))
         self.expects_normalized_state = self.use_state_cond
-        if self.use_state_cond and not self.use_visual_token_wm:
-            raise ValueError("use_state_cond currently requires use_visual_token_wm=True")
         visual_token_dim_cfg = wm_cfg.get("visual_token_dim", None)
         self.visual_token_dim = int(visual_token_dim_cfg) if visual_token_dim_cfg else wm_hidden
 
@@ -416,18 +364,6 @@ class LeWM_OFT(baseframework):
         self.action_model = get_action_model(config=self.config)
         self.action_hidden_dim = wm_hidden
 
-        # Keep the OFT projection shape compatible with vfuse checkpoints:
-        # raw LeWM features are concatenated across views (V * wm_hidden), then
-        # projected to per-action tokens of width wm_hidden.
-        self.action_context_dim = self.num_views * wm_hidden
-        self.action_query_proj = nn.Linear(self.num_views * wm_hidden, self.chunk_len * wm_hidden)
-        self.future_action_context_proj = nn.Linear(wm_hidden, self.action_context_dim)
-        with torch.no_grad():
-            self.future_action_context_proj.weight.zero_()
-            eye = torch.eye(wm_hidden)
-            for v in range(self.num_views):
-                self.future_action_context_proj.weight[v * wm_hidden : (v + 1) * wm_hidden, :] = eye
-            self.future_action_context_proj.bias.zero_()
         self.l1_loss = nn.L1Loss()
 
         # === Language / task conditioning ===
@@ -442,197 +378,96 @@ class LeWM_OFT(baseframework):
         self.task_emb_dim = int(_emb_dim) if _emb_dim else wm_hidden
         self.task_embedding = nn.Embedding(self.num_task_buckets, self.task_emb_dim)
 
-        # === Flow-matching latent world model (le-wm WanPredictor) ===
-        # Predicts future latents so the OFT head can "see the future" before
-        # producing actions, and supplies a real latent-prediction loss.
-        self.action_source = str(wm_cfg.get("action_source", "oft")).lower()
-        if self.action_source not in {"oft", "flow"}:
-            raise ValueError(
-                f"LeWMOFT world_model.action_source must be 'oft' or 'flow', got {self.action_source!r}"
+        self.n_future = int(wm_cfg.get("n_future", 2))
+        self.wm_ctx_len = int(wm_cfg.get("ctx_len", 1))
+        self.loss_latent_weight = float(
+            wm_cfg.get("loss_delta_weight", wm_cfg.get("loss_latent_weight", 1.0))
+        )
+        self.loss_sigreg_weight = float(
+            wm_cfg.get(
+                "residual_predictor_sigreg_weight",
+                wm_cfg.get("delta_head_sigreg_weight", 0.0),
             )
-        self.use_future_latent = bool(wm_cfg.get("use_future_latent", True))
+        )
 
-        if self.use_future_latent:
-            if self.use_visual_token_wm:
-                self.action_query_proj.requires_grad_(False)
-                self.future_action_context_proj.requires_grad_(False)
-            self.n_future = int(wm_cfg.get("n_future", 2))
-            self.wm_ctx_len = int(wm_cfg.get("ctx_len", 1))
-            raw_action_dim = int(self.config.framework.action_model.action_dim)
-            assert (
-                self.action_horizon % self.n_future == 0
-            ), f"action_horizon ({self.action_horizon}) must be divisible by n_future ({self.n_future})"
-            self.wm_segment_len = self.action_horizon // self.n_future
-            self.loss_latent_weight = float(wm_cfg.get("loss_latent_weight", 1.0))
-            self.loss_action_weight = float(wm_cfg.get("loss_action_weight", 1.0))
-            self.use_delta_head = bool(wm_cfg.get("use_delta_head", False))
-            self.loss_delta_weight = float(wm_cfg.get("loss_delta_weight", 0.5))
-            self.oft_future_from_delta = bool(wm_cfg.get("oft_future_from_delta", False))
-            self.loss_delta_sigreg_weight = float(wm_cfg.get("delta_head_sigreg_weight", 0.0))
+        patch_dim = int(self.backbone.encoder.config.hidden_size)
+        self.visual_tokens_per_view = int(
+            wm_cfg.get("visual_tokens_per_view", wm_cfg.get("num_visual_tokens", 16))
+        )
+        self.visual_token_pooler = VisualTokenPooler(
+            patch_dim=patch_dim,
+            token_dim=self.visual_token_dim,
+            num_views=self.num_views,
+            tokens_per_view=self.visual_tokens_per_view,
+        )
+        self.num_visual_tokens = self.visual_token_pooler.num_tokens
+        self.visual_token_diversity_weight = float(
+            wm_cfg.get("visual_token_diversity_weight", 0.02)
+        )
+        self.visual_token_variance_weight = float(
+            wm_cfg.get("visual_token_variance_weight", 0.02)
+        )
+        self.visual_token_min_std = float(wm_cfg.get("visual_token_min_std", 0.1))
+        self.visual_diagnostics = bool(wm_cfg.get("visual_diagnostics", True))
+        self.world_model = VisualTokenLatentWorldModel(
+            latent_dim=self.visual_token_dim,
+            goal_dim=self.task_emb_dim,
+            n_future=self.n_future,
+            num_tokens=self.num_visual_tokens,
+            dim=int(
+                wm_cfg.get("residual_predictor_dim", wm_cfg.get("delta_head_dim", 384))
+            ),
+            depth=int(
+                wm_cfg.get("residual_predictor_depth", wm_cfg.get("delta_head_depth", 4))
+            ),
+            num_heads=int(
+                wm_cfg.get("residual_predictor_heads", wm_cfg.get("delta_head_heads", 6))
+            ),
+            ffn_dim=int(
+                wm_cfg.get("residual_predictor_ffn", wm_cfg.get("delta_head_ffn", 1024))
+            ),
+            sigreg_weight=self.loss_sigreg_weight,
+            stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.99)),
+        )
+        self.visual_action_head = VisualActionCrossAttn(
+            token_dim=self.visual_token_dim,
+            action_hidden_dim=wm_hidden,
+            chunk_len=self.chunk_len,
+            num_frames=self.wm_ctx_len + self.n_future,
+            num_tokens=self.num_visual_tokens,
+            num_heads=int(wm_cfg.get("visual_action_heads", 8)),
+            state_dim=int(wm_cfg.get("state_cond_dim", 8)) if self.use_state_cond else 0,
+            state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
+            state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
+        )
 
-            predictor_kwargs = {
-                "latent_dim": self.visual_token_dim if self.use_visual_token_wm else wm_hidden,
-                "action_dim": self.wm_segment_len * raw_action_dim,
-                "goal_dim": self.task_emb_dim,
-                "dim": int(wm_cfg.get("predictor_dim", 384)),
-                "num_layers": int(wm_cfg.get("predictor_layers", 4)),
-                "num_heads": int(wm_cfg.get("predictor_heads", 6)),
-                "ffn_dim": int(wm_cfg.get("predictor_ffn", 1024)),
-                "ctx_len": self.wm_ctx_len,
-                "flow_sample_steps": int(wm_cfg.get("flow_sample_steps", 20)),
-            }
-            if self.use_visual_token_wm:
-                patch_dim = int(self.backbone.encoder.config.hidden_size)
-                self.visual_tokens_per_view = int(
-                    wm_cfg.get(
-                        "visual_tokens_per_view",
-                        wm_cfg.get("num_visual_tokens", 16),
-                    )
-                )
-                self.visual_token_pooler = VisualTokenPooler(
-                    patch_dim=patch_dim,
-                    token_dim=self.visual_token_dim,
-                    num_views=self.num_views,
-                    tokens_per_view=self.visual_tokens_per_view,
-                )
-                self.num_visual_tokens = self.visual_token_pooler.num_tokens
-                self.visual_token_diversity_weight = float(
-                    wm_cfg.get("visual_token_diversity_weight", 0.02)
-                )
-                self.visual_token_variance_weight = float(
-                    wm_cfg.get("visual_token_variance_weight", 0.02)
-                )
-                self.visual_token_min_std = float(wm_cfg.get("visual_token_min_std", 0.1))
-                self.visual_diagnostics = bool(wm_cfg.get("visual_diagnostics", True))
-                self.world_model = TokenWanWorldModel(
-                    **predictor_kwargs,
-                    num_tokens=self.num_visual_tokens,
-                    token_grid_shape=(
-                        self.num_views,
-                        self.visual_token_pooler.grid_size,
-                        self.visual_token_pooler.grid_size,
-                    ),
-                    scheduler_kwargs={
-                        "shift": float(wm_cfg.get("latent_snr_shift", 5.0)),
-                        "sigma_min": 0.0,
-                        "extra_one_step": True,
-                    },
-                    action_scheduler_kwargs={
-                        "shift": float(wm_cfg.get("action_snr_shift", 0.05)),
-                        "sigma_min": 0.0,
-                        "extra_one_step": True,
-                    },
-                    stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.99)),
-                    delta_head_futures=self.n_future if self.use_delta_head else 0,
-                    delta_head_inference=bool(wm_cfg.get("delta_head_inference", False)),
-                    delta_head_dim=int(wm_cfg.get("delta_head_dim", 384)),
-                    delta_head_depth=int(wm_cfg.get("delta_head_depth", 4)),
-                    delta_head_heads=int(wm_cfg.get("delta_head_heads", 6)),
-                    delta_head_ffn=int(wm_cfg.get("delta_head_ffn", 1024)),
-                    delta_head_sigreg_weight=float(wm_cfg.get("delta_head_sigreg_weight", 0.0)),
-                )
-                self.visual_action_head = VisualActionCrossAttn(
-                    token_dim=self.visual_token_dim,
-                    action_hidden_dim=wm_hidden,
-                    chunk_len=self.chunk_len,
-                    num_frames=self.wm_ctx_len + self.n_future,
-                    num_tokens=self.num_visual_tokens,
-                    num_heads=int(wm_cfg.get("visual_action_heads", 8)),
-                    state_dim=int(wm_cfg.get("state_cond_dim", 8))
-                    if self.use_state_cond
-                    else 0,
-                    state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
-                    state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
-                )
-                if self.use_state_cond and bool(wm_cfg.get("state_cond_only", False)):
-                    for name, parameter in self.visual_action_head.named_parameters():
-                        parameter.requires_grad_(name.startswith("state_encoder."))
-            else:
-                self.world_model = WanWorldModel(
-                    **predictor_kwargs,
-                    scheduler_kwargs={
-                        "shift": float(wm_cfg.get("latent_snr_shift", 5.0)),
-                        "sigma_min": 0.0,
-                        "extra_one_step": True,
-                    },
-                    action_scheduler_kwargs={
-                        "shift": float(wm_cfg.get("action_snr_shift", 0.05)),
-                        "sigma_min": 0.0,
-                        "extra_one_step": True,
-                    },
-                    noisy_cond_prob=float(wm_cfg.get("noisy_cond_prob", 0.5)),
-                    whiten_latent=bool(wm_cfg.get("whiten_latent", True)),
-                    predict_residual=bool(wm_cfg.get("predict_residual", True)),
-                    stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.99)),
-                    delta_head_futures=self.n_future if self.use_delta_head else 0,
-                    delta_head_hidden=int(wm_cfg.get("delta_head_hidden", 1024)),
-                    delta_head_inference=bool(wm_cfg.get("delta_head_inference", False)),
-                    delta_head_type=str(wm_cfg.get("delta_head_type", "mlp")),
-                    delta_head_dim=int(wm_cfg.get("delta_head_dim", 384)),
-                    delta_head_depth=int(wm_cfg.get("delta_head_depth", 4)),
-                    delta_head_heads=int(wm_cfg.get("delta_head_heads", 6)),
-                    delta_head_ffn=int(wm_cfg.get("delta_head_ffn", 1024)),
-                    delta_head_sigreg_weight=float(wm_cfg.get("delta_head_sigreg_weight", 0.0)),
-                    delta_head_condition_on_action=bool(wm_cfg.get("delta_head_condition_on_action", False)),
-                )
-
-            # === Multi-view fusion ===
-            # encode_frames concatenates the V camera views per frame
-            # (V * wm_hidden). Project back to wm_hidden so the world model keeps
-            # its original width. Initialized to equal-weight
-            # averaging so the fused latent initially reproduces the previous
-            # mean-over-views behavior exactly -> smooth warm-start from a
-            # mean-pool checkpoint; the model then learns per-view weighting.
-            self.view_fuse = nn.Linear(self.num_views * wm_hidden, wm_hidden)
-            with torch.no_grad():
-                self.view_fuse.weight.zero_()
-                eye = torch.eye(wm_hidden)
-                for v in range(self.num_views):
-                    self.view_fuse.weight[:, v * wm_hidden : (v + 1) * wm_hidden] = eye / self.num_views
-                self.view_fuse.bias.zero_()
-
-            # === Latent normalization for the flow world model ===
-            # The fused view latent has per-dim std ~0.19 (<< 1), scale-mismatched
-            # with the flow-matching N(0,1) noise: flow_latent_loss barely drops
-            # and sample_future's scale explodes (~3.7x). A LayerNorm anchors the
-            # latent to ~unit variance so the flow target is well-scaled and
-            # sampling is scale-calibrated. The visual-token path already
-            # normalizes inside the pooler (out_norm), so it uses Identity.
-            self.latent_norm = (
-                nn.Identity() if self.use_visual_token_wm else nn.LayerNorm(wm_hidden)
+        self.use_state_probe = bool(wm_cfg.get("use_state_probe", False))
+        if self.use_state_probe:
+            self.state_probe_dim = int(wm_cfg.get("state_dim", 8))
+            self.loss_state_weight = float(wm_cfg.get("loss_state_weight", 0.5))
+            self.state_probe = nn.Sequential(
+                nn.Linear(self.visual_token_dim, wm_hidden),
+                nn.GELU(),
+                nn.Linear(wm_hidden, self.state_probe_dim),
             )
-
-            # === Optional state probe (ground latents in physical state) ===
-            # Decodes each latent frame back to the robot's proprioceptive
-            # state so predicted future latents can be supervised against the
-            # *future* physical state. Training-only; predict_action never uses
-            # it. Requires the dataloader to pack aligned future ``state``.
-            self.use_state_probe = bool(wm_cfg.get("use_state_probe", False))
-            if self.use_state_probe:
-                self.state_probe_dim = int(wm_cfg.get("state_dim", 8))
-                self.loss_state_weight = float(wm_cfg.get("loss_state_weight", 0.5))
-                state_input_dim = self.visual_token_dim if self.use_visual_token_wm else wm_hidden
-                self.state_probe = nn.Sequential(
-                    nn.Linear(state_input_dim, wm_hidden),
-                    nn.GELU(),
-                    nn.Linear(wm_hidden, self.state_probe_dim),
-                )
-                self.state_loss_fn = nn.MSELoss()
-        else:
-            self.use_visual_token_wm = False
-            self.use_state_probe = False
+            self.state_loss_fn = nn.MSELoss()
 
         if self.use_state_cond and bool(wm_cfg.get("state_cond_only", False)):
             self.requires_grad_(False)
             self.visual_action_head.state_encoder.requires_grad_(True)
 
-        logger.info(f"[LeWMOFT] action source = {self.action_source}")
-
-    def _pool_to_action_queries(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        B = hidden_states.shape[0]
-        pooled = hidden_states.mean(dim=1)
-        queries = self.action_query_proj(pooled)
-        return queries.view(B, self.chunk_len, self.action_hidden_dim)
+    def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
+        """Load checkpoints written before delta_head was renamed."""
+        remapped = dict(state_dict)
+        legacy_marker = "world_model.delta_head."
+        current_marker = "world_model.residual_predictor."
+        for key in tuple(remapped):
+            if legacy_marker not in key:
+                continue
+            current_key = key.replace(legacy_marker, current_marker)
+            remapped.setdefault(current_key, remapped[key])
+            del remapped[key]
+        return remapped
 
     def _pool_visual_tokens_to_action_queries(
         self,
@@ -718,13 +553,6 @@ class LeWM_OFT(baseframework):
             "effective_rank": effective_rank,
         }
 
-    def _build_oft_context(
-        self, raw_latent: torch.Tensor, pred_future_latent: torch.Tensor
-    ) -> torch.Tensor:
-        current_latent = raw_latent[:, : self.wm_ctx_len]
-        future_latent = self.future_action_context_proj(pred_future_latent)
-        return torch.cat([current_latent, future_latent], dim=1)
-
     def _hash_instruction(self, instruction: Optional[str]) -> int:
         """Map an instruction string to a stable embedding-table bucket.
 
@@ -759,26 +587,20 @@ class LeWM_OFT(baseframework):
             future = example.get("future_images")
             if future is None:
                 raise KeyError(
-                    "LeWMOFT.use_future_latent=True requires 'future_images' in each "
+                    "LeWMOFT requires 'future_images' in each "
                     "example (enable future-frame loading in the data config)."
                 )
             frames_per_example.append([current] + list(future))
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            if self.use_visual_token_wm:
-                patch_tokens = self.backbone.encode_patch_frames(frames_per_example)  # (B, 1+Tf, V, N, D)
-            else:
-                raw_latent = self.backbone.encode_frames(frames_per_example)  # (B, 1+Tf, V*C)
+            patch_tokens = self.backbone.encode_patch_frames(
+                frames_per_example
+            )  # (B, 1+Tf, V, N, D)
 
         with torch.autocast("cuda", dtype=torch.float32):
-            if self.use_visual_token_wm:
-                latent, content_latent = self.visual_token_pooler(
-                    patch_tokens.float(), return_content=True
-                )  # (B, 1+Tf, K, C)
-            else:
-                raw_latent = raw_latent.float()
-                latent = self.view_fuse(raw_latent)  # fuse camera views -> (B, 1+Tf, C)
-                latent = self.latent_norm(latent)  # normalize to ~unit variance for the flow WM
+            latent, content_latent = self.visual_token_pooler(
+                patch_tokens.float(), return_content=True
+            )  # (B, 1+Tf, K, C)
             task_emb = self._embed_task(instructions, device=latent.device)
             current_state = (
                 self._current_state_tensor(examples, latent.device)
@@ -786,48 +608,30 @@ class LeWM_OFT(baseframework):
                 else None
             )
 
-            # Macro-actions: split the per-step action chunk into n_future
-            # segments, one per predicted future latent (drives frame i->i+1).
             B = latent.shape[0]
-            macro_actions = actions_target.reshape(
-                B, self.n_future, self.wm_segment_len * actions_target.shape[-1]
+            wm_out = self.world_model(
+                latent, ctx_len=self.wm_ctx_len, goal=task_emb
             )
-
-            wm_out = self.world_model.flow_loss(
-                latent, macro_actions, ctx_len=self.wm_ctx_len, goal=task_emb
-            )
-            pred_future_latent = wm_out["pred_future_latent"]  # (B, Tf, C)
-            # When the latent flow is disabled, the flow z0 estimate is
-            # meaningless -> condition the OFT head (and state probe) on the
-            # deterministic delta-head prediction instead.
-            if self.oft_future_from_delta and "delta_future_latent" in wm_out:
-                pred_future_latent = wm_out["delta_future_latent"]
+            pred_future_latent = wm_out["pred_future_latent"]
 
             # State-probe input: [current real latent, predicted future latents].
             head_tokens = torch.cat([latent[:, : self.wm_ctx_len], pred_future_latent], dim=1)
 
-            if self.use_visual_token_wm:
-                pred_content = self.visual_token_pooler.remove_position(pred_future_latent)
-                source_div, source_var, source_cos = self._visual_token_regularization(
-                    content_latent
-                )
-                pred_div, pred_var, pred_cos = self._visual_token_regularization(
-                    pred_content
-                )
-                visual_token_diversity_loss = 0.5 * (source_div + pred_div)
-                visual_token_variance_loss = 0.5 * (source_var + pred_var)
-                visual_token_mean_cosine = 0.5 * (source_cos + pred_cos)
-                if self.visual_diagnostics:
-                    content_diag = self._visual_content_diagnostics(content_latent)
-                    pred_content_diag = self._visual_content_diagnostics(pred_content)
+            pred_content = self.visual_token_pooler.remove_position(pred_future_latent)
+            source_div, source_var, source_cos = self._visual_token_regularization(
+                content_latent
+            )
+            pred_div, pred_var, pred_cos = self._visual_token_regularization(pred_content)
+            visual_token_diversity_loss = 0.5 * (source_div + pred_div)
+            visual_token_variance_loss = 0.5 * (source_var + pred_var)
+            visual_token_mean_cosine = 0.5 * (source_cos + pred_cos)
+            if self.visual_diagnostics:
+                content_diag = self._visual_content_diagnostics(content_latent)
+                pred_content_diag = self._visual_content_diagnostics(pred_content)
 
-            if self.use_visual_token_wm:
-                action_queries = self._pool_visual_tokens_to_action_queries(
-                    head_tokens, state=current_state
-                )
-            else:
-                oft_context = self._build_oft_context(raw_latent, pred_future_latent)
-                action_queries = self._pool_to_action_queries(oft_context)
+            action_queries = self._pool_visual_tokens_to_action_queries(
+                head_tokens, state=current_state
+            )
             pred_actions = self.action_model.predict_action(action_queries)
             full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
             prefix_l1_action_loss = None
@@ -852,7 +656,7 @@ class LeWM_OFT(baseframework):
                 ) / (1.0 + self.random_prefix_loss_weight)
             else:
                 l1_action_loss = full_l1_action_loss
-            if self.use_visual_token_wm and self.visual_diagnostics:
+            if self.visual_diagnostics:
                 with torch.no_grad():
                     ablated_tokens = head_tokens[:1].detach().clone()
                     ablated_tokens[:, self.wm_ctx_len :] = ablated_tokens[
@@ -869,25 +673,16 @@ class LeWM_OFT(baseframework):
                         pred_actions[:1].detach().abs().mean() + 1e-6
                     )
 
-            flow_latent_loss = wm_out["flow_latent_loss"]
-            flow_action_loss = wm_out["flow_action_loss"]
-            flow_aux_loss = self.loss_latent_weight * flow_latent_loss + self.loss_action_weight * flow_action_loss
-            delta_latent_loss = wm_out.get("delta_latent_loss")
-            if delta_latent_loss is not None:
-                flow_aux_loss = flow_aux_loss + self.loss_delta_weight * delta_latent_loss
-            delta_sigreg_loss = wm_out.get("delta_sigreg_loss")
-            if delta_sigreg_loss is not None and self.loss_delta_sigreg_weight > 0:
-                flow_aux_loss = flow_aux_loss + self.loss_delta_sigreg_weight * delta_sigreg_loss
-            if self.use_visual_token_wm:
-                flow_aux_loss = (
-                    flow_aux_loss
-                    + self.visual_token_diversity_weight * visual_token_diversity_loss
-                    + self.visual_token_variance_weight * visual_token_variance_loss
-                )
-            if self.action_source == "oft":
-                total_loss = l1_action_loss + flow_aux_loss
-            else:
-                total_loss = flow_aux_loss
+            latent_loss = wm_out["latent_loss"]
+            total_loss = (
+                l1_action_loss
+                + self.loss_latent_weight * latent_loss
+                + self.visual_token_diversity_weight * visual_token_diversity_loss
+                + self.visual_token_variance_weight * visual_token_variance_loss
+            )
+            sigreg_loss = wm_out.get("sigreg_loss")
+            if sigreg_loss is not None:
+                total_loss = total_loss + self.loss_sigreg_weight * sigreg_loss
 
             # === State probe: ground latents in (future) physical state ===
             # Decode [current real latent, predicted future latents] back to the
@@ -906,7 +701,7 @@ class LeWM_OFT(baseframework):
                 )  # (B, 1+Tf, D_state)
                 T_head = head_tokens.shape[1]
                 state_target = states[:, :T_head, : self.state_probe_dim]
-                state_input = head_tokens.mean(dim=2) if self.use_visual_token_wm else head_tokens
+                state_input = head_tokens.mean(dim=2)
                 state_pred = self.state_probe(state_input.to(torch.float32))
                 state_loss = self.state_loss_fn(state_pred, state_target)
                 total_loss = total_loss + self.loss_state_weight * state_loss
@@ -915,16 +710,13 @@ class LeWM_OFT(baseframework):
             "action_loss": total_loss,
             "l1_action_loss": l1_action_loss.detach(),
             "full_l1_action_loss": full_l1_action_loss.detach(),
-            "flow_latent_loss": flow_latent_loss.detach(),
-            "flow_action_loss": flow_action_loss.detach(),
+            "latent_loss": latent_loss.detach(),
         }
         if prefix_l1_action_loss is not None:
             out["prefix_l1_action_loss"] = prefix_l1_action_loss.detach()
             out["sampled_prefix_mean"] = sampled_prefix_mean.detach()
-        if delta_latent_loss is not None:
-            out["delta_latent_loss"] = delta_latent_loss.detach()
-        if delta_sigreg_loss is not None:
-            out["delta_sigreg_loss"] = delta_sigreg_loss.detach()
+        if sigreg_loss is not None:
+            out["sigreg_loss"] = sigreg_loss.detach()
         for metric_name in (
             "delta_scale",
             "delta_target_rms",
@@ -937,26 +729,21 @@ class LeWM_OFT(baseframework):
         ):
             if metric_name in wm_out:
                 out[metric_name] = wm_out[metric_name].detach()
-        if self.use_visual_token_wm:
-            out["visual_token_diversity_loss"] = visual_token_diversity_loss.detach()
-            out["visual_token_variance_loss"] = visual_token_variance_loss.detach()
-            out["visual_token_mean_cosine"] = visual_token_mean_cosine.detach()
-            if self.visual_diagnostics:
-                out["visual_content_spatial_std"] = content_diag["spatial_std"]
-                out["visual_content_sample_std"] = content_diag["sample_std"]
-                out["visual_content_mean_cosine"] = content_diag["mean_cosine"]
-                out["visual_content_effective_rank"] = content_diag["effective_rank"]
-                out["visual_pred_content_spatial_std"] = pred_content_diag[
-                    "spatial_std"
-                ]
-                out["visual_pred_content_mean_cosine"] = pred_content_diag[
-                    "mean_cosine"
-                ]
-                out["visual_pred_content_effective_rank"] = pred_content_diag[
-                    "effective_rank"
-                ]
-                out["future_action_sensitivity"] = future_action_sensitivity
-                out["future_action_sensitivity_ratio"] = future_action_sensitivity_ratio
+        out["visual_token_diversity_loss"] = visual_token_diversity_loss.detach()
+        out["visual_token_variance_loss"] = visual_token_variance_loss.detach()
+        out["visual_token_mean_cosine"] = visual_token_mean_cosine.detach()
+        if self.visual_diagnostics:
+            out["visual_content_spatial_std"] = content_diag["spatial_std"]
+            out["visual_content_sample_std"] = content_diag["sample_std"]
+            out["visual_content_mean_cosine"] = content_diag["mean_cosine"]
+            out["visual_content_effective_rank"] = content_diag["effective_rank"]
+            out["visual_pred_content_spatial_std"] = pred_content_diag["spatial_std"]
+            out["visual_pred_content_mean_cosine"] = pred_content_diag["mean_cosine"]
+            out["visual_pred_content_effective_rank"] = pred_content_diag[
+                "effective_rank"
+            ]
+            out["future_action_sensitivity"] = future_action_sensitivity
+            out["future_action_sensitivity_ratio"] = future_action_sensitivity_ratio
         if self.use_state_probe:
             out["state_loss"] = state_loss.detach()
         return out
@@ -978,58 +765,27 @@ class LeWM_OFT(baseframework):
                 frames = resize_images(frames, target_size=train_obs_image_size)
             frames_per_example.append(frames)
 
-        # === World-model path: imagine future latents + flow-sample actions ===
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            if self.use_visual_token_wm:
-                patch_tokens = self.backbone.encode_patch_frames(frames_per_example)  # (B, 1, V, N, D)
-            else:
-                raw_latent = self.backbone.encode_frames(frames_per_example)  # (B, 1, V*C)
+            patch_tokens = self.backbone.encode_patch_frames(
+                frames_per_example
+            )  # (B, ctx, V, N, D)
 
         with torch.autocast("cuda", dtype=torch.float32):
-            if self.use_visual_token_wm:
-                latent = self.visual_token_pooler(patch_tokens.float())  # (B, 1, K, C)
-            else:
-                raw_latent = raw_latent.float()
-                latent = self.view_fuse(raw_latent)  # fuse camera views -> (B, 1, C)
-                latent = self.latent_norm(latent)  # normalize to ~unit variance for the flow WM
+            latent = self.visual_token_pooler(patch_tokens.float())
             task_emb = self._embed_task(instructions, device=latent.device)
             current_state = (
                 self._current_state_tensor(examples, latent.device)
                 if self.use_state_cond
                 else None
             )
-            # The visual-token OFT path consumes only the deterministic delta
-            # rollout. Avoid running a multi-step flow sampler whose latent and
-            # action outputs would both be discarded.
-            direct_visual_delta = (
-                self.use_visual_token_wm
-                and self.action_source == "oft"
-                and self.use_delta_head
-                and self.oft_future_from_delta
+            pred_future_latent = self.world_model.regress_future(latent, goal=task_emb)
+            head_tokens = torch.cat(
+                [latent[:, : self.wm_ctx_len], pred_future_latent], dim=1
             )
-            if direct_visual_delta:
-                pred_future_latent = self.world_model.regress_future(latent, goal=task_emb)
-                pred_future_action = None
-            else:
-                pred_future_latent, pred_future_action = self.world_model.sample_future(
-                    latent, goal=task_emb, n_future=self.n_future, return_action=True
-                )  # (B, Tf, wm_segment_len*action_dim)
-            B = latent.shape[0]
-            raw_action_dim = int(self.config.framework.action_model.action_dim)
-            if self.action_source == "flow":
-                # Reshape the flow macro-actions into a per-step chunk:
-                # (B, n_future, seg*A) -> (B, horizon, A).
-                pred_actions = pred_future_action.reshape(B, self.action_horizon, raw_action_dim)
-            else:
-                if self.use_visual_token_wm:
-                    head_tokens = torch.cat([latent[:, : self.wm_ctx_len], pred_future_latent], dim=1)
-                    action_queries = self._pool_visual_tokens_to_action_queries(
-                        head_tokens, state=current_state
-                    )
-                else:
-                    oft_context = self._build_oft_context(raw_latent, pred_future_latent)
-                    action_queries = self._pool_to_action_queries(oft_context)
-                pred_actions = self.action_model.predict_action(action_queries)
+            action_queries = self._pool_visual_tokens_to_action_queries(
+                head_tokens, state=current_state
+            )
+            pred_actions = self.action_model.predict_action(action_queries)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         return {"normalized_actions": normalized_actions}

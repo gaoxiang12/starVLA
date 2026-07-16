@@ -465,14 +465,11 @@ class VLATrainer(TrainerUtils):
                 self.lr_scheduler.step()
 
         step_log = {"action_dit_loss": action_loss.item()}
-        # Surface any auxiliary scalar losses the framework reports (e.g. the
-        # world-model flow_latent_loss / flow_action_loss for LeWM-OFT).
+        # Surface any auxiliary scalar losses the framework reports.
         for k in (
             "l1_action_loss",
-            "flow_latent_loss",
-            "flow_action_loss",
-            "delta_latent_loss",
-            "delta_sigreg_loss",
+            "latent_loss",
+            "sigreg_loss",
             "delta_scale",
             "delta_target_rms",
             "delta_pred_rms",

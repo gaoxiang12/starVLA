@@ -278,6 +278,10 @@ class TrainerUtils:
         except Exception as e:
             raise RuntimeError(f"❌ loading checkpoint failed: {e}")
 
+        remap_checkpoint = getattr(model, "remap_checkpoint_state_dict", None)
+        if remap_checkpoint is not None:
+            checkpoint = remap_checkpoint(checkpoint)
+
         loaded_modules = []
 
         if reload_modules:  # partial load

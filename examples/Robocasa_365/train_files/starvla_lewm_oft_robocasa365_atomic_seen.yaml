@@ -14,29 +14,14 @@ framework:
     base_wm: ./dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
     train_encoder: false
     num_views: 3
-    use_future_latent: true
     n_future: 2
     ctx_len: 1
-    predictor_dim: 384
-    predictor_layers: 4
-    predictor_heads: 6
-    predictor_ffn: 1024
-    flow_sample_steps: 10
-    action_source: oft
-    loss_latent_weight: 0.0
-    loss_action_weight: 0.5
-    use_delta_head: true
-    loss_delta_weight: 1.0
-    delta_head_type: transformer
-    delta_head_dim: 384
-    delta_head_depth: 4
-    delta_head_heads: 6
-    delta_head_ffn: 1024
-    delta_head_sigreg_weight: 0.02
-    delta_head_condition_on_action: false
-    delta_head_inference: true
-    oft_future_from_delta: true
-    use_visual_token_wm: true
+    loss_latent_weight: 1.0
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    residual_predictor_sigreg_weight: 0.02
     visual_tokens_per_view: 16
     visual_token_dim: 384
     visual_token_diversity_weight: 0.02

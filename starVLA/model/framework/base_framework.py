@@ -246,6 +246,7 @@ class baseframework(PreTrainedModel):
             model_state_dict = load_file(str(pretrained_checkpoint))
         else:
             model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu")
+        model_state_dict = FrameworkModel.remap_checkpoint_state_dict(model_state_dict)
         # logger.info(f"Loading model weights from `{pretrained_checkpoint}`")
         model_state = FrameworkModel.state_dict()
         compatible_state_dict = {
@@ -264,4 +265,8 @@ class baseframework(PreTrainedModel):
         # **ensure model is on GPU**
         FrameworkModel = FrameworkModel
         return FrameworkModel
+
+    def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
+        """Translate legacy checkpoint keys before compatibility filtering."""
+        return state_dict
 

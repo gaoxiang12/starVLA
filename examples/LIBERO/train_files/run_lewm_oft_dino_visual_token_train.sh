@@ -51,7 +51,6 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.name ${Framework_name} \
   --framework.world_model.base_wm ${base_wm} \
   --framework.world_model.train_encoder ${TRAIN_ENCODER:-false} \
-  --framework.world_model.use_visual_token_wm true \
   --framework.world_model.visual_tokens_per_view ${visual_tokens_per_view} \
   --framework.world_model.visual_token_dim ${visual_token_dim} \
   --framework.world_model.visual_token_diversity_weight ${TOKEN_DIVERSITY_WEIGHT:-0.02} \
@@ -66,18 +65,12 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.world_model.state_cond_only ${STATE_COND_ONLY:-false} \
   --framework.world_model.ctx_len ${ctx_len} \
   --framework.world_model.n_future ${n_future} \
-  --framework.world_model.action_source ${ACTION_SOURCE:-oft} \
-  --framework.world_model.loss_latent_weight ${LATENT_WEIGHT:-0.0} \
-  --framework.world_model.loss_action_weight ${ACTION_WEIGHT:-0.5} \
-  --framework.world_model.use_delta_head true \
-  --framework.world_model.loss_delta_weight ${DELTA_WEIGHT:-1.0} \
-  --framework.world_model.delta_head_dim ${DELTA_DIM:-384} \
-  --framework.world_model.delta_head_depth ${DELTA_DEPTH:-4} \
-  --framework.world_model.delta_head_heads ${DELTA_HEADS:-6} \
-  --framework.world_model.delta_head_ffn ${DELTA_FFN:-1024} \
-  --framework.world_model.delta_head_sigreg_weight ${DELTA_SIGREG_WEIGHT:-0.02} \
-  --framework.world_model.delta_head_inference true \
-  --framework.world_model.oft_future_from_delta true \
+  --framework.world_model.loss_latent_weight ${LATENT_WEIGHT:-1.0} \
+  --framework.world_model.residual_predictor_dim ${RESIDUAL_DIM:-384} \
+  --framework.world_model.residual_predictor_depth ${RESIDUAL_DEPTH:-4} \
+  --framework.world_model.residual_predictor_heads ${RESIDUAL_HEADS:-6} \
+  --framework.world_model.residual_predictor_ffn ${RESIDUAL_FFN:-1024} \
+  --framework.world_model.residual_predictor_sigreg_weight ${RESIDUAL_SIGREG_WEIGHT:-0.02} \
   --framework.world_model.use_state_probe false \
   --framework.action_model.action_horizon ${action_horizon} \
   --datasets.vla_data.data_root_dir ${libero_data_root} \

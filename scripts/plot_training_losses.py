@@ -25,9 +25,8 @@ DEFAULT_GROUPS = (
         (
             "action_dit_loss",
             "l1_action_loss",
-            "flow_latent_loss",
-            "flow_action_loss",
-            "delta_latent_loss",
+            "latent_loss",
+            "sigreg_loss",
         ),
     ),
     (
