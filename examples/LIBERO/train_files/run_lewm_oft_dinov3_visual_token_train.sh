@@ -74,6 +74,20 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.world_model.residual_predictor_heads ${RESIDUAL_HEADS:-6} \
   --framework.world_model.residual_predictor_ffn ${RESIDUAL_FFN:-1024} \
   --framework.world_model.residual_predictor_sigreg_weight ${RESIDUAL_SIGREG_WEIGHT:-0.02} \
+  --framework.world_model.transition_mode ${TRANSITION_MODE:-off} \
+  --framework.world_model.transition_hidden_dim ${TRANSITION_HIDDEN_DIM:-384} \
+  --framework.world_model.transition_num_tokens ${TRANSITION_NUM_TOKENS:-8} \
+  --framework.world_model.transition_encoder_depth ${TRANSITION_ENCODER_DEPTH:-2} \
+  --framework.world_model.transition_decoder_depth ${TRANSITION_DECODER_DEPTH:-2} \
+  --framework.world_model.transition_resampler_depth ${TRANSITION_RESAMPLER_DEPTH:-2} \
+  --framework.world_model.transition_heads ${TRANSITION_HEADS:-6} \
+  --framework.world_model.transition_teacher_recon_weight ${TRANSITION_TEACHER_WEIGHT:-1.0} \
+  --framework.world_model.transition_alignment_weight ${TRANSITION_ALIGNMENT_WEIGHT:-0.005} \
+  --framework.world_model.transition_decode_weight ${TRANSITION_DECODE_WEIGHT:-0.05} \
+  --framework.world_model.transition_cosine_weight ${TRANSITION_COSINE_WEIGHT:-0.1} \
+  --framework.world_model.transition_alignment_l1_weight ${TRANSITION_ALIGNMENT_L1_WEIGHT:-0.1} \
+  --framework.world_model.transition_detach_action_queries ${TRANSITION_DETACH_ACTION_QUERIES:-false} \
+  --framework.world_model.transition_joint_freeze_base ${TRANSITION_JOINT_FREEZE_BASE:-true} \
   --framework.world_model.use_state_probe false \
   --datasets.vla_data.data_root_dir ${libero_data_root} \
   --datasets.vla_data.data_mix ${data_mix} \

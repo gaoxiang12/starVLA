@@ -39,6 +39,10 @@ from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
 )
+from starVLA.model.modules.world_model.wala_transition_auxiliary import (
+    WALAVisualTransitionAuxiliary,
+    token_cosine_loss,
+)
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
@@ -281,6 +285,25 @@ class LeWMOFTDefaultConfig:
             "use_state_probe": False,
             "state_dim": 8,
             "loss_state_weight": 0.5,
+            # === Optional WALA-style future-transition teacher ===
+            # Disabled by default, so existing checkpoints and inference are
+            # unchanged. ``combined`` trains teacher, student, and deployed
+            # action modules together in one run. The legacy staged modes
+            # teacher -> student -> joint remain available for ablations.
+            "transition_mode": "off",
+            "transition_hidden_dim": 384,
+            "transition_num_tokens": 8,
+            "transition_encoder_depth": 2,
+            "transition_decoder_depth": 2,
+            "transition_resampler_depth": 2,
+            "transition_heads": 6,
+            "transition_teacher_recon_weight": 1.0,
+            "transition_alignment_weight": 0.005,
+            "transition_decode_weight": 0.05,
+            "transition_cosine_weight": 0.1,
+            "transition_alignment_l1_weight": 0.1,
+            "transition_detach_action_queries": False,
+            "transition_joint_freeze_base": True,
         }
     )
 
@@ -441,6 +464,60 @@ class LeWM_OFT(baseframework):
             state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
         )
 
+        self.transition_mode = str(wm_cfg.get("transition_mode", "off")).lower()
+        if self.transition_mode not in {
+            "off",
+            "teacher",
+            "student",
+            "joint",
+            "combined",
+        }:
+            raise ValueError(
+                "world_model.transition_mode must be one of "
+                "off/teacher/student/joint/combined, "
+                f"got {self.transition_mode!r}"
+            )
+        self.transition_auxiliary = None
+        if self.transition_mode != "off":
+            transition_hidden_dim = int(wm_cfg.get("transition_hidden_dim", 384))
+            self.transition_auxiliary = WALAVisualTransitionAuxiliary(
+                latent_dim=self.visual_token_dim,
+                action_hidden_dim=self.action_hidden_dim,
+                hidden_dim=transition_hidden_dim,
+                num_visual_tokens=self.num_visual_tokens,
+                num_future=self.n_future,
+                num_action_queries=self.chunk_len,
+                num_transition_tokens=int(wm_cfg.get("transition_num_tokens", 8)),
+                encoder_depth=int(wm_cfg.get("transition_encoder_depth", 2)),
+                decoder_depth=int(wm_cfg.get("transition_decoder_depth", 2)),
+                resampler_depth=int(wm_cfg.get("transition_resampler_depth", 2)),
+                num_heads=int(wm_cfg.get("transition_heads", 6)),
+            )
+            self.transition_teacher_recon_weight = float(
+                wm_cfg.get("transition_teacher_recon_weight", 1.0)
+            )
+            self.transition_alignment_weight = float(
+                wm_cfg.get("transition_alignment_weight", 0.005)
+            )
+            self.transition_decode_weight = float(
+                wm_cfg.get("transition_decode_weight", 0.05)
+            )
+            self.transition_cosine_weight = float(
+                wm_cfg.get("transition_cosine_weight", 0.1)
+            )
+            self.transition_alignment_l1_weight = float(
+                wm_cfg.get("transition_alignment_l1_weight", 0.1)
+            )
+            self.transition_detach_action_queries = bool(
+                wm_cfg.get(
+                    "transition_detach_action_queries",
+                    self.transition_mode == "student",
+                )
+            )
+            self.transition_joint_freeze_base = bool(
+                wm_cfg.get("transition_joint_freeze_base", True)
+            )
+
         self.use_state_probe = bool(wm_cfg.get("use_state_probe", False))
         if self.use_state_probe:
             self.state_probe_dim = int(wm_cfg.get("state_dim", 8))
@@ -455,6 +532,45 @@ class LeWM_OFT(baseframework):
         if self.use_state_cond and bool(wm_cfg.get("state_cond_only", False)):
             self.requires_grad_(False)
             self.visual_action_head.state_encoder.requires_grad_(True)
+
+        # Stage isolation is enforced here rather than relying on a long and
+        # error-prone freeze_modules string in launch scripts.
+        if self.transition_mode == "teacher":
+            self.requires_grad_(False)
+            self.transition_auxiliary.teacher_encoder.requires_grad_(True)
+            self.transition_auxiliary.teacher_decoder.requires_grad_(True)
+        elif self.transition_mode == "student":
+            self.requires_grad_(False)
+            self.transition_auxiliary.student_resampler.requires_grad_(True)
+        elif self.transition_mode == "joint":
+            self.transition_auxiliary.teacher_encoder.requires_grad_(False)
+            self.transition_auxiliary.teacher_decoder.requires_grad_(False)
+            self.transition_auxiliary.student_resampler.requires_grad_(True)
+            if self.transition_joint_freeze_base:
+                # Preserve the validated DINO -> pooled-token -> latent-world
+                # coordinate system. Joint training adapts only the deployed
+                # action readout/model plus the transition-token student.
+                self.backbone.requires_grad_(False)
+                self.visual_token_pooler.requires_grad_(False)
+                self.world_model.requires_grad_(False)
+                self.task_embedding.requires_grad_(False)
+                if self.use_state_probe:
+                    self.state_probe.requires_grad_(False)
+        elif self.transition_mode == "combined":
+            # One-run variant: learn the future-aware tokenizer/decoder and
+            # the action-query student concurrently while adapting the
+            # deployed action readout. Keep the validated visual coordinate
+            # system fixed exactly as in the staged joint phase.
+            self.transition_auxiliary.teacher_encoder.requires_grad_(True)
+            self.transition_auxiliary.teacher_decoder.requires_grad_(True)
+            self.transition_auxiliary.student_resampler.requires_grad_(True)
+            if self.transition_joint_freeze_base:
+                self.backbone.requires_grad_(False)
+                self.visual_token_pooler.requires_grad_(False)
+                self.world_model.requires_grad_(False)
+                self.task_embedding.requires_grad_(False)
+                if self.use_state_probe:
+                    self.state_probe.requires_grad_(False)
 
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
         """Load checkpoints written before delta_head was renamed."""
@@ -571,6 +687,99 @@ class LeWM_OFT(baseframework):
         )
         return self.task_embedding(ids)  # (B, task_emb_dim)
 
+    def _transition_auxiliary_losses(
+        self,
+        action_queries: torch.Tensor,
+        latent: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Compute training-only teacher/student transition objectives.
+
+        Ground-truth future tokens are detached before entering the teacher.
+        The mature baseline's visual coordinate system therefore cannot move to
+        make the auxiliary reconstruction easier.
+        """
+
+        if self.transition_auxiliary is None:
+            raise RuntimeError("transition auxiliary is disabled")
+        anchor = latent[:, self.wm_ctx_len - 1].detach()
+        future = latent[
+            :, self.wm_ctx_len : self.wm_ctx_len + self.n_future
+        ].detach()
+        scale = self.world_model.delta_scale.detach().clamp_min(
+            self.world_model._stats_eps
+        )
+        target_delta = (future - anchor[:, None]) / scale
+
+        if self.transition_mode in {"teacher", "combined"}:
+            teacher_tokens, teacher_prediction = self.transition_auxiliary.teacher_forward(
+                anchor, target_delta
+            )
+        else:
+            with torch.no_grad():
+                teacher_tokens, teacher_prediction = (
+                    self.transition_auxiliary.teacher_forward(anchor, target_delta)
+                )
+
+        teacher_l1 = F.smooth_l1_loss(
+            teacher_prediction.float(), target_delta.float()
+        )
+        teacher_cosine = token_cosine_loss(teacher_prediction, target_delta)
+        teacher_reconstruction = (
+            teacher_l1 + self.transition_cosine_weight * teacher_cosine
+        )
+
+        zero = teacher_reconstruction.detach() * 0.0
+        output = {
+            "transition_teacher_recon_loss": teacher_reconstruction,
+            "transition_teacher_l1_loss": teacher_l1,
+            "transition_teacher_cosine_loss": teacher_cosine,
+            "transition_alignment_loss": zero,
+            "transition_alignment_cosine_loss": zero,
+            "transition_alignment_l1_loss": zero,
+            "transition_decode_loss": zero,
+            "transition_decode_l1_loss": zero,
+            "transition_decode_cosine_loss": zero,
+        }
+        if self.transition_mode == "teacher":
+            return output
+
+        student_input = (
+            action_queries.detach()
+            if self.transition_detach_action_queries
+            else action_queries
+        )
+        student_tokens, student_prediction = self.transition_auxiliary.student_forward(
+            student_input, anchor
+        )
+        target_tokens = teacher_tokens.detach()
+        alignment_cosine = token_cosine_loss(student_tokens, target_tokens)
+        student_ln = F.layer_norm(
+            student_tokens.float(), student_tokens.shape[-1:]
+        )
+        target_ln = F.layer_norm(target_tokens.float(), target_tokens.shape[-1:])
+        alignment_l1 = F.smooth_l1_loss(student_ln, target_ln)
+        alignment = (
+            alignment_cosine
+            + self.transition_alignment_l1_weight * alignment_l1
+        )
+
+        decode_l1 = F.smooth_l1_loss(
+            student_prediction.float(), target_delta.float()
+        )
+        decode_cosine = token_cosine_loss(student_prediction, target_delta)
+        decode = decode_l1 + self.transition_cosine_weight * decode_cosine
+        output.update(
+            {
+                "transition_alignment_loss": alignment,
+                "transition_alignment_cosine_loss": alignment_cosine,
+                "transition_alignment_l1_loss": alignment_l1,
+                "transition_decode_loss": decode,
+                "transition_decode_l1_loss": decode_l1,
+                "transition_decode_cosine_loss": decode_cosine,
+            }
+        )
+        return output
+
     def forward(self, examples: List[dict] = None, **kwargs) -> Tuple:
         instructions = [example["lang"] for example in examples]
         actions = [example["action"] for example in examples]
@@ -610,7 +819,13 @@ class LeWM_OFT(baseframework):
 
             B = latent.shape[0]
             wm_out = self.world_model(
-                latent, ctx_len=self.wm_ctx_len, goal=task_emb
+                latent,
+                ctx_len=self.wm_ctx_len,
+                goal=task_emb,
+                # A frozen parameter set can still mutate EMA buffers. Keep
+                # the 200k baseline's normalization fixed in every auxiliary
+                # stage so its deployed predictions do not drift implicitly.
+                update_stats=self.transition_mode == "off",
             )
             pred_future_latent = wm_out["pred_future_latent"]
 
@@ -631,6 +846,11 @@ class LeWM_OFT(baseframework):
 
             action_queries = self._pool_visual_tokens_to_action_queries(
                 head_tokens, state=current_state
+            )
+            transition_losses = (
+                self._transition_auxiliary_losses(action_queries, latent)
+                if self.transition_mode != "off"
+                else None
             )
             pred_actions = self.action_model.predict_action(action_queries)
             full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
@@ -706,6 +926,27 @@ class LeWM_OFT(baseframework):
                 state_loss = self.state_loss_fn(state_pred, state_target)
                 total_loss = total_loss + self.loss_state_weight * state_loss
 
+            if transition_losses is not None:
+                if self.transition_mode == "teacher":
+                    total_loss = (
+                        self.transition_teacher_recon_weight
+                        * transition_losses["transition_teacher_recon_loss"]
+                    )
+                else:
+                    total_loss = (
+                        total_loss
+                        + (
+                            self.transition_teacher_recon_weight
+                            * transition_losses["transition_teacher_recon_loss"]
+                            if self.transition_mode == "combined"
+                            else 0.0
+                        )
+                        + self.transition_alignment_weight
+                        * transition_losses["transition_alignment_loss"]
+                        + self.transition_decode_weight
+                        * transition_losses["transition_decode_loss"]
+                    )
+
         out = {
             "action_loss": total_loss,
             "l1_action_loss": l1_action_loss.detach(),
@@ -746,6 +987,9 @@ class LeWM_OFT(baseframework):
             out["future_action_sensitivity_ratio"] = future_action_sensitivity_ratio
         if self.use_state_probe:
             out["state_loss"] = state_loss.detach()
+        if transition_losses is not None:
+            for name, value in transition_losses.items():
+                out[name] = value.detach()
         return out
 
     @torch.inference_mode()

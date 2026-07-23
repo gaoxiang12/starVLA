@@ -338,6 +338,13 @@ class VLATrainer(TrainerUtils):
                 group_name = group.get("name", str(i))
                 metrics[f"learning_rate/{group_name}"] = last_lrs[i] if i < len(last_lrs) else last_lrs[-1]
             metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
+            # Keep a local, dependency-free metric history even when W&B is
+            # disabled or misconfigured. This is especially important for
+            # staged runs whose checkpoint should be gated on loss quality.
+            local_record = {"step": self.completed_steps, **metrics}
+            metrics_path = os.path.join(self.config.output_dir, "metrics.jsonl")
+            with open(metrics_path, "a", encoding="utf-8") as metrics_file:
+                metrics_file.write(json.dumps(local_record, allow_nan=False) + "\n")
             if getattr(self, "_wandb_enabled", False):
                 try:
                     wandb.log(metrics, step=self.completed_steps)
@@ -491,6 +498,15 @@ class VLATrainer(TrainerUtils):
             "future_action_sensitivity",
             "future_action_sensitivity_ratio",
             "state_loss",
+            "transition_teacher_recon_loss",
+            "transition_teacher_l1_loss",
+            "transition_teacher_cosine_loss",
+            "transition_alignment_loss",
+            "transition_alignment_cosine_loss",
+            "transition_alignment_l1_loss",
+            "transition_decode_loss",
+            "transition_decode_l1_loss",
+            "transition_decode_cosine_loss",
         ):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):

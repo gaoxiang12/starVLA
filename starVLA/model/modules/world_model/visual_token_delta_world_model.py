@@ -179,6 +179,7 @@ class VisualTokenLatentWorldModel(nn.Module):
         *,
         ctx_len: int,
         goal: Optional[torch.Tensor] = None,
+        update_stats: bool = True,
     ) -> dict[str, torch.Tensor]:
         batch_size, total_frames, num_tokens = latent.shape[:3]
         if num_tokens != self.num_tokens:
@@ -191,7 +192,7 @@ class VisualTokenLatentWorldModel(nn.Module):
         anchor = latent[:, ctx_len - 1 : ctx_len]
         future = latent[:, ctx_len : ctx_len + self.n_future]
         residual = (future - anchor).detach()
-        if self.training:
+        if self.training and update_stats:
             self._update_delta_scale(residual)
 
         scale = self.delta_scale.clamp_min(self._stats_eps)

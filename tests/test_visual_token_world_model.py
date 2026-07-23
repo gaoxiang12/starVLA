@@ -11,6 +11,10 @@ from starVLA.model.framework.WM4A.LeWMOFT import (
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
 )
+from starVLA.model.modules.world_model.wala_transition_auxiliary import (
+    WALAVisualTransitionAuxiliary,
+    token_cosine_loss,
+)
 
 
 class VisualTokenComponentsTest(unittest.TestCase):
@@ -171,6 +175,134 @@ class VisualTokenLatentWorldModelTest(unittest.TestCase):
             "sample_future",
         ):
             self.assertFalse(hasattr(model, removed_name))
+
+    def test_delta_scale_can_be_frozen_for_auxiliary_stages(self):
+        model = VisualTokenLatentWorldModel(
+            latent_dim=8,
+            goal_dim=6,
+            n_future=2,
+            num_tokens=4,
+            dim=16,
+            depth=1,
+            num_heads=4,
+            ffn_dim=32,
+        )
+        model.train()
+        model.delta_scale.fill_(3.0)
+        model._delta_scale_ready.fill_(1.0)
+        latent = torch.randn(2, 3, 4, 8)
+
+        model(latent, ctx_len=1, update_stats=False)
+
+        self.assertEqual(float(model.delta_scale), 3.0)
+
+
+class WALAVisualTransitionAuxiliaryTest(unittest.TestCase):
+    def _make_module(self):
+        return WALAVisualTransitionAuxiliary(
+            latent_dim=12,
+            action_hidden_dim=16,
+            hidden_dim=24,
+            num_visual_tokens=6,
+            num_future=2,
+            num_action_queries=4,
+            num_transition_tokens=3,
+            encoder_depth=1,
+            decoder_depth=1,
+            resampler_depth=1,
+            num_heads=4,
+        )
+
+    def test_teacher_reconstructs_ground_truth_transition_shape(self):
+        module = self._make_module()
+        current = torch.randn(2, 6, 12)
+        future_delta = torch.randn(2, 2, 6, 12)
+
+        tokens, reconstruction = module.teacher_forward(current, future_delta)
+        loss = torch.nn.functional.smooth_l1_loss(reconstruction, future_delta)
+        loss = loss + 0.1 * token_cosine_loss(reconstruction, future_delta)
+        loss.backward()
+
+        self.assertEqual(tokens.shape, (2, 3, 24))
+        self.assertEqual(reconstruction.shape, future_delta.shape)
+        self.assertTrue(
+            any(parameter.grad is not None for parameter in module.teacher_encoder.parameters())
+        )
+
+    def test_student_gradient_uses_frozen_teacher_decoder(self):
+        module = self._make_module()
+        module.teacher_encoder.requires_grad_(False)
+        module.teacher_decoder.requires_grad_(False)
+        current = torch.randn(2, 6, 12)
+        action_queries = torch.randn(2, 4, 16, requires_grad=True)
+
+        student_tokens, prediction = module.student_forward(action_queries, current)
+        loss = student_tokens.square().mean() + prediction.square().mean()
+        loss.backward()
+
+        self.assertEqual(student_tokens.shape, (2, 3, 24))
+        self.assertEqual(prediction.shape, (2, 2, 6, 12))
+        self.assertIsNotNone(action_queries.grad)
+        self.assertTrue(torch.isfinite(action_queries.grad).all())
+        self.assertTrue(
+            all(parameter.grad is None for parameter in module.teacher_decoder.parameters())
+        )
+
+    def test_combined_mode_updates_teacher_student_and_action_queries(self):
+        class _FrozenWorldModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("delta_scale", torch.tensor(2.0))
+                self._stats_eps = 1e-6
+
+        framework = object.__new__(LeWM_OFT)
+        torch.nn.Module.__init__(framework)
+        framework.transition_auxiliary = self._make_module()
+        framework.transition_mode = "combined"
+        framework.wm_ctx_len = 1
+        framework.n_future = 2
+        framework.world_model = _FrozenWorldModel()
+        framework.transition_cosine_weight = 0.1
+        framework.transition_alignment_l1_weight = 0.1
+        framework.transition_detach_action_queries = False
+
+        action_queries = torch.randn(2, 4, 16, requires_grad=True)
+        latent = torch.randn(2, 3, 6, 12, requires_grad=True)
+
+        losses = LeWM_OFT._transition_auxiliary_losses(
+            framework,
+            action_queries,
+            latent,
+        )
+        total = (
+            losses["transition_teacher_recon_loss"]
+            + 0.005 * losses["transition_alignment_loss"]
+            + 0.05 * losses["transition_decode_loss"]
+        )
+        total.backward()
+
+        self.assertIsNotNone(action_queries.grad)
+        self.assertIsNone(latent.grad)
+        for submodule in (
+            framework.transition_auxiliary.teacher_encoder,
+            framework.transition_auxiliary.teacher_decoder,
+            framework.transition_auxiliary.student_resampler,
+        ):
+            self.assertTrue(
+                any(
+                    parameter.grad is not None
+                    and torch.isfinite(parameter.grad).all()
+                    for parameter in submodule.parameters()
+                )
+            )
+
+    def test_teacher_validates_future_shape(self):
+        module = self._make_module()
+        with self.assertRaisesRegex(ValueError, "future_delta"):
+            module.teacher_forward(
+                torch.randn(2, 6, 12),
+                torch.randn(2, 1, 6, 12),
+            )
 
 
 if __name__ == "__main__":
