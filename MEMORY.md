@@ -26,6 +26,34 @@ instead of trusting an old snapshot.
 
   On 2026-07-22 this ran 11 tests successfully.
 
+
+## Long-running training process policy
+
+- Launch long training jobs detached from the interactive terminal with
+  `nohup` and `setsid`, redirect stdin from `/dev/null`, and redirect stdout and
+  stderr to a persistent `train.log`.
+- Save the background process PID in the run directory and verify the PID and
+  log after launch. A representative pattern is:
+
+  ```bash
+  nohup setsid env <training-environment> bash <launcher> \
+    > <run-dir>/train.log 2>&1 < /dev/null &
+  echo $! > <run-dir>/train.pid
+  ```
+
+- Do not rely on a Codex persistent PTY for future long-running training.
+- The run `lewm_oft_dinov3b_densepatch_action_zeroout_from200k` is an exception:
+  it was launched in a persistent PTY without `nohup` or `setsid`.
+
+## Loss defaults
+
+- Keep SIGReg disabled by default in all visual-token world-model training:
+  `residual_predictor_sigreg_weight: 0.0` (and legacy
+  `delta_head_sigreg_weight: 0.0`). Enable it only for an explicitly named
+  SIGReg ablation.
+- Keep direct supervised latent/residual prediction enabled by default with
+  weight `1.0`, unless an experiment explicitly studies its removal.
+
 ## DINOv3 LIBERO baseline
 
 - Current development branch: `dev.ai`.
@@ -137,11 +165,80 @@ instead of trusting an old snapshot.
   that file for stage analysis and launch with `WANDB_MODE=disabled` unless a
   real W&B entity is configured.
 
+
+## Patch Policy-style dense current-patch action residual
+
+- The validated DINOv3-B/16 encoder yields a `14 x 14 x 768` patch grid per
+  view. The baseline compresses this to a `4 x 4 x 384` grid per view before
+  its compact world model.
+- The low-risk Patch Policy experiment keeps that compact path frozen and adds
+  a training/deployment action residual that cross-attends the action queries
+  to all current-frame raw patches (`2 x 14 x 14`). It never consumes true
+  future patches.
+- The residual output projection is zero-initialized, so step-0 action outputs
+  are exactly equal to the validated 200k baseline while gradients can open the
+  dense branch immediately.
+- Launcher:
+
+  ```bash
+  CUDA_DEVS=<free-gpu-ids> \
+  ACCELERATE_BIN=.venv/bin/accelerate \
+  WANDB_MODE=disabled \
+  bash examples/LIBERO/train_files/run_lewm_oft_dinov3_dense_patch_action.sh
+  ```
+
+- Formal 20k-step run started on 2026-07-23 from the validated 200k baseline:
+
+  ```text
+  playground/Checkpoints/lewm_oft_dinov3b_densepatch_action_zeroout_from200k
+  ```
+
+  At step 100/500, action L1 was `0.05023 / 0.04813` and
+  `dense_patch_query_update_ratio` was `0.00790 / 0.01631`, confirming that the
+  branch is active. Monitor `action_dit_loss` for policy fitting and
+  `dense_patch_query_update_ratio` plus `dense_patch_residual_rms` for branch
+  usage. Checkpoints are written every 2k steps.
+
+## Dense-only 14x14 strict baseline control
+
+- The primary high-resolution experiment is a strict spatial-resolution control,
+  not a continuation from the validated 200k checkpoint. It starts from the
+  same raw pretrained DINOv3 encoder as the 4x4 baseline; every downstream
+  module starts randomly initialized.
+- The only intended model variable is spatial resolution: each of two views
+  keeps all `14 x 14 = 196` DINO patches (392 tokens/frame). The world model
+  predicts two future 392-token frames, and the action head reads the current
+  plus predicted future dense tokens. The 4x4 path and dense residual adapter
+  are disabled.
+- Match the baseline training protocol: all 131.131M parameters train for 200k
+  optimizer steps, per-GPU batch 8 on four GPUs (global batch 32), base/action
+  LR `1e-4`, encoder LR `1e-6`, latent loss weight 1, SIGReg weight 0, seed 42.
+- Launcher:
+
+  ```text
+  examples/LIBERO/train_files/run_lewm_oft_dinov3_dense14x14_200k_train_eval.sh
+  ```
+
+- The launcher automatically evaluates the final 200k checkpoint on
+  `libero_spatial`, `libero_object`, `libero_goal`, and `libero_10`, using seed
+  7, 10 trials per task, and the model execution horizon, then writes the same
+  success-rate summary format as the baseline.
+- Formal run directory:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_dense14x14_latent1_sigreg0_trainenc1e6_statecond_200k
+  ```
+
+- `train.log` contains the detached train/eval console stream and `train.pid`
+  contains the `nohup + setsid` supervisor PID. The job was queued on
+  2026-07-23 to start on GPUs 4-7 after the dense-residual ablation exits.
+  Re-check the PID, log, metrics, and GPU state rather than trusting this
+  volatile snapshot.
+
 ## Worktree safety
 
 - Preserve unrelated user-owned untracked files and directories, especially
-  `thirdparty/`, `BEHAVIOR-1K/`, DINO weights, and compact/interleaved experiment
-  files.
+  `thirdparty/`, `BEHAVIOR-1K/`, and DINO weights.
 - Tracked changes from the earlier `dino-compact-latent-wm` work were saved as:
 
   ```text

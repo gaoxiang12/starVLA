@@ -70,7 +70,7 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.world_model.residual_predictor_depth ${RESIDUAL_DEPTH:-4} \
   --framework.world_model.residual_predictor_heads ${RESIDUAL_HEADS:-6} \
   --framework.world_model.residual_predictor_ffn ${RESIDUAL_FFN:-1024} \
-  --framework.world_model.residual_predictor_sigreg_weight ${RESIDUAL_SIGREG_WEIGHT:-0.02} \
+  --framework.world_model.residual_predictor_sigreg_weight ${RESIDUAL_SIGREG_WEIGHT:-0.0} \
   --framework.world_model.use_state_probe false \
   --framework.action_model.action_horizon ${action_horizon} \
   --datasets.vla_data.data_root_dir ${libero_data_root} \

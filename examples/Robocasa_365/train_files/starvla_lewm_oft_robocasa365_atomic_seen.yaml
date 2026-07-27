@@ -21,7 +21,7 @@ framework:
     residual_predictor_depth: 4
     residual_predictor_heads: 6
     residual_predictor_ffn: 1024
-    residual_predictor_sigreg_weight: 0.02
+    residual_predictor_sigreg_weight: 0.0
     visual_tokens_per_view: 16
     visual_token_dim: 384
     visual_token_diversity_weight: 0.02

@@ -20,7 +20,7 @@ framework:
     residual_predictor_depth: 4
     residual_predictor_heads: 6
     residual_predictor_ffn: 1024
-    residual_predictor_sigreg_weight: 0.02
+    residual_predictor_sigreg_weight: 0.0
     # === state probe: ground predicted future latents in future proprio ===
     use_state_probe: true
     state_dim: 8              # LIBERO proprio: x,y,z,roll,pitch,yaw,pad,gripper

@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from starVLA.model.framework.WM4A.LeWMOFT import (
+    DensePatchActionAdapter,
     LeWM_OFT,
     VisualActionCrossAttn,
     VisualTokenPooler,
@@ -74,6 +75,25 @@ class VisualTokenComponentsTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(mean_cosine))
         self.assertGreater(float(diagnostics["effective_rank"]), 1.0)
 
+    def test_dense_grid_preserves_every_patch_without_pooling(self):
+        pooler = VisualTokenPooler(
+            patch_dim=8,
+            token_dim=8,
+            num_views=2,
+            tokens_per_view=196,
+        )
+        patches = torch.randn(2, 3, 2, 196, 8, requires_grad=True)
+        tokens, content = pooler(patches, return_content=True)
+
+        manual = pooler.out_norm(pooler.patch_proj(pooler.patch_norm(patches)))
+        manual = manual.reshape(2, 3, 392, 8)
+        self.assertEqual(tokens.shape, (2, 3, 392, 8))
+        self.assertTrue(torch.equal(content, manual))
+        self.assertTrue(torch.allclose(pooler.remove_position(tokens), content))
+
+        tokens.square().mean().backward()
+        self.assertTrue(torch.isfinite(patches.grad).all())
+
     def test_state_conditioning_is_zero_initialized(self):
         torch.manual_seed(1)
         base = VisualActionCrossAttn(
@@ -118,6 +138,77 @@ class VisualTokenComponentsTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "requires current state"):
             action_head(torch.randn(1, 3, 32, 24))
+
+    def test_dense_patch_action_is_zero_gated_then_learns_residual(self):
+        torch.manual_seed(4)
+        adapter = DensePatchActionAdapter(
+            patch_dim=12,
+            action_hidden_dim=32,
+            hidden_dim=16,
+            num_views=2,
+            patch_grid_size=4,
+            num_heads=4,
+            gate_init=1.0,
+        )
+        base_queries = torch.randn(2, 8, 32, requires_grad=True)
+        patches = torch.randn(2, 2, 16, 12, requires_grad=True)
+
+        output, metrics = adapter(base_queries, patches)
+        self.assertTrue(torch.equal(output, base_queries))
+        self.assertGreater(float(metrics["dense_patch_gate"]), 0.7)
+        output.square().mean().backward()
+        self.assertGreater(float(adapter.out_proj.weight.grad.abs().sum()), 0.0)
+        self.assertTrue(torch.equal(patches.grad, torch.zeros_like(patches.grad)))
+
+        adapter.zero_grad(set_to_none=True)
+        base_queries.grad = None
+        patches.grad = None
+        torch.nn.init.normal_(adapter.out_proj.weight, std=0.01)
+        output, metrics = adapter(base_queries, patches)
+        self.assertFalse(torch.allclose(output, base_queries))
+        self.assertGreater(float(metrics["dense_patch_query_update_ratio"]), 0.0)
+        output.square().mean().backward()
+        self.assertTrue(torch.isfinite(patches.grad).all())
+        self.assertGreater(float(patches.grad.abs().sum()), 0.0)
+
+    def test_dense_patch_action_never_reads_true_future_patches(self):
+        torch.manual_seed(5)
+        framework = object.__new__(LeWM_OFT)
+        torch.nn.Module.__init__(framework)
+        framework.wm_ctx_len = 1
+        framework.dense_patch_action = DensePatchActionAdapter(
+            patch_dim=12,
+            action_hidden_dim=32,
+            hidden_dim=16,
+            num_views=2,
+            patch_grid_size=4,
+            num_heads=4,
+            gate_init=0.3,
+        )
+        torch.nn.init.normal_(framework.dense_patch_action.out_proj.weight, std=0.01)
+        base_queries = torch.randn(2, 8, 32)
+        temporal_patches = torch.randn(2, 3, 2, 16, 12)
+
+        output, _ = LeWM_OFT._augment_action_queries_with_dense_patches(
+            framework, base_queries, temporal_patches
+        )
+        future_changed = temporal_patches.clone()
+        future_changed[:, 1:] = torch.randn_like(future_changed[:, 1:]) * 100.0
+        output_future_changed, _ = (
+            LeWM_OFT._augment_action_queries_with_dense_patches(
+                framework, base_queries, future_changed
+            )
+        )
+        self.assertTrue(torch.equal(output, output_future_changed))
+
+        current_changed = temporal_patches.clone()
+        current_changed[:, 0] = torch.randn_like(current_changed[:, 0]) * 100.0
+        output_current_changed, _ = (
+            LeWM_OFT._augment_action_queries_with_dense_patches(
+                framework, base_queries, current_changed
+            )
+        )
+        self.assertFalse(torch.allclose(output, output_current_changed))
 
 
 class VisualTokenLatentWorldModelTest(unittest.TestCase):

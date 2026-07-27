@@ -154,6 +154,19 @@ class VisualTokenLatentWorldModel(nn.Module):
         self.register_buffer("delta_scale", torch.ones(1))
         self.register_buffer("_delta_scale_ready", torch.zeros(1))
 
+    def _apply(self, *args, **kwargs):
+        # DeepSpeed/Accelerate bf16 training casts module buffers to bfloat16.
+        # The per-step EMA increment ((1 - momentum) * rms) is smaller than the
+        # bf16 quantization step near 1.0, so an in-place bf16 EMA underflows and
+        # freezes the normalizer once it reaches ~1.0. That makes ``latent_loss``
+        # (delta_pred_mse / delta_scale**2) an unreliable progress signal while
+        # the encoder-drifting residual scale keeps growing. Keep the running
+        # delta-scale statistics in float32 regardless of module-wide casting.
+        module = super()._apply(*args, **kwargs)
+        module.delta_scale = module.delta_scale.float()
+        module._delta_scale_ready = module._delta_scale_ready.float()
+        return module
+
     @torch.no_grad()
     def _update_delta_scale(self, residual: torch.Tensor) -> None:
         rms = residual.float().square().mean().clamp_min(self._stats_eps).sqrt()

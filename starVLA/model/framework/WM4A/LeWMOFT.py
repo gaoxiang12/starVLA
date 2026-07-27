@@ -141,7 +141,10 @@ class VisualTokenPooler(nn.Module):
 
         x = self.patch_norm(patches)
         x = x.reshape(B * T * V, patch_grid, patch_grid, D).permute(0, 3, 1, 2)
-        x = F.adaptive_avg_pool2d(x, (self.grid_size, self.grid_size))
+        # Dense mode keeps every DINO patch. Avoid even an identity pooling op
+        # so the 14x14 experiment is explicitly unpooled.
+        if self.grid_size != patch_grid:
+            x = F.adaptive_avg_pool2d(x, (self.grid_size, self.grid_size))
         x = x.permute(0, 2, 3, 1).reshape(
             B, T, V, self.grid_size, self.grid_size, D
         )
@@ -246,6 +249,126 @@ class VisualActionCrossAttn(nn.Module):
         return out  # (B, chunk_len, action_hidden_dim)
 
 
+class DensePatchActionAdapter(nn.Module):
+    """Read unpooled current-frame patches as a gated action-query residual.
+
+    The mature policy continues to obtain its base action queries from the
+    compact current/predicted-future tokens. This adapter lets those queries
+    retrieve fine spatial detail from every frozen-backbone patch without
+    changing the world model's latent space. A zero-initialized output
+    projection makes the adapter an exact no-op when loading a checkpoint that
+    predates this module while allowing stable learning from the first step.
+    """
+
+    def __init__(
+        self,
+        *,
+        patch_dim: int,
+        action_hidden_dim: int,
+        hidden_dim: int,
+        num_views: int,
+        patch_grid_size: int,
+        num_heads: int,
+        gate_init: float = 1.0,
+    ) -> None:
+        super().__init__()
+        self.patch_dim = int(patch_dim)
+        self.action_hidden_dim = int(action_hidden_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.num_views = int(num_views)
+        self.patch_grid_size = int(patch_grid_size)
+        if self.hidden_dim % int(num_heads) != 0:
+            raise ValueError(
+                f"dense patch hidden_dim={self.hidden_dim} must be divisible by "
+                f"num_heads={num_heads}"
+            )
+
+        self.patch_norm = nn.LayerNorm(self.patch_dim)
+        self.patch_proj = nn.Linear(self.patch_dim, self.hidden_dim)
+        self.query_proj = nn.Linear(self.action_hidden_dim, self.hidden_dim)
+        self.view_embedding = nn.Embedding(self.num_views, self.hidden_dim)
+        self.row_embedding = nn.Embedding(self.patch_grid_size, self.hidden_dim)
+        self.col_embedding = nn.Embedding(self.patch_grid_size, self.hidden_dim)
+        self.query_norm = nn.LayerNorm(self.hidden_dim)
+        self.kv_norm = nn.LayerNorm(self.hidden_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            self.hidden_dim, int(num_heads), batch_first=True
+        )
+        self.residual_norm = nn.LayerNorm(self.hidden_dim)
+        self.out_proj = nn.Linear(self.hidden_dim, self.action_hidden_dim)
+        self.gate = nn.Parameter(torch.tensor(float(gate_init)))
+
+        nn.init.normal_(self.view_embedding.weight, std=0.02)
+        nn.init.normal_(self.row_embedding.weight, std=0.02)
+        nn.init.normal_(self.col_embedding.weight, std=0.02)
+        nn.init.zeros_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.bias)
+
+    def _position_tokens(
+        self, *, device: torch.device, dtype: torch.dtype
+    ) -> torch.Tensor:
+        view_ids = torch.arange(self.num_views, device=device)
+        row_ids = torch.arange(self.patch_grid_size, device=device)
+        col_ids = torch.arange(self.patch_grid_size, device=device)
+        position = self.view_embedding(view_ids).view(
+            self.num_views, 1, 1, self.hidden_dim
+        )
+        position = position + self.row_embedding(row_ids).view(
+            1, self.patch_grid_size, 1, self.hidden_dim
+        )
+        position = position + self.col_embedding(col_ids).view(
+            1, 1, self.patch_grid_size, self.hidden_dim
+        )
+        return position.to(dtype=dtype).reshape(
+            self.num_views * self.patch_grid_size**2, self.hidden_dim
+        )
+
+    def forward(
+        self,
+        base_queries: torch.Tensor,
+        current_patches: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        # current_patches: (B, V, N, D_patch), never true future patches.
+        B, V, N, D = current_patches.shape
+        expected_patches = self.patch_grid_size**2
+        if V != self.num_views or N != expected_patches or D != self.patch_dim:
+            raise ValueError(
+                "dense patch adapter expected current patches "
+                f"(B, {self.num_views}, {expected_patches}, {self.patch_dim}), "
+                f"got {tuple(current_patches.shape)}"
+            )
+        if base_queries.ndim != 3 or base_queries.shape[0] != B:
+            raise ValueError(
+                f"expected base action queries (B, Q, H), got "
+                f"{tuple(base_queries.shape)}"
+            )
+
+        kv = self.patch_proj(self.patch_norm(current_patches))
+        kv = kv.reshape(B, V * N, self.hidden_dim)
+        kv = kv + self._position_tokens(
+            device=kv.device, dtype=kv.dtype
+        ).unsqueeze(0)
+        kv = self.kv_norm(kv)
+        q = self.query_norm(self.query_proj(base_queries))
+        residual = self.cross_attn(q, kv, kv, need_weights=False)[0]
+        residual = self.out_proj(self.residual_norm(residual))
+        gate = self.gate.tanh()
+        update = gate * residual
+        output = base_queries + update
+
+        with torch.no_grad():
+            residual_rms = residual.float().square().mean().sqrt()
+            update_ratio = (
+                update.float().square().mean().sqrt()
+                / base_queries.float().square().mean().sqrt().clamp_min(1e-6)
+            )
+        return output, {
+            "dense_patch_gate": gate.detach(),
+            "dense_patch_residual_rms": residual_rms,
+            "dense_patch_query_update_ratio": update_ratio,
+        }
+
+
 @dataclass
 class LeWMOFTDefaultConfig:
     """LeWM-OFT default parameters."""
@@ -275,6 +398,15 @@ class LeWMOFTDefaultConfig:
             "visual_token_variance_weight": 0.02,
             "visual_token_min_std": 0.1,
             "visual_diagnostics": True,
+
+            # Keep every current-frame ViT patch for the action policy while
+            # retaining the compact 4x4 world-model representation.
+            "use_dense_patch_action": False,
+            "dense_patch_hidden_dim": 384,
+            "dense_patch_heads": 6,
+            "dense_patch_grid_size": None,
+            "dense_patch_gate_init": 1.0,
+            "dense_patch_freeze_base": True,
             # Add a zero-initialized proprio residual to each action query.
             "use_state_cond": False,
             "state_cond_dim": 8,
@@ -285,6 +417,7 @@ class LeWMOFTDefaultConfig:
             "use_state_probe": False,
             "state_dim": 8,
             "loss_state_weight": 0.5,
+
             # === Optional WALA-style future-transition teacher ===
             # Disabled by default, so existing checkpoints and inference are
             # unchanged. ``combined`` trains teacher, student, and deployed
@@ -463,8 +596,41 @@ class LeWM_OFT(baseframework):
             state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
             state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
         )
+        self.use_dense_patch_action = bool(
+            wm_cfg.get("use_dense_patch_action", False)
+        )
+        self.dense_patch_freeze_base = bool(
+            wm_cfg.get("dense_patch_freeze_base", True)
+        )
+        self.dense_patch_action = None
+        if self.use_dense_patch_action:
+            image_size = int(
+                getattr(self.backbone.encoder.config, "image_size", 224)
+            )
+            encoder_patch_size = int(
+                getattr(self.backbone.encoder.config, "patch_size", 16)
+            )
+            grid_cfg = wm_cfg.get("dense_patch_grid_size", None)
+            dense_patch_grid_size = (
+                int(grid_cfg) if grid_cfg else image_size // encoder_patch_size
+            )
+            self.dense_patch_action = DensePatchActionAdapter(
+                patch_dim=patch_dim,
+                action_hidden_dim=self.action_hidden_dim,
+                hidden_dim=int(wm_cfg.get("dense_patch_hidden_dim", 384)),
+                num_views=self.num_views,
+                patch_grid_size=dense_patch_grid_size,
+                num_heads=int(wm_cfg.get("dense_patch_heads", 6)),
+                gate_init=float(wm_cfg.get("dense_patch_gate_init", 1.0)),
+            )
 
-        self.transition_mode = str(wm_cfg.get("transition_mode", "off")).lower()
+        transition_mode = wm_cfg.get("transition_mode", "off")
+        # OmegaConf's dotlist parser follows YAML boolean aliases and parses
+        # the unquoted CLI value `off` as False. Normalize that representation
+        # so the ordinary non-transition launcher remains usable.
+        self.transition_mode = (
+            "off" if transition_mode is False else str(transition_mode).lower()
+        )
         if self.transition_mode not in {
             "off",
             "teacher",
@@ -572,6 +738,20 @@ class LeWM_OFT(baseframework):
                 if self.use_state_probe:
                     self.state_probe.requires_grad_(False)
 
+        if self.use_dense_patch_action:
+            # Preserve the validated baseline coordinate system. The dense
+            # branch learns a residual correction, while the existing action
+            # model may adapt at its separately configured low learning rate.
+            self.dense_patch_action.requires_grad_(True)
+            if self.dense_patch_freeze_base:
+                self.backbone.requires_grad_(False)
+                self.visual_token_pooler.requires_grad_(False)
+                self.world_model.requires_grad_(False)
+                self.task_embedding.requires_grad_(False)
+                self.visual_action_head.requires_grad_(False)
+                if self.use_state_probe:
+                    self.state_probe.requires_grad_(False)
+
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
         """Load checkpoints written before delta_head was renamed."""
         remapped = dict(state_dict)
@@ -594,6 +774,30 @@ class LeWM_OFT(baseframework):
         # chunk_len action queries cross-attend all T*K tokens so the OFT head
         # reads the world model's prediction with full token/temporal structure.
         return self.visual_action_head(visual_tokens, state=state)
+
+    def _augment_action_queries_with_dense_patches(
+        self,
+        action_queries: torch.Tensor,
+        patch_tokens: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        if self.dense_patch_action is None:
+            return action_queries, {}
+        if patch_tokens.ndim != 5:
+            raise ValueError(
+                "expected temporal patch tokens (B, T, V, N, D), "
+                f"got {tuple(patch_tokens.shape)}"
+            )
+        current_index = self.wm_ctx_len - 1
+        if current_index < 0 or current_index >= patch_tokens.shape[1]:
+            raise ValueError(
+                f"current patch index {current_index} is invalid for "
+                f"T={patch_tokens.shape[1]}"
+            )
+        # Select only the final observed context frame. Training-only true
+        # future images remain targets for the compact world model and cannot
+        # leak into the deployed action path.
+        current_patches = patch_tokens[:, current_index].float()
+        return self.dense_patch_action(action_queries, current_patches)
 
     def _current_state_tensor(self, examples: List[dict], device: torch.device) -> torch.Tensor:
         """Stack only the current normalized proprio state from each example."""
@@ -825,7 +1029,13 @@ class LeWM_OFT(baseframework):
                 # A frozen parameter set can still mutate EMA buffers. Keep
                 # the 200k baseline's normalization fixed in every auxiliary
                 # stage so its deployed predictions do not drift implicitly.
-                update_stats=self.transition_mode == "off",
+                update_stats=(
+                    self.transition_mode == "off"
+                    and not (
+                        self.use_dense_patch_action
+                        and self.dense_patch_freeze_base
+                    )
+                ),
             )
             pred_future_latent = wm_out["pred_future_latent"]
 
@@ -846,6 +1056,11 @@ class LeWM_OFT(baseframework):
 
             action_queries = self._pool_visual_tokens_to_action_queries(
                 head_tokens, state=current_state
+            )
+            action_queries, dense_patch_metrics = (
+                self._augment_action_queries_with_dense_patches(
+                    action_queries, patch_tokens
+                )
             )
             transition_losses = (
                 self._transition_auxiliary_losses(action_queries, latent)
@@ -990,6 +1205,8 @@ class LeWM_OFT(baseframework):
         if transition_losses is not None:
             for name, value in transition_losses.items():
                 out[name] = value.detach()
+        for name, value in dense_patch_metrics.items():
+            out[name] = value.detach()
         return out
 
     @torch.inference_mode()
@@ -1028,6 +1245,9 @@ class LeWM_OFT(baseframework):
             )
             action_queries = self._pool_visual_tokens_to_action_queries(
                 head_tokens, state=current_state
+            )
+            action_queries, _ = self._augment_action_queries_with_dense_patches(
+                action_queries, patch_tokens
             )
             pred_actions = self.action_model.predict_action(action_queries)
 

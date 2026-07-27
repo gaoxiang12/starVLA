@@ -60,7 +60,13 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.world_model.visual_token_variance_weight ${TOKEN_VARIANCE_WEIGHT:-0.02} \
   --framework.world_model.visual_token_min_std ${TOKEN_MIN_STD:-0.1} \
   --framework.world_model.latent_stats_momentum ${LATENT_STATS_MOMENTUM:-0.99} \
-  --framework.world_model.visual_diagnostics true \
+  --framework.world_model.visual_diagnostics ${VISUAL_DIAGNOSTICS:-true} \
+  --framework.world_model.use_dense_patch_action ${USE_DENSE_PATCH_ACTION:-false} \
+  --framework.world_model.dense_patch_hidden_dim ${DENSE_PATCH_HIDDEN_DIM:-384} \
+  --framework.world_model.dense_patch_heads ${DENSE_PATCH_HEADS:-6} \
+  --framework.world_model.dense_patch_grid_size ${DENSE_PATCH_GRID_SIZE:-14} \
+  --framework.world_model.dense_patch_gate_init ${DENSE_PATCH_GATE_INIT:-1.0} \
+  --framework.world_model.dense_patch_freeze_base ${DENSE_PATCH_FREEZE_BASE:-true} \
   --framework.world_model.use_state_cond ${USE_STATE_COND:-true} \
   --framework.world_model.state_cond_dim ${STATE_COND_DIM:-8} \
   --framework.world_model.state_cond_hidden_dim ${STATE_COND_HIDDEN_DIM:-256} \
@@ -73,7 +79,7 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.world_model.residual_predictor_depth ${RESIDUAL_DEPTH:-4} \
   --framework.world_model.residual_predictor_heads ${RESIDUAL_HEADS:-6} \
   --framework.world_model.residual_predictor_ffn ${RESIDUAL_FFN:-1024} \
-  --framework.world_model.residual_predictor_sigreg_weight ${RESIDUAL_SIGREG_WEIGHT:-0.02} \
+  --framework.world_model.residual_predictor_sigreg_weight ${RESIDUAL_SIGREG_WEIGHT:-0.0} \
   --framework.world_model.transition_mode ${TRANSITION_MODE:-off} \
   --framework.world_model.transition_hidden_dim ${TRANSITION_HIDDEN_DIM:-384} \
   --framework.world_model.transition_num_tokens ${TRANSITION_NUM_TOKENS:-8} \
@@ -102,6 +108,7 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --trainer.freeze_modules "${FREEZE_MODULES:-}" \
   --trainer.num_warmup_steps ${warmup} \
   --trainer.learning_rate.base ${base_lr} \
+  --trainer.learning_rate.dense_patch_action ${DENSE_PATCH_LR:-${base_lr}} \
   --trainer.learning_rate.action_model ${action_lr} \
   --trainer.learning_rate.backbone.encoder ${encoder_lr} \
   --trainer.logging_frequency ${LOGGING_FREQUENCY:-100} \
