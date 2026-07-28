@@ -160,6 +160,7 @@ def eval_libero(args: Args) -> None:
             t = 0
             replay_images = []
             full_actions = []
+            progress_trace = []
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
@@ -207,6 +208,17 @@ def eval_libero(args: Args) -> None:
                 start_time = time.time()
 
                 response = client_model.step(example=example_dict, step=step)
+                if response.get("progress_updated", False):
+                    progress_trace.append(
+                        {
+                            "step": step,
+                            "raw_progress": response.get("raw_progress"),
+                            "progress": response.get("progress"),
+                            "conditioning_progress": response.get(
+                                "conditioning_progress"
+                            ),
+                        }
+                    )
 
                 end_time = time.time()
                 # print(f"time: {end_time - start_time}")
@@ -259,6 +271,23 @@ def eval_libero(args: Args) -> None:
             )
 
             full_actions = np.stack(full_actions)
+            progress_payload = {
+                "task_suite": args.task_suite_name,
+                "task_id": task_id,
+                "task": task_description,
+                "episode_index": episode_idx,
+                "success": bool(done),
+                "execute_horizon": client_model.execute_horizon,
+                "server_metadata": client_model._server_metadata,
+                "trace": progress_trace,
+            }
+            progress_path = (
+                pathlib.Path(args.video_out_path)
+                / f"rollout_{task_segment}_episode{episode_idx}_{suffix}_progress.json"
+            )
+            progress_path.write_text(
+                json.dumps(progress_payload, indent=2, allow_nan=False) + "\n"
+            )
             # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
 
             # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")

@@ -39,6 +39,13 @@ from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
 )
+from starVLA.model.modules.world_model.latent_progress import (
+    LatentGoalPredictor,
+    LatentProgressChecker,
+    ProgressActionConditioner,
+    latent_goal_loss,
+    progress_ranking_loss,
+)
 from starVLA.model.modules.world_model.wala_transition_auxiliary import (
     WALAVisualTransitionAuxiliary,
     token_cosine_loss,
@@ -418,6 +425,22 @@ class LeWMOFTDefaultConfig:
             "state_dim": 8,
             "loss_state_weight": 0.5,
 
+            # === Optional start/current/goal latent progress checker ===
+            # Training additionally requires datasets.vla_data.include_progress.
+            # The goal predictor prevents true terminal frames leaking into
+            # deployed action conditioning.
+            "use_progress_checker": False,
+            "progress_hidden_dim": 256,
+            "progress_action_hidden_dim": 128,
+            "progress_action_dropout": 0.05,
+            "progress_detach_latents": True,
+            "progress_detach_action": True,
+            "progress_loss_weight": 0.2,
+            "progress_anchor_weight": 0.5,
+            "progress_ranking_weight": 0.1,
+            "progress_goal_weight": 0.2,
+            "progress_ema": 0.8,
+
             # === Optional WALA-style future-transition teacher ===
             # Disabled by default, so existing checkpoints and inference are
             # unchanged. ``combined`` trains teacher, student, and deployed
@@ -596,6 +619,61 @@ class LeWM_OFT(baseframework):
             state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
             state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
         )
+        self.use_progress_checker = bool(wm_cfg.get("use_progress_checker", False))
+        self.progress_goal_predictor = None
+        self.progress_checker = None
+        self.progress_action_conditioner = None
+        if self.use_progress_checker:
+            progress_hidden_dim = int(wm_cfg.get("progress_hidden_dim", 256))
+            self.progress_goal_predictor = LatentGoalPredictor(
+                latent_dim=self.visual_token_dim,
+                task_dim=self.task_emb_dim,
+                hidden_dim=progress_hidden_dim,
+                num_tokens=self.num_visual_tokens,
+            )
+            self.progress_checker = LatentProgressChecker(
+                latent_dim=self.visual_token_dim,
+                hidden_dim=progress_hidden_dim,
+            )
+            self.progress_action_conditioner = ProgressActionConditioner(
+                action_hidden_dim=self.action_hidden_dim,
+                chunk_len=self.chunk_len,
+                hidden_dim=int(wm_cfg.get("progress_action_hidden_dim", 128)),
+                dropout=float(wm_cfg.get("progress_action_dropout", 0.05)),
+            )
+        self.progress_detach_latents = bool(
+            wm_cfg.get("progress_detach_latents", True)
+        )
+        self.progress_detach_action = bool(
+            wm_cfg.get("progress_detach_action", True)
+        )
+        self.progress_loss_weight = float(wm_cfg.get("progress_loss_weight", 0.2))
+        self.progress_anchor_weight = float(
+            wm_cfg.get("progress_anchor_weight", 0.5)
+        )
+        self.progress_ranking_weight = float(
+            wm_cfg.get("progress_ranking_weight", 0.1)
+        )
+        self.progress_goal_weight = float(wm_cfg.get("progress_goal_weight", 0.2))
+        self.progress_ema = float(wm_cfg.get("progress_ema", 0.8))
+        if not 0.0 <= self.progress_ema < 1.0:
+            raise ValueError(
+                f"world_model.progress_ema must be in [0, 1), got {self.progress_ema}"
+            )
+        # Deployment-only controls used for causal closed-loop ablations.
+        # These are intentionally not checkpoint parameters.
+        self.progress_inference_mode = "learned"
+        self.progress_fixed_value = 0.5
+        for name, weight in (
+            ("progress_loss_weight", self.progress_loss_weight),
+            ("progress_anchor_weight", self.progress_anchor_weight),
+            ("progress_ranking_weight", self.progress_ranking_weight),
+            ("progress_goal_weight", self.progress_goal_weight),
+        ):
+            if weight < 0:
+                raise ValueError(f"{name} must be non-negative")
+        self.reset_progress_state()
+
         self.use_dense_patch_action = bool(
             wm_cfg.get("use_dense_patch_action", False)
         )
@@ -751,6 +829,170 @@ class LeWM_OFT(baseframework):
                 self.visual_action_head.requires_grad_(False)
                 if self.use_state_probe:
                     self.state_probe.requires_grad_(False)
+
+        # Stage-specific freezing above must not accidentally disable an
+        # explicitly enabled progress experiment.
+        if self.use_progress_checker:
+            self.progress_goal_predictor.requires_grad_(True)
+            self.progress_checker.requires_grad_(True)
+            self.progress_action_conditioner.requires_grad_(True)
+
+    def reset_progress_state(self) -> None:
+        """Clear episode-local start, goal, and filtered progress caches."""
+        self._progress_start_latent = None
+        self._progress_goal_latent = None
+        self._progress_previous = None
+        self._progress_instruction_signature = None
+
+    def configure_progress_inference(
+        self,
+        *,
+        mode: str = "learned",
+        fixed_value: float = 0.5,
+        ema: Optional[float] = None,
+    ) -> None:
+        """Configure a weight-preserving progress-conditioning ablation."""
+        valid_modes = {"learned", "disabled", "fixed"}
+        if mode not in valid_modes:
+            raise ValueError(
+                f"progress inference mode must be one of {sorted(valid_modes)}, "
+                f"got {mode!r}"
+            )
+        if mode != "disabled" and not self.use_progress_checker:
+            raise ValueError(
+                f"progress mode {mode!r} requires a checkpoint with progress enabled"
+            )
+        if not 0.0 <= fixed_value <= 1.0:
+            raise ValueError(f"fixed progress must be in [0, 1], got {fixed_value}")
+        if ema is not None:
+            if not 0.0 <= ema < 1.0:
+                raise ValueError(f"progress EMA must be in [0, 1), got {ema}")
+            self.progress_ema = float(ema)
+        self.progress_inference_mode = mode
+        self.progress_fixed_value = float(fixed_value)
+        self.reset_progress_state()
+
+    def _condition_action_queries_on_progress(
+        self,
+        action_queries: torch.Tensor,
+        progress: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        if self.progress_action_conditioner is None:
+            return action_queries
+        if progress is None:
+            raise ValueError("progress conditioning is enabled but progress is missing")
+        if self.progress_detach_action:
+            progress = progress.detach()
+        return self.progress_action_conditioner(action_queries, progress)
+
+    def _select_inference_progress_for_action(
+        self, learned_progress: torch.Tensor
+    ) -> Optional[torch.Tensor]:
+        """Select the scalar exposed to the conditioner for an A/B mode."""
+        if self.progress_inference_mode == "learned":
+            return learned_progress
+        if self.progress_inference_mode == "fixed":
+            return torch.full_like(learned_progress, self.progress_fixed_value)
+        if self.progress_inference_mode == "disabled":
+            return None
+        raise RuntimeError(
+            f"unknown progress inference mode {self.progress_inference_mode!r}"
+        )
+
+    def _training_progress(
+        self,
+        *,
+        start_latent: torch.Tensor,
+        current_latent: torch.Tensor,
+        target_goal_latent: torch.Tensor,
+        task_embedding: torch.Tensor,
+        target: torch.Tensor,
+        episode_ids: List[object],
+    ) -> dict[str, torch.Tensor]:
+        if self.progress_goal_predictor is None or self.progress_checker is None:
+            raise RuntimeError("progress checker is disabled")
+        if self.progress_detach_latents:
+            start_latent = start_latent.detach()
+            current_latent = current_latent.detach()
+            target_goal_latent = target_goal_latent.detach()
+            task_embedding = task_embedding.detach()
+
+        predicted_goal = self.progress_goal_predictor(start_latent, task_embedding)
+        current_output = self.progress_checker(
+            start_latent, current_latent, predicted_goal
+        )
+        start_output = self.progress_checker(
+            start_latent, start_latent, predicted_goal
+        )
+        goal_output = self.progress_checker(
+            start_latent, target_goal_latent, predicted_goal
+        )
+        regression_loss = F.smooth_l1_loss(
+            current_output["progress"].float(), target.float()
+        )
+        anchor_loss = 0.5 * (
+            start_output["progress"].float().square().mean()
+            + (1.0 - goal_output["progress"].float()).square().mean()
+        )
+        ranking_loss = progress_ranking_loss(
+            current_output["progress"], target, episode_ids
+        )
+        goal_loss = latent_goal_loss(predicted_goal, target_goal_latent)
+        auxiliary_loss = (
+            self.progress_loss_weight * regression_loss
+            + self.progress_anchor_weight * anchor_loss
+            + self.progress_ranking_weight * ranking_loss
+            + self.progress_goal_weight * goal_loss
+        )
+        return {
+            **current_output,
+            "progress_regression_loss": regression_loss,
+            "progress_anchor_loss": anchor_loss,
+            "progress_ranking_loss": ranking_loss,
+            "progress_goal_loss": goal_loss,
+            "progress_auxiliary_loss": auxiliary_loss,
+        }
+
+    def _inference_progress(
+        self,
+        *,
+        current_latent: torch.Tensor,
+        task_embedding: torch.Tensor,
+        instructions: List[str],
+        examples: List[dict],
+    ) -> dict[str, torch.Tensor]:
+        if self.progress_goal_predictor is None or self.progress_checker is None:
+            raise RuntimeError("progress checker is disabled")
+        signature = tuple((text or "").strip().lower() for text in instructions)
+        explicit_reset = any(bool(example.get("episode_start", False)) for example in examples)
+        cache_mismatch = (
+            self._progress_start_latent is None
+            or self._progress_start_latent.shape != current_latent.shape
+            or self._progress_instruction_signature != signature
+        )
+        if explicit_reset or cache_mismatch:
+            self.reset_progress_state()
+            self._progress_start_latent = current_latent.detach().clone()
+            self._progress_goal_latent = self.progress_goal_predictor(
+                self._progress_start_latent, task_embedding.detach()
+            ).detach()
+            self._progress_instruction_signature = signature
+
+        output = self.progress_checker(
+            self._progress_start_latent,
+            current_latent,
+            self._progress_goal_latent,
+        )
+        raw_progress = output["progress"]
+        if self._progress_previous is None:
+            filtered_progress = raw_progress
+        else:
+            filtered_progress = (
+                self.progress_ema * self._progress_previous
+                + (1.0 - self.progress_ema) * raw_progress
+            )
+        self._progress_previous = filtered_progress.detach()
+        return {**output, "raw_progress": raw_progress, "progress": filtered_progress}
 
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
         """Load checkpoints written before delta_head was renamed."""
@@ -1003,7 +1245,18 @@ class LeWM_OFT(baseframework):
                     "LeWMOFT requires 'future_images' in each "
                     "example (enable future-frame loading in the data config)."
                 )
-            frames_per_example.append([current] + list(future))
+            policy_frames = [current] + list(future)
+            if self.use_progress_checker:
+                start_image = example.get("progress_start_image")
+                goal_image = example.get("progress_goal_image")
+                if start_image is None or goal_image is None:
+                    raise KeyError(
+                        "LeWMOFT.use_progress_checker=True requires "
+                        "'progress_start_image' and 'progress_goal_image' in every "
+                        "training example (set datasets.vla_data.include_progress: true)."
+                    )
+                policy_frames.extend([start_image, goal_image])
+            frames_per_example.append(policy_frames)
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
             patch_tokens = self.backbone.encode_patch_frames(
@@ -1013,8 +1266,18 @@ class LeWM_OFT(baseframework):
         with torch.autocast("cuda", dtype=torch.float32):
             latent, content_latent = self.visual_token_pooler(
                 patch_tokens.float(), return_content=True
-            )  # (B, 1+Tf, K, C)
+            )
             task_emb = self._embed_task(instructions, device=latent.device)
+            progress_start_latent = None
+            progress_goal_latent = None
+            if self.use_progress_checker:
+                progress_start_latent = latent[:, -2]
+                progress_goal_latent = latent[:, -1]
+                # Endpoint frames supervise only the progress branch. They must
+                # never enter world-model targets or the ordinary action path.
+                latent = latent[:, :-2]
+                content_latent = content_latent[:, :-2]
+                patch_tokens = patch_tokens[:, :-2]
             current_state = (
                 self._current_state_tensor(examples, latent.device)
                 if self.use_state_cond
@@ -1062,6 +1325,28 @@ class LeWM_OFT(baseframework):
                     action_queries, patch_tokens
                 )
             )
+            progress_output = None
+            if self.use_progress_checker:
+                progress_target = torch.as_tensor(
+                    [example["progress_target"] for example in examples],
+                    device=latent.device,
+                    dtype=torch.float32,
+                )
+                episode_ids = [
+                    example.get("progress_episode_id", index)
+                    for index, example in enumerate(examples)
+                ]
+                progress_output = self._training_progress(
+                    start_latent=progress_start_latent,
+                    current_latent=latent[:, self.wm_ctx_len - 1],
+                    target_goal_latent=progress_goal_latent,
+                    task_embedding=task_emb,
+                    target=progress_target,
+                    episode_ids=episode_ids,
+                )
+                action_queries = self._condition_action_queries_on_progress(
+                    action_queries, progress_output["progress"]
+                )
             transition_losses = (
                 self._transition_auxiliary_losses(action_queries, latent)
                 if self.transition_mode != "off"
@@ -1100,6 +1385,10 @@ class LeWM_OFT(baseframework):
                     ablated_queries = self._pool_visual_tokens_to_action_queries(
                         ablated_tokens, state=current_state[:1] if current_state is not None else None
                     )
+                    if progress_output is not None:
+                        ablated_queries = self._condition_action_queries_on_progress(
+                            ablated_queries, progress_output["progress"][:1]
+                        )
                     ablated_actions = self.action_model.predict_action(ablated_queries)
                     future_action_sensitivity = (
                         pred_actions[:1].detach() - ablated_actions
@@ -1116,6 +1405,8 @@ class LeWM_OFT(baseframework):
                 + self.visual_token_variance_weight * visual_token_variance_loss
             )
             sigreg_loss = wm_out.get("sigreg_loss")
+            if progress_output is not None:
+                total_loss = total_loss + progress_output["progress_auxiliary_loss"]
             if sigreg_loss is not None:
                 total_loss = total_loss + self.loss_sigreg_weight * sigreg_loss
 
@@ -1207,6 +1498,20 @@ class LeWM_OFT(baseframework):
                 out[name] = value.detach()
         for name, value in dense_patch_metrics.items():
             out[name] = value.detach()
+        if progress_output is not None:
+            out["progress_mean"] = progress_output["progress"].mean().detach()
+            out["progress_target_mean"] = progress_target.mean().detach()
+            out["progress_geometric_mean"] = progress_output[
+                "geometric_progress"
+            ].mean().detach()
+            for name in (
+                "progress_regression_loss",
+                "progress_anchor_loss",
+                "progress_ranking_loss",
+                "progress_goal_loss",
+                "progress_auxiliary_loss",
+            ):
+                out[name] = progress_output[name].detach()
         return out
 
     @torch.inference_mode()
@@ -1249,10 +1554,36 @@ class LeWM_OFT(baseframework):
             action_queries, _ = self._augment_action_queries_with_dense_patches(
                 action_queries, patch_tokens
             )
+            progress_output = None
+            conditioning_progress = None
+            if self.use_progress_checker:
+                progress_output = self._inference_progress(
+                    current_latent=latent[:, self.wm_ctx_len - 1],
+                    task_embedding=task_emb,
+                    instructions=instructions,
+                    examples=examples,
+                )
+                conditioning_progress = self._select_inference_progress_for_action(
+                    progress_output["progress"]
+                )
+                if conditioning_progress is not None:
+                    action_queries = self._condition_action_queries_on_progress(
+                        action_queries, conditioning_progress
+                    )
             pred_actions = self.action_model.predict_action(action_queries)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
-        return {"normalized_actions": normalized_actions}
+        output = {"normalized_actions": normalized_actions}
+        if progress_output is not None:
+            output["progress"] = progress_output["progress"].detach().cpu().numpy()
+            output["raw_progress"] = (
+                progress_output["raw_progress"].detach().cpu().numpy()
+            )
+            if conditioning_progress is not None:
+                output["conditioning_progress"] = (
+                    conditioning_progress.detach().cpu().numpy()
+                )
+        return output
 
 
 if __name__ == "__main__":

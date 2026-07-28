@@ -25,6 +25,21 @@ framework:
     use_state_probe: true
     state_dim: 8              # LIBERO proprio: x,y,z,roll,pitch,yaw,pad,gripper
     loss_state_weight: 0.5
+    # === optional latent progress checker ===
+    # Enable this together with datasets.vla_data.include_progress. Endpoint
+    # images supervise the goal predictor/checker but never enter the action or
+    # world-model path directly.
+    use_progress_checker: false
+    progress_hidden_dim: 256
+    progress_action_hidden_dim: 128
+    progress_action_dropout: 0.05
+    progress_detach_latents: true
+    progress_detach_action: true
+    progress_loss_weight: 0.2
+    progress_anchor_weight: 0.5
+    progress_ranking_weight: 0.1
+    progress_goal_weight: 0.2
+    progress_ema: 0.8
   action_model:
     action_model_type: MLP
     action_dim: 7
@@ -63,6 +78,7 @@ datasets:
     load_all_data_for_training: true
     video_backend: torchvision_av
 
+    include_progress: false        # set true with use_progress_checker
 trainer:
   max_train_steps: 80000
   num_warmup_steps: 2000

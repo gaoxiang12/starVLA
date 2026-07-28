@@ -9,17 +9,26 @@ from examples.LIBERO.eval_files.model2libero_interface import ModelClient
 class _FakePolicy:
     def __init__(self, *args, **kwargs):
         self.calls = 0
+        self.payloads = []
 
     def get_server_metadata(self):
         return {"action_chunk_size": 8}
 
     def predict_action(self, payload):
+        self.payloads.append(payload)
         base = 100 * self.calls
         self.calls += 1
         chunk = np.stack(
             [np.full(7, base + offset, dtype=np.float32) for offset in range(8)]
         )
-        return {"data": {"actions": chunk[None]}}
+        return {
+            "data": {
+                "actions": chunk[None],
+                "progress": np.asarray([0.25 * self.calls]),
+                "raw_progress": np.asarray([0.3 * self.calls]),
+                "conditioning_progress": np.asarray([0.2 * self.calls]),
+            }
+        }
 
 
 def _action_value(response):
@@ -50,6 +59,28 @@ class ExecuteHorizonTest(unittest.TestCase):
             with self.subTest(execute_horizon=execute_horizon):
                 with self.assertRaisesRegex(ValueError, "execute_horizon"):
                     ModelClient(execute_horizon=execute_horizon)
+
+    @patch(
+        "examples.LIBERO.eval_files.model2libero_interface.WebsocketClientPolicy",
+        _FakePolicy,
+    )
+    def test_episode_start_and_progress_are_forwarded(self):
+        client = ModelClient(execute_horizon=4, action_ensemble=False)
+        example = {"image": [], "lang": "test"}
+
+        first = client.step(example, step=0)
+        cached = client.step(example, step=1)
+
+        self.assertTrue(
+            client.client.payloads[0]["examples"][0]["episode_start"]
+        )
+        self.assertEqual(first["progress"], 0.25)
+        self.assertAlmostEqual(first["raw_progress"], 0.3)
+        self.assertAlmostEqual(first["conditioning_progress"], 0.2)
+        self.assertTrue(first["progress_updated"])
+        self.assertFalse(cached["progress_updated"])
+        self.assertEqual(cached["progress"], first["progress"])
+        self.assertEqual(client.client.calls, 1)
 
     @patch(
         "examples.LIBERO.eval_files.model2libero_interface.WebsocketClientPolicy",

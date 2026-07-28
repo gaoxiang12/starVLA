@@ -85,6 +85,17 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --framework.world_model.transition_num_tokens ${TRANSITION_NUM_TOKENS:-8} \
   --framework.world_model.transition_encoder_depth ${TRANSITION_ENCODER_DEPTH:-2} \
   --framework.world_model.transition_decoder_depth ${TRANSITION_DECODER_DEPTH:-2} \
+  --framework.world_model.use_progress_checker ${USE_PROGRESS_CHECKER:-false} \
+  --framework.world_model.progress_hidden_dim ${PROGRESS_HIDDEN_DIM:-256} \
+  --framework.world_model.progress_action_hidden_dim ${PROGRESS_ACTION_HIDDEN_DIM:-128} \
+  --framework.world_model.progress_action_dropout ${PROGRESS_ACTION_DROPOUT:-0.05} \
+  --framework.world_model.progress_detach_latents ${PROGRESS_DETACH_LATENTS:-true} \
+  --framework.world_model.progress_detach_action ${PROGRESS_DETACH_ACTION:-true} \
+  --framework.world_model.progress_loss_weight ${PROGRESS_LOSS_WEIGHT:-0.2} \
+  --framework.world_model.progress_anchor_weight ${PROGRESS_ANCHOR_WEIGHT:-0.5} \
+  --framework.world_model.progress_ranking_weight ${PROGRESS_RANKING_WEIGHT:-0.1} \
+  --framework.world_model.progress_goal_weight ${PROGRESS_GOAL_WEIGHT:-0.2} \
+  --framework.world_model.progress_ema ${PROGRESS_EMA:-0.8} \
   --framework.world_model.transition_resampler_depth ${TRANSITION_RESAMPLER_DEPTH:-2} \
   --framework.world_model.transition_heads ${TRANSITION_HEADS:-6} \
   --framework.world_model.transition_teacher_recon_weight ${TRANSITION_TEACHER_WEIGHT:-1.0} \
@@ -99,6 +110,7 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --datasets.vla_data.data_mix ${data_mix} \
   --datasets.vla_data.future_obs_frames true \
   --datasets.vla_data.include_state ${INCLUDE_STATE:-true} \
+  --datasets.vla_data.include_progress ${INCLUDE_PROGRESS:-${USE_PROGRESS_CHECKER:-false}} \
   --datasets.vla_data.per_device_batch_size ${batch} \
   "${pretrained_args[@]}" \
   --trainer.is_resume ${IS_RESUME:-false} \
@@ -108,6 +120,9 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --trainer.freeze_modules "${FREEZE_MODULES:-}" \
   --trainer.num_warmup_steps ${warmup} \
   --trainer.learning_rate.base ${base_lr} \
+  --trainer.learning_rate.progress_goal_predictor ${PROGRESS_GOAL_LR:-3e-5} \
+  --trainer.learning_rate.progress_checker ${PROGRESS_CHECKER_LR:-3e-5} \
+  --trainer.learning_rate.progress_action_conditioner ${PROGRESS_ACTION_LR:-1e-5} \
   --trainer.learning_rate.dense_patch_action ${DENSE_PATCH_LR:-${base_lr}} \
   --trainer.learning_rate.action_model ${action_lr} \
   --trainer.learning_rate.backbone.encoder ${encoder_lr} \

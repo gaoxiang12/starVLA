@@ -342,6 +342,16 @@ class VLATrainer(TrainerUtils):
             # disabled or misconfigured. This is especially important for
             # staged runs whose checkpoint should be gated on loss quality.
             local_record = {"step": self.completed_steps, **metrics}
+            non_finite = {
+                key: value
+                for key, value in local_record.items()
+                if isinstance(value, (float, np.floating))
+                and not np.isfinite(value)
+            }
+            if non_finite:
+                raise FloatingPointError(
+                    f"Non-finite metrics at step {self.completed_steps}: {non_finite}"
+                )
             metrics_path = os.path.join(self.config.output_dir, "metrics.jsonl")
             with open(metrics_path, "a", encoding="utf-8") as metrics_file:
                 metrics_file.write(json.dumps(local_record, allow_nan=False) + "\n")
@@ -510,6 +520,14 @@ class VLATrainer(TrainerUtils):
             "transition_decode_loss",
             "transition_decode_l1_loss",
             "transition_decode_cosine_loss",
+            "progress_mean",
+            "progress_target_mean",
+            "progress_geometric_mean",
+            "progress_regression_loss",
+            "progress_anchor_loss",
+            "progress_ranking_loss",
+            "progress_goal_loss",
+            "progress_auxiliary_loss",
         ):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):

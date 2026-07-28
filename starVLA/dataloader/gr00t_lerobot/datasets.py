@@ -1374,7 +1374,8 @@ class LeRobotSingleDataset(Dataset):
         trajectory_id, base_index = self.all_steps[index]
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
-        return self._pack_sample(data)
+        sample = self._pack_sample(data)
+        return self._attach_progress_fields(sample, trajectory_id, base_index)
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
@@ -1436,6 +1437,58 @@ class LeRobotSingleDataset(Dataset):
                 sample["state"] = state
 
         return sample
+    def _attach_progress_fields(
+        self, sample: dict, trajectory_id: int, base_index: int
+    ) -> dict:
+        """Optionally attach episode endpoints and normalized time progress.
+
+        Endpoint video decoding is deliberately opt-in because it adds two
+        random accesses per view. Existing datasets and frameworks therefore
+        retain their original sample schema and I/O cost by default.
+        """
+        enabled = (
+            self.data_cfg is not None
+            and self.data_cfg.get("include_progress", False) not in ["False", False]
+        )
+        if not enabled:
+            return sample
+
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        trajectory_length = int(self.trajectory_lengths[trajectory_index])
+        last_index = max(trajectory_length - 1, 0)
+        progress_target = (
+            float(np.clip(base_index / last_index, 0.0, 1.0))
+            if last_index > 0
+            else 1.0
+        )
+        start_images = []
+        goal_images = []
+        for video_key in self.modality_keys["video"]:
+            offsets = np.asarray(self.delta_indices[video_key])
+            if offsets.ndim != 1 or offsets.size == 0:
+                raise ValueError(
+                    f"video delta indices for {video_key!r} must be non-empty"
+                )
+            # Select the observation with offset closest to zero. This also
+            # handles context configs such as [-1, 0, 4, 8].
+            current_offset_index = int(np.abs(offsets).argmin())
+            start_frames = self.get_video(trajectory_id, video_key, 0)
+            goal_frames = self.get_video(trajectory_id, video_key, last_index)
+            start_images.append(
+                Image.fromarray(start_frames[current_offset_index]).resize((224, 224))
+            )
+            goal_images.append(
+                Image.fromarray(goal_frames[current_offset_index]).resize((224, 224))
+            )
+
+        sample["progress_start_image"] = start_images
+        sample["progress_goal_image"] = goal_images
+        sample["progress_target"] = np.float32(progress_target)
+        sample["progress_episode_id"] = (
+            f"{self.dataset_name}:{int(trajectory_id)}"
+        )
+        return sample
+
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
@@ -2406,6 +2459,7 @@ class LeRobotMixtureDataset(Dataset):
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
+                sample = dataset._attach_progress_fields(sample, trajectory_id, step)
                 
                 return sample
                 

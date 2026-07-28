@@ -42,6 +42,9 @@ class PolicyServerWrapper:
         device: str = "cuda",
         use_bf16: bool = False,
         unnorm_key: Optional[str] = None,
+        progress_mode: str = "learned",
+        fixed_progress: float = 0.5,
+        progress_ema: Optional[float] = None,
     ) -> None:
         self._ckpt_path = str(ckpt_path)
 
@@ -49,8 +52,23 @@ class PolicyServerWrapper:
         framework = baseframework.from_pretrained(self._ckpt_path)
         if use_bf16:
             framework = framework.to(torch.bfloat16)
+        configure_progress = getattr(framework, "configure_progress_inference", None)
+        if configure_progress is not None:
+            configure_progress(
+                mode=progress_mode,
+                fixed_value=fixed_progress,
+                ema=progress_ema,
+            )
+        elif progress_mode != "learned" or progress_ema is not None:
+            raise ValueError(
+                f"framework {type(framework).__name__} does not support "
+                "progress inference ablations"
+            )
         framework = framework.to(device).eval()
         self._framework = framework
+        self._progress_mode = progress_mode
+        self._fixed_progress = float(fixed_progress)
+        self._progress_ema = getattr(framework, "progress_ema", None)
 
         # Co-located metadata.
         model_cfg, _ = read_mode_config(self._ckpt_path)
@@ -118,6 +136,9 @@ class PolicyServerWrapper:
             "visual_context_length": self._visual_context_length,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
+            "progress_mode": self._progress_mode,
+            "fixed_progress": self._fixed_progress,
+            "progress_ema": self._progress_ema,
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
@@ -172,4 +193,10 @@ class PolicyServerWrapper:
             [proc.unapply_actions(normalized[b]) for b in range(normalized.shape[0])],
             axis=0,
         )
-        return {"actions": unnorm}
+        result = {"actions": unnorm}
+        # Optional framework diagnostics remain normalized-independent and can
+        # be consumed by rollout monitors without changing action handling.
+        for key in ("progress", "raw_progress", "conditioning_progress"):
+            if key in out:
+                result[key] = np.asarray(out[key])
+        return result
