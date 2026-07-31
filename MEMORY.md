@@ -81,6 +81,71 @@ instead of trusting an old snapshot.
   deterministic future-token residual predictor -> visual-action cross
   attention -> OFT action head.
 
+## LIBERO-10 augmented-data run
+
+- The official LIBERO-10 raw-data audit found 500 source demonstrations versus
+  379 in the existing LeRobot conversion. Strict simulator replay recovered 21
+  missing demonstrations, and the Qwen3-VL-OFT teacher recovered 89 more from
+  the remaining official training initial states. The resulting LIBERO-10
+  coverage is 489 episodes / 130,971 frames; fixed benchmark evaluation states
+  were not used for collection.
+- The registered training mixture is `libero_all_wm_l10_augmented`. Auxiliary
+  dataset weights are proportional to their episode counts (21/379, 15/379,
+  and 74/379), so the augmentation does not manually oversample individual
+  LIBERO-10 trajectories.
+- A from-scratch 220k-step DINOv3 LEWM-OFT run was launched detached on
+  2026-07-29 using shared GPUs 4-7:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_l10aug489_spatial4x4_trainenc1e6_statecond_220k
+  ```
+
+  It uses four processes, per-GPU batch 8, gradient accumulation 1, global
+  batch 32, 2k warmup steps, and saves every 10k steps. `train.pid` identifies
+  the detached supervisor and `train.log` / `metrics.jsonl` contain progress.
+  At step 100, action/L1/latent losses were
+  `1.10901 / 0.20724 / 0.89855`; training was stable without OOM despite GPU
+  sharing.
+- The run completed normally at 220k steps on 2026-07-30. Closed-loop
+  evaluation of `steps_220000_pytorch_model.pt` used seed 7, 10 tasks per
+  suite, 10 trials per task, the model's 8-step execution horizon, and disabled
+  progress conditioning. Success rates were spatial `0.96`, object `0.99`,
+  goal `0.95`, and LIBERO-10 `0.90`, for `380/400 = 0.95` overall. Relative to
+  the validated 200k baseline (`0.94 / 0.99 / 0.96 / 0.71`, `360/400 = 0.90`),
+  the changes were `+0.02 / 0.00 / -0.01 / +0.19` and `+0.05` overall.
+  Results are recorded in
+  `libero_success_rates_steps_220000.txt` in the run directory.
+
+## LIBERO-90 combined-suite run
+
+- The public LIBERO-90 LeRobot v2 conversion is available at
+  `playground/Datasets/LEROBOT_LIBERO_DATA/libero_90_no_noops_lerobot` with
+  3,921 episodes / 569,249 frames. The registered five-suite mixture is
+  `libero_all_wm_l10_augmented_l90`: spatial, object, goal, the augmented
+  LIBERO-10 data, and LIBERO-90.
+- A from-scratch 360k-step DINOv3 LeWM-OFT run was launched detached on
+  2026-07-29 using shared GPUs 5-7:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_l10aug489_l90_spatial4x4_trainenc1e6_statecond_360k
+  ```
+
+  It uses three processes, per-GPU batch 8, gradient accumulation 1, global
+  batch 24, 3k warmup steps, and saves every 10k steps. `train.pid` identifies
+  the detached supervisor. At step 100, action/L1/latent losses were
+  `1.25327 / 0.27086 / 0.97911`; all were finite, no launch errors were found,
+  and each GPU still had about 21.8 GiB free while sharing with the augmented
+  LIBERO-10 run.
+- The run completed normally at 360k steps on 2026-07-31. Closed-loop
+  evaluation of `steps_360000_pytorch_model.pt` used seed 7, 10 tasks per
+  suite, 10 trials per task, the model's default 8-step execution horizon, and
+  disabled progress conditioning. Success rates were spatial `0.97`, object
+  `0.99`, goal `0.93`, and LIBERO-10 `0.88`, for `377/400 = 0.9425` overall.
+  Relative to the augmented-L10-only 220k run (`0.96 / 0.99 / 0.95 / 0.90`,
+  `380/400 = 0.95`), the changes were `+0.01 / 0.00 / -0.02 / -0.02` and
+  `-0.0075` overall. Results are recorded in
+  `libero_success_rates_steps_360000.txt` in the run directory.
+
 ## Current WALA-style transition work
 
 - The WALA-style mechanism is being added on top of the validated DINOv3
@@ -164,6 +229,24 @@ instead of trusting an old snapshot.
   harmlessly. New runs persist metrics every 100 steps to `metrics.jsonl`; use
   that file for stage analysis and launch with `WANDB_MODE=disabled` unless a
   real W&B entity is configured.
+
+- For any from-scratch `joint` or `combined` run with
+  `transition_joint_freeze_base=false`, keep the `delta_scale` EMA enabled so
+  it follows the trainable encoder/pooler coordinate system. Freeze the EMA only
+  in `teacher`/`student` stages, frozen-base `joint`/`combined` stages, or a
+  frozen dense-base ablation.
+- The formal from-scratch WALA combined 200k run was restarted on 2026-07-27
+  after fixing that condition. Run directory and detached supervisor PID file:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_spatial4x4_wala_combined_sigreg0_trainenc1e6_statecond_200k
+  playground/Checkpoints/lewm_oft_libero_dinov3b_spatial4x4_wala_combined_sigreg0_trainenc1e6_statecond_200k/train.pid
+  ```
+
+  The invalid frozen-scale run was preserved as
+  `..._invalid_frozen_delta_scale_step126xx_20260727`. At step 100 of the
+  corrected run, `delta_scale=0.33268` and target RMS `=0.30837`, confirming
+  that the EMA is active.
 
 
 ## Patch Policy-style dense current-patch action residual

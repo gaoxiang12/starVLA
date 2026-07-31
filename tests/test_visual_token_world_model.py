@@ -387,6 +387,34 @@ class WALAVisualTransitionAuxiliaryTest(unittest.TestCase):
                 )
             )
 
+    def test_latent_stats_follow_trainable_visual_coordinates(self):
+        framework = object.__new__(LeWM_OFT)
+        torch.nn.Module.__init__(framework)
+        framework.use_dense_patch_action = False
+        framework.dense_patch_freeze_base = True
+
+        cases = (
+            ("off", True, True),
+            ("teacher", False, False),
+            ("student", False, False),
+            ("joint", True, False),
+            ("joint", False, True),
+            ("combined", True, False),
+            ("combined", False, True),
+        )
+        for mode, freeze_base, expected in cases:
+            with self.subTest(mode=mode, freeze_base=freeze_base):
+                framework.transition_mode = mode
+                framework.transition_joint_freeze_base = freeze_base
+                self.assertEqual(
+                    LeWM_OFT._should_update_latent_stats(framework),
+                    expected,
+                )
+
+        framework.transition_mode = "off"
+        framework.use_dense_patch_action = True
+        self.assertFalse(LeWM_OFT._should_update_latent_stats(framework))
+
     def test_teacher_validates_future_shape(self):
         module = self._make_module()
         with self.assertRaisesRegex(ValueError, "future_delta"):

@@ -145,6 +145,42 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
 # Mixtures
 # ---------------------------------------------------------------------------
 DATASET_NAMED_MIXTURES = {
+    # The public IPEC LIBERO-90 conversion (LeRobot v2, no-op frames removed).
+    # Keep it standalone so experiments can choose its sampling weight
+    # explicitly instead of silently changing any existing mixture.
+    "libero_90": [
+        ("libero_90_no_noops_lerobot", 1.0, "libero_franka"),
+    ],
+    "libero_90_wm": [
+        ("libero_90_no_noops_lerobot", 1.0, "libero_franka_wm"),
+    ],
+    # Extend the current four-suite LIBERO mixture with LIBERO-90 while
+    # retaining the recovered/teacher LIBERO-10 trajectories. LIBERO-90 gets
+    # the same top-level weight as each original suite; auxiliary LIBERO-10
+    # weights continue to preserve approximately equal probability per L10
+    # trajectory.
+    "libero_all_wm_l10_augmented_l90": [
+        ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        (
+            "libero_10_replayed_missing_seed7_1.0.0_lerobot",
+            21.0 / 379.0,
+            "libero_franka_wm",
+        ),
+        (
+            "libero_10_qwen_teacher_task8_missing_seed7_1.0.0_lerobot",
+            15.0 / 379.0,
+            "libero_franka_wm",
+        ),
+        (
+            "libero_10_qwen_teacher_remaining_missing_seed7_1.0.0_lerobot",
+            74.0 / 379.0,
+            "libero_franka_wm",
+        ),
+        ("libero_90_no_noops_lerobot", 1.0, "libero_franka_wm"),
+    ],
     "libero_all": [
         ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
@@ -159,6 +195,46 @@ DATASET_NAMED_MIXTURES = {
         ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
         ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
         ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+    ],
+    # Official raw LIBERO-10 demos absent from the IPEC conversion, replayed
+    # under the current simulator and retained only when the success predicate
+    # passes.  The replayed dataset has 21 episodes versus 379 originals, so
+    # 21/379 preserves approximately equal probability per LIBERO-10 episode.
+    "libero_all_wm_l10_replayed": [
+        ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        (
+            "libero_10_replayed_missing_seed7_1.0.0_lerobot",
+            21.0 / 379.0,
+            "libero_franka_wm",
+        ),
+    ],
+    # Adds successful Qwen3-OFT rollouts from the still-missing official
+    # LIBERO-10 training initial states. Auxiliary weights are proportional to
+    # episode counts, preserving approximately equal probability per
+    # LIBERO-10 trajectory without manually oversampling it.
+    "libero_all_wm_l10_augmented": [
+        ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_spatial_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        ("libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm"),
+        (
+            "libero_10_replayed_missing_seed7_1.0.0_lerobot",
+            21.0 / 379.0,
+            "libero_franka_wm",
+        ),
+        (
+            "libero_10_qwen_teacher_task8_missing_seed7_1.0.0_lerobot",
+            15.0 / 379.0,
+            "libero_franka_wm",
+        ),
+        (
+            "libero_10_qwen_teacher_remaining_missing_seed7_1.0.0_lerobot",
+            74.0 / 379.0,
+            "libero_franka_wm",
+        ),
     ],
     "libero_all_wm_ctx2_h20": [
         ("libero_object_no_noops_1.0.0_lerobot", 1.0, "libero_franka_wm_ctx2_h20"),

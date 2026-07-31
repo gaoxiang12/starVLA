@@ -1,0 +1,13 @@
+# Representative held-out suite for checkpoint selection (20 rollouts/mode).
+adjust_bottle
+blocks_ranking_rgb
+blocks_ranking_size
+click_bell
+grab_roller
+handover_mic
+hanging_mug
+open_microwave
+place_container_plate
+stack_blocks_three
+stack_bowls_three
+turn_switch

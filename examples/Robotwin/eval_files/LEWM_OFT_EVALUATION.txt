@@ -1,0 +1,120 @@
+LeWM-OFT RoboTwin 2.0 evaluation
+================================
+
+This protocol is tailored to
+`playground/Checkpoints/lewm_oft_robotwin_dinov2b_spatial4x4_200k`.
+The policy consumes `[head, left wrist, right wrist]` RGB views and the 14-D
+joint state, then executes a 16-step absolute-qpos action chunk.
+
+## Evaluation contract
+
+- Use the official Aloha-AgileX embodiment and `instruction_type: unseen`.
+- Report `demo_clean` as **Easy** and `demo_randomized` as **Hard**.
+- Use seed 0 and 100 valid rollouts per task for final numbers.
+- Report per-task success rate, unweighted 50-task macro success rate, pooled
+  micro success rate with a Wilson 95% interval, and the paired Easy-Hard gap.
+- Keep camera order, image size (224x224), joint permutation, action mode
+  (`abs`), and action chunk length (16) fixed across checkpoints.
+
+The final benchmark is 50 tasks x 2 modes x 100 rollouts = 10,000 rollouts.
+Reduced rollout counts are diagnostics and must not be presented as the final
+benchmark.
+
+## Stage A: interface smoke test
+
+Use the latest checkpoint, 3 valid clean rollouts, and the eight-task smoke
+list. This catches model loading, camera ordering, state/action ordering,
+gripper control, server resets, NaNs, and gross behavior failures.
+
+```bash
+export ROBOTWIN_PATH=/path/to/RoboTwin
+export ROBOTWIN_PYTHON=/path/to/robotwin/bin/python
+export STARVLA_PYTHON=/path/to/starvla/bin/python
+
+CKPT=playground/Checkpoints/lewm_oft_robotwin_dinov2b_spatial4x4_200k/checkpoints/steps_40000_pytorch_model.pt
+MODES=demo_clean EPISODES=3 SEED=91 CUDA_VISIBLE_DEVICES=0 \
+bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
+  "$CKPT" examples/Robotwin/eval_files/task_lists/lewm_oft_smoke.txt
+```
+
+Do not start this alongside training on the same GPU. Inspect at least one
+success and one failure video, and verify that both grippers and both arms move
+in the intended direction.
+
+## Stage B: checkpoint selection
+
+Evaluate available checkpoints on the 12-task selection suite, both modes,
+20 valid rollouts, using seed 91. Seed 91 intentionally separates selection
+scenes from the seed-0 final benchmark.
+
+```bash
+for STEP in 10000 20000 30000 40000; do
+  CKPT="playground/Checkpoints/lewm_oft_robotwin_dinov2b_spatial4x4_200k/checkpoints/steps_${STEP}_pytorch_model.pt"
+  EPISODES=20 SEED=91 CUDA_VISIBLE_DEVICES=0,1,2,3 \
+  bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
+    "$CKPT" examples/Robotwin/eval_files/task_lists/lewm_oft_checkpoint_selection.txt
+done
+```
+
+As training progresses, append 50k, 75k, 100k, 150k, and 200k (or the nearest
+saved checkpoints). Select the checkpoint with the highest balanced selection
+score:
+
+`0.5 * macro(Easy) + 0.5 * macro(Hard)`.
+
+If two checkpoints differ by less than 2 percentage points, treat them as tied
+at this sample size and prefer the later checkpoint only if its Hard score and
+failure videos do not regress. Never use seed-0 final results to choose the
+checkpoint.
+
+## Stage C: official final evaluation
+
+Run all 50 tasks, both modes, 100 valid rollouts, seed 0:
+
+```bash
+SELECTED_CKPT=/path/to/selected_pytorch_model.pt
+EPISODES=100 SEED=0 CUDA_VISIBLE_DEVICES=0,1,2,3 JOBS_PER_GPU=1 \
+bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
+  "$SELECTED_CKPT" all
+```
+
+One policy server is started per active task. Start with `JOBS_PER_GPU=1`;
+increase it only after measuring memory headroom and simulator stability.
+
+The launcher's default setting name includes the checkpoint step. For example,
+the 40k checkpoint is recorded under:
+
+`lewm_oft_robotwin_dinov2b_spatial4x4_200k_dinov2b_lewm_oft_steps_40000`
+
+Summarize and validate completeness:
+
+```bash
+SETTING=lewm_oft_robotwin_dinov2b_spatial4x4_200k_dinov2b_lewm_oft_steps_40000
+python examples/Robotwin/eval_files/summarize_robotwin_eval.py \
+  --result-root "$ROBOTWIN_PATH/eval_result" \
+  --setting "$SETTING" \
+  --episodes 100 \
+  --tasks all \
+  --output-dir "playground/Checkpoints/lewm_oft_robotwin_dinov2b_spatial4x4_200k/robotwin_reports/$SETTING" \
+  --strict
+```
+
+For Stage B, pass the selection task-list path and `--episodes 20`.
+
+## Required comparisons and diagnostics
+
+The primary comparison is the same-data, same-protocol StarVLA-OFT baseline in
+`examples/Robotwin/README.md`. Keep training-data scale explicit: this run uses
+the `robotwin_all_wm` mix, containing both Clean and Randomized data, so it
+should be compared with the data-scaling setting rather than the clean-only
+50-demonstration table.
+
+In addition to aggregate scores, retain:
+
+- the five tasks with the largest Easy-Hard drops;
+- success rates for semantic ordering, precision contact, articulated-object,
+  bimanual handover, and long-horizon stacking tasks;
+- 10-20 representative failure videos split into perception, wrong-arm/joint
+  mapping, grasp/contact, temporal/action-chunk, and timeout failures;
+- checkpoint path/hash, code commit, RoboTwin commit, CUDA/SAPIEN versions,
+  seed, rollout count, GPU model, and the generated CSV/JSON report.

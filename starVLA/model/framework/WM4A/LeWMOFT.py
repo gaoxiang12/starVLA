@@ -1226,6 +1226,24 @@ class LeWM_OFT(baseframework):
         )
         return output
 
+    def _should_update_latent_stats(self) -> bool:
+        """Whether the latent-delta normalizer should track this training run."""
+
+        transition_freezes_visual_coordinates = (
+            self.transition_mode in {"teacher", "student"}
+            or (
+                self.transition_mode in {"joint", "combined"}
+                and getattr(self, "transition_joint_freeze_base", True)
+            )
+        )
+        dense_branch_freezes_visual_coordinates = (
+            self.use_dense_patch_action and self.dense_patch_freeze_base
+        )
+        return not (
+            transition_freezes_visual_coordinates
+            or dense_branch_freezes_visual_coordinates
+        )
+
     def forward(self, examples: List[dict] = None, **kwargs) -> Tuple:
         instructions = [example["lang"] for example in examples]
         actions = [example["action"] for example in examples]
@@ -1289,16 +1307,10 @@ class LeWM_OFT(baseframework):
                 latent,
                 ctx_len=self.wm_ctx_len,
                 goal=task_emb,
-                # A frozen parameter set can still mutate EMA buffers. Keep
-                # the 200k baseline's normalization fixed in every auxiliary
-                # stage so its deployed predictions do not drift implicitly.
-                update_stats=(
-                    self.transition_mode == "off"
-                    and not (
-                        self.use_dense_patch_action
-                        and self.dense_patch_freeze_base
-                    )
-                ),
+                # Freeze the EMA only when the visual coordinate system itself
+                # is frozen. In joint/combined from-scratch training the
+                # encoder and pooler move, so delta_scale must track that drift.
+                update_stats=self._should_update_latent_stats(),
             )
             pred_future_latent = wm_out["pred_future_latent"]
 

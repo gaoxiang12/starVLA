@@ -16,12 +16,13 @@ Framework_name=LeWMOFT
 base_wm=${BASE_WM:-dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth}
 config_yaml=./examples/LIBERO/train_files/starvla_lewm_oft_libero.yaml
 libero_data_root=playground/Datasets/LEROBOT_LIBERO_DATA
-data_mix=libero_all_wm
+data_mix=${DATA_MIX:-libero_all_wm}
 run_root_dir=./playground/Checkpoints
 pretrained_ckpt=${PRETRAINED_CKPT:-}
 
 run_id=${RUN_ID:-lewm_oft_libero_dinov3b_spatial4x4_trainenc1e6_statecond_ema09_200k_fullstate}
 batch=${BATCH:-8}
+grad_accum=${GRAD_ACCUM:-1}
 steps=${STEPS:-200000}
 save_interval=${SAVE_INTERVAL:-10000}
 main_port=${MAIN_PORT:-29593}
@@ -113,6 +114,7 @@ ${ACCELERATE_BIN:-accelerate} launch \
   --datasets.vla_data.include_progress ${INCLUDE_PROGRESS:-${USE_PROGRESS_CHECKER:-false}} \
   --datasets.vla_data.per_device_batch_size ${batch} \
   "${pretrained_args[@]}" \
+  --trainer.gradient_accumulation_steps ${grad_accum} \
   --trainer.is_resume ${IS_RESUME:-false} \
   --trainer.repair_lr_scheduler_on_resume ${REPAIR_LR_SCHEDULER_ON_RESUME:-false} \
   --trainer.max_train_steps ${steps} \

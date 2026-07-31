@@ -1,0 +1,9 @@
+# Fast interface/behavior check. Run 3-5 valid rollouts per task.
+grab_roller
+handover_mic
+place_container_plate
+open_laptop
+blocks_ranking_rgb
+stack_blocks_three
+click_bell
+hanging_mug

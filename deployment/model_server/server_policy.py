@@ -75,7 +75,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
     parser = build_argparser()
     args = parser.parse_args()
-    if os.getenv("DEBUG", False):
+    debug_enabled = os.getenv("DEBUG", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if debug_enabled:
         print("🔍 DEBUGPY is enabled")
         start_debugpy_once()
     main(args)
