@@ -1,0 +1,107 @@
+run_id: lewm_oft_libero_dinov3b_reconstructive_latent_joint_short12_50k
+run_root_dir: playground/Checkpoints
+seed: 42
+wandb_entity: your_name
+wandb_project: starVLA_Libero
+is_debug: false
+version_id: "0.21"
+
+framework:
+  name: LeWMOFT
+  world_model:
+    base_wm: dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+    train_encoder: false
+    num_views: 2
+    n_future: 2
+    ctx_len: 1
+    world_model_only: true
+    freeze_latent_stats: false
+
+    # One joint flow over frozen DINO patches. The dynamics predictor receives
+    # neither actions nor robot state.
+    reconstructive_latent_enabled: true
+    reconstructive_pool_grid_size: 4
+    reconstructive_latent_grid_size: 2
+    reconstructive_latent_dim: 256
+    reconstructive_codec_hidden_dim: 512
+    reconstructive_state_dim: 8
+    reconstructive_state_hidden_dim: 512
+    reconstructive_predictor_dim: 256
+    reconstructive_predictor_depth: 4
+    reconstructive_predictor_heads: 8
+    reconstructive_predictor_ffn: 1024
+    reconstructive_reconstruction_weight: 1.0
+    reconstructive_prediction_weight: 1.0
+    reconstructive_state_weight: 0.5
+    latent_stats_momentum: 0.99
+
+    # Keep all pre-existing LeWMOFT auxiliary branches out of this objective.
+    predictor_state_dim: 0
+    loss_latent_weight: 0.0
+    latent_cosine_weight: 0.0
+    residual_predictor_sigreg_weight: 0.0
+    visual_tokens_per_view: 16
+    visual_token_dim: 384
+    visual_diagnostics: false
+    use_state_cond: false
+    use_state_probe: false
+    use_progress_checker: false
+    transition_mode: "off"
+    predictable_innovation_enabled: false
+
+  action_model:
+    action_model_type: MLP
+    action_dim: 7
+    state_dim: 7
+    action_horizon: 8
+    future_action_window_size: 7
+    past_action_window_size: 0
+    action_hidden_dim: 384
+    random_execution_horizons: [1, 2, 4, 8]
+    random_prefix_loss_weight: 0.0
+
+  lang_cond:
+    num_buckets: 4096
+    embed_dim: 384
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    include_state: true
+    data_root_dir: playground/Datasets/LEROBOT_LIBERO_DATA
+    data_mix: libero_all_reconstructive_wm_l10_augmented
+    future_obs_frames: true
+    include_progress: false
+    action_type: delta_qpos
+    sequential_step_sampling: false
+    per_device_batch_size: 4
+    load_all_data_for_training: true
+    obs_image_size: [224, 224]
+    video_backend: pyav
+
+trainer:
+  is_resume: false
+  max_train_steps: 50000
+  num_warmup_steps: 500
+  save_interval: 5000
+  eval_interval: 1000000
+  learning_rate:
+    base: 1.0e-4
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 1.0e-6
+  freeze_modules: ""
+  loss_scale:
+    vla: 1.0
+    vlm: 0.0
+  max_grad_norm: 1.0
+  weight_decay: 0.0
+  logging_frequency: 20
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: false
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 1.0e-8

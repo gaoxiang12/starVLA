@@ -54,6 +54,8 @@ datasets:
     include_state: true
     data_root_dir: playground/Datasets/RoboTwin
     data_mix: robotwin_all_wm
+    # All episodes in one RoboTwin task share one stable language/task ID.
+    task_language_mode: dataset_name
     future_obs_frames: true
     action_type: abs_qpos
     action_mode: abs

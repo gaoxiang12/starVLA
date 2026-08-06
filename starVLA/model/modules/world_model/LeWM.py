@@ -1,11 +1,12 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
 """
-LeWM World Model Interface — ViT encoder frontend.
+LeWM World Model Interface — DINOv3 encoder frontend.
 
-Wraps the LeWorldModel (LeWM) front-end: a (pretrained) HuggingFace ViT
-encoder. The flow-matching predictor of the original LeWM is intentionally
-dropped — in starVLA the action head is provided by a separate (OFT) module.
+Wraps the LeWorldModel (LeWM) front-end: a raw facebookresearch/dinov3
+torchhub checkpoint converted to a HuggingFace ``DINOv3ViTModel``. The
+flow-matching predictor of the original LeWM is intentionally dropped — in
+starVLA the action head is provided by a separate (OFT) module.
 
 Per-frame latent (matches the LeWM `encode()` convention):
     latent = concat([CLS_token, mean_pool(patch_tokens)])  -> dim = 2 * hidden
@@ -39,48 +40,35 @@ class _LeWM_Interface(nn.Module):
         super().__init__()
 
         wm_cfg = config.framework.get("world_model", {})
-        model_name = wm_cfg.get(
-            "base_wm",
-            config.framework.get("qwenvl", {}).get("base_vlm", "WinKawaks/vit-tiny-patch16-224"),
-        )
+        model_name = wm_cfg.get("base_wm")
+        if not model_name:
+            raise ValueError(
+                "framework.world_model.base_wm is required (e.g. "
+                "facebook/dinov2-base or a DINOv3 .pth); the legacy "
+                "qwenvl.base_vlm / vit-tiny fallback was removed"
+            )
         self.config = config
         self.train_encoder = bool(wm_cfg.get("train_encoder", False))
 
-        # DINOv3 ships as raw facebookresearch/dinov3 torchhub ``.pth`` files
-        # (not HF format) whose token layout is [CLS, register_tokens, patches].
-        # Route those through a dedicated converter and record the register
-        # prefix so patch pooling skips them. Everything else (HF ViT / DINO v1 /
-        # DINOv2) keeps the original AutoModel path with a single CLS prefix.
-        is_dinov3_raw = model_name.endswith(".pth") and "dinov3" in os.path.basename(model_name).lower()
-        if is_dinov3_raw:
-            from .dinov3_loader import load_dinov3
+        # DINOv3 is the only supported encoder: raw facebookresearch/dinov3
+        # torchhub ``.pth`` files whose token layout is [CLS, register_tokens,
+        # patches]. The HF ViT / DINO v1 / DINOv2 AutoModel path was removed.
+        is_dinov3_raw = (
+            model_name.endswith(".pth")
+            and "dinov3" in os.path.basename(model_name).lower()
+        )
+        if not is_dinov3_raw:
+            raise ValueError(
+                "LeWM world model now supports only raw DINOv3 checkpoints "
+                "(*.pth with 'dinov3' in the filename); "
+                f"got {model_name!r}"
+            )
 
-            logger.info(f"Loading DINOv3 vision encoder from raw checkpoint {model_name}")
-            self.encoder, self.processor, num_register = load_dinov3(model_name)
-            self.num_prefix_tokens = 1 + num_register
-        else:
-            from transformers import AutoImageProcessor, AutoModel
+        from .dinov3_loader import load_dinov3
 
-            logger.info(f"Loading LeWM vision encoder from {model_name}")
-
-            # AutoModel resolves the right class from the checkpoint config, so the
-            # same code path supports ViT (WinKawaks/vit-*, google/vit-*), DINO v1
-            # (facebook/dino-vit*) and DINOv2 (facebook/dinov2-*). DINOv2's
-            # Dinov2Model does not accept ``add_pooling_layer``; fall back without it.
-            try:
-                self.encoder = AutoModel.from_pretrained(model_name, add_pooling_layer=False)
-            except TypeError:
-                self.encoder = AutoModel.from_pretrained(model_name)
-            try:
-                # use_fast=True selects ViTImageProcessorFast, which batches
-                # resize/normalize as tensor ops (optionally on GPU) instead of a
-                # per-image PIL/numpy loop. The slow processor is a severe CPU
-                # bottleneck when encoding B*T*V views per forward pass.
-                self.processor = AutoImageProcessor.from_pretrained(model_name, use_fast=True)
-            except Exception:  # pragma: no cover - fall back to default ImageNet stats
-                self.processor = None
-            # HF ViT / DINO v1 / DINOv2 emit [CLS, patches] (no register tokens).
-            self.num_prefix_tokens = 1
+        logger.info(f"Loading DINOv3 vision encoder from raw checkpoint {model_name}")
+        self.encoder, self.processor, num_register = load_dinov3(model_name)
+        self.num_prefix_tokens = 1 + num_register
 
         vit_hidden = self.encoder.config.hidden_size
         # LeWM latent = concat(cls, mean-pool patches) -> 2 * hidden

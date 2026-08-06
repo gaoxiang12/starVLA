@@ -112,6 +112,51 @@ class Libero4in1WMDataConfig(Libero4in1DataConfig):
         ])
 
 
+class Libero4in1ReconstructiveWMDataConfig(Libero4in1WMDataConfig):
+    """Short, aligned frames for joint reconstructive latent training.
+
+    The compact latent reconstructs frozen DINO features and decodes robot
+    state at every real frame, so image and state must use identical temporal
+    indices.  Consecutive +1/+2 targets test the more predictable local motion
+    regime suggested by the held-out Stage-C diagnosis.
+    """
+
+    video_indices = [0, 1, 2]
+    state_indices = [0, 1, 2]
+
+
+class Libero4in1SmoothLatentWMDataConfig(Libero4in1DataConfig):
+    """Consecutive prediction targets plus a ranking-only same-episode frame."""
+
+    video_indices = [0, 1, 2, 8]
+
+    def modality_config(self):
+        cfg = super().modality_config()
+        cfg["video"] = ModalityConfig(
+            delta_indices=self.video_indices, modality_keys=self.video_keys
+        )
+        return cfg
+
+
+class Libero4in1SmoothLatentWMRolloutDataConfig(Libero4in1DataConfig):
+    """Consecutive targets for a two-step autoregressive rollout plus far frame.
+
+    Step 1 supervises [t,t+1,t+2] exactly as the single-shot config; the extra
+    t+3/t+4 frames let the predictor be supervised on its own re-anchored
+    output (rollout_steps=2, n_future=2); t+8 stays the same-episode
+    temporal-order reference.
+    """
+
+    video_indices = [0, 1, 2, 3, 4, 8]
+
+    def modality_config(self):
+        cfg = super().modality_config()
+        cfg["video"] = ModalityConfig(
+            delta_indices=self.video_indices, modality_keys=self.video_keys
+        )
+        return cfg
+
+
 class Libero4in1WMContext2Horizon20DataConfig(Libero4in1WMDataConfig):
     """LIBERO WM samples aligned to a 20-step action chunk and two-frame context."""
 
@@ -128,11 +173,60 @@ class Libero4in1WMContext2Horizon8DataConfig(Libero4in1WMDataConfig):
     state_indices = [0]
 
 
+class Libero4in1WMContext3Horizon8DataConfig(Libero4in1WMDataConfig):
+    """Three-frame causal history plus the unchanged +4/+8 latent targets."""
+
+    video_indices = [-8, -4, 0, 4, 8]
+    state_indices = [-8, -4, 0]
+
+
+class Libero4in1WMLocalDynamicsContext3Horizon8DataConfig(Libero4in1WMDataConfig):
+    """Recent visual motion for local dynamics, then baseline +4/+8 targets."""
+
+    # Match the standard deployment history deque: its final three consecutive
+    # observations are [t-2,t-1,t]. The innovation branch alone consumes these;
+    # the frozen base predictor still receives only t.
+    video_indices = [-2, -1, 0, 4, 8]
+    state_indices = [0]
+
+
+class Libero4in1WMRolloutHorizon16DataConfig(Libero4in1WMDataConfig):
+    """Four future frames at the deployed +4 cadence for multi-step rollout.
+
+    The first two targets are exactly the baseline +4/+8 pair, so a two-step
+    rollout run stays directly comparable to every single-shot checkpoint while
+    additionally supervising the predictor on its own re-anchored output.
+    """
+
+    video_indices = [0, 4, 8, 12, 16]
+    state_indices = [0]
+
+
+class Libero4in1WMRolloutHorizon32DataConfig(Libero4in1WMDataConfig):
+    """Eight future frames for a four-step rollout (about 1.6s at 20 Hz)."""
+
+    video_indices = [0, 4, 8, 12, 16, 20, 24, 28, 32]
+    state_indices = [0]
+
+
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
     "libero_franka_wm": Libero4in1WMDataConfig(),
+    "libero_franka_reconstructive_wm": (
+        Libero4in1ReconstructiveWMDataConfig()
+    ),
+    "libero_franka_smooth_latent_wm": Libero4in1SmoothLatentWMDataConfig(),
+    "libero_franka_smooth_latent_wm_rollout": (
+        Libero4in1SmoothLatentWMRolloutDataConfig()
+    ),
     "libero_franka_wm_ctx2_h8": Libero4in1WMContext2Horizon8DataConfig(),
+    "libero_franka_wm_ctx3_h8": Libero4in1WMContext3Horizon8DataConfig(),
+    "libero_franka_wm_localctx3_h8": (
+        Libero4in1WMLocalDynamicsContext3Horizon8DataConfig()
+    ),
     "libero_franka_wm_ctx2_h20": Libero4in1WMContext2Horizon20DataConfig(),
+    "libero_franka_wm_rollout_h16": Libero4in1WMRolloutHorizon16DataConfig(),
+    "libero_franka_wm_rollout_h32": Libero4in1WMRolloutHorizon32DataConfig(),
 }
 ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     # Per Proposal A, embodiment_tag now lives as a classvar on each DataConfig.
@@ -255,3 +349,77 @@ DATASET_NAMED_MIXTURES = {
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
     ],
 }
+
+# Match the augmented LIBERO mixture used by the 220k warm-start checkpoint,
+# while swapping only its frame schema to the two-context-frame variant.
+DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_ctx2_h8"] = [
+    (dataset, weight, "libero_franka_wm_ctx2_h8")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Same trajectories and sampling weights, with a longer causal observation and
+# proprio history for the action-free residual-correction experiment.
+DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_ctx3_h8"] = [
+    (dataset, weight, "libero_franka_wm_ctx3_h8")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Same trajectory distribution, but with the deployment-compatible recent
+# history [t-2,t-1,t] used by the compact local-dynamics bottleneck.
+DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_localctx3_h8"] = [
+    (dataset, weight, "libero_franka_wm_localctx3_h8")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Same trajectories again, extended to +12/+16 (and +32) so the world model can
+# be supervised on its own re-anchored predictions instead of only on
+# teacher-forced single-shot targets.
+DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_rollout_h16"] = [
+    (dataset, weight, "libero_franka_wm_rollout_h16")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_rollout_h32"] = [
+    (dataset, weight, "libero_franka_wm_rollout_h32")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Preserve the exact augmented four-suite trajectory distribution used by the
+# previous LIBERO world-model experiments, changing only the temporal schema
+# to aligned consecutive image/state frames.
+DATASET_NAMED_MIXTURES["libero_all_reconstructive_wm_l10_augmented"] = [
+    (dataset, weight, "libero_franka_reconstructive_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Same augmented LIBERO distribution with [t,t+1,t+2,t+8] video frames.  The
+# first three define direct future prediction and local smoothness; t+8 is only
+# a same-episode temporal-order reference.
+DATASET_NAMED_MIXTURES["libero_all_smooth_latent_wm_l10_augmented"] = [
+    (dataset, weight, "libero_franka_smooth_latent_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Same distribution with [t,t+1,t+2,t+3,t+4,t+8] for a two-step rollout: step 1
+# is teacher-forced on [t,t+1,t+2], step 2 is supervised on the predictor's own
+# re-anchored output, and t+8 remains the same-episode temporal-order frame.
+DATASET_NAMED_MIXTURES["libero_all_smooth_latent_wm_l10_augmented_rollout"] = [
+    (dataset, weight, "libero_franka_smooth_latent_wm_rollout")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_smooth_latent_wm_l10_augmented"
+    ]
+]

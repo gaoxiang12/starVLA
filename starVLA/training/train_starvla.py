@@ -126,6 +126,13 @@ class VLATrainer(TrainerUtils):
 
         self.completed_steps = 0
         self.total_batch_size = self._calculate_total_batch_size()
+        world_model_cfg = self.config.framework.get("world_model", {})
+        # A representation-only run has no meaningful action prediction to
+        # score. In particular, reconstructive compact-latent experiments do
+        # not connect their latent to the action head by design.
+        self.action_evaluation_enabled = not bool(
+            world_model_cfg.get("world_model_only", False)
+        )
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -414,7 +421,10 @@ class VLATrainer(TrainerUtils):
                     }
                 )
 
-            if self.completed_steps % self.config.trainer.eval_interval == 0:
+            if (
+                self.action_evaluation_enabled
+                and self.completed_steps % self.config.trainer.eval_interval == 0
+            ):
                 step_metrics = self.eval_action_model(step_metrics)
 
             step_metrics["timing/data"] = t_end_data - t_start_data
@@ -486,7 +496,12 @@ class VLATrainer(TrainerUtils):
         for k in (
             "l1_action_loss",
             "latent_loss",
+            "latent_cosine_loss",
+            "world_model_only_loss",
             "sigreg_loss",
+            "latent_base_loss",
+            "context_correction_rms",
+            "context_correction_to_base_ratio",
             "delta_scale",
             "delta_target_rms",
             "delta_pred_rms",
@@ -532,6 +547,15 @@ class VLATrainer(TrainerUtils):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):
                 step_log[k] = v.item()
+        if isinstance(output_dict, dict):
+            for k, v in output_dict.items():
+                if (
+                    k.startswith("latent_loss_horizon_")
+                    or k.startswith("innovation_")
+                    or k.startswith("reconstructive_")
+                    or k.startswith("smooth_")
+                ) and torch.is_tensor(v):
+                    step_log[k] = v.item()
         return step_log
 
     def _finalize_training(self):
@@ -565,6 +589,13 @@ def main(cfg) -> None:
 
     cfg = wrap_config(cfg)
     logger.info("✅ Configuration wrapped for access tracking")
+
+    # Model construction initializes experiment-specific branches (for
+    # example the predictable-innovation basis). Seed before construction so
+    # the YAML seed governs those parameters, not only the later train loop.
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    construction_seed = cfg.seed + rank if hasattr(cfg, "seed") else rank + 3047
+    set_seed(construction_seed)
 
     output_dir = setup_directories(cfg=cfg)
     vla = build_framework(cfg)

@@ -51,6 +51,7 @@ from starVLA.dataloader.gr00t_lerobot.schema import (
 )
 from starVLA.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
 from starVLA.dataloader.gr00t_lerobot.transform.state_action import StateActionTransform
+from starVLA.task_language import resolve_task_language
 
 from functools import partial
 from typing import Tuple, List
@@ -1312,6 +1313,15 @@ class LeRobotSingleDataset(Dataset):
             with open(tasks_path, "r") as f:
                 tasks = [json.loads(line) for line in f]
             df = pd.DataFrame(tasks)
+            language_mode = (
+                self.data_cfg.get("task_language_mode", "metadata")
+                if self.data_cfg is not None
+                else "metadata"
+            )
+            df["task"] = [
+                resolve_task_language(task, self.dataset_name, language_mode)
+                for task in df["task"]
+            ]
             return df.set_index("task_index")
         
         elif self._lerobot_version == "v3.0":
@@ -1320,6 +1330,15 @@ class LeRobotSingleDataset(Dataset):
             df = df.reset_index()  # convert index to a column, typically named 'index'
             df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
             df = df[['task_index', 'task']]  # reorder columns
+            language_mode = (
+                self.data_cfg.get("task_language_mode", "metadata")
+                if self.data_cfg is not None
+                else "metadata"
+            )
+            df["task"] = [
+                resolve_task_language(task, self.dataset_name, language_mode)
+                for task in df["task"]
+            ]
             return df
     def _check_integrity(self):
         """Use the config to check if the keys are valid and detect silent data corruption."""
@@ -1375,6 +1394,9 @@ class LeRobotSingleDataset(Dataset):
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
         sample = self._pack_sample(data)
+        sample = self._attach_future_frame_validity(
+            sample, trajectory_id, base_index
+        )
         return self._attach_progress_fields(sample, trajectory_id, base_index)
 
     def _pack_sample(self, data: dict) -> dict:
@@ -1437,6 +1459,37 @@ class LeRobotSingleDataset(Dataset):
                 sample["state"] = state
 
         return sample
+
+    def _attach_future_frame_validity(
+        self, sample: dict, trajectory_id: int, base_index: int
+    ) -> dict:
+        """Expose which requested video offsets are real rather than padding.
+
+        Video loading clamps out-of-range offsets to the first/last frame.  A
+        temporal representation loss must not treat those repeated frames as
+        evidence of smooth dynamics, so this opt-in mask is computed from the
+        unclamped offsets.
+        """
+
+        enabled = (
+            self.data_cfg is not None
+            and self.data_cfg.get("future_obs_valid_mask", False)
+            not in ["False", False]
+        )
+        if not enabled:
+            return sample
+        video_keys = self.modality_keys.get("video", [])
+        if not video_keys:
+            raise ValueError("future_obs_valid_mask requires a video modality")
+        offsets = np.asarray(self.delta_indices[video_keys[0]], dtype=np.int64)
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        trajectory_length = int(self.trajectory_lengths[trajectory_index])
+        absolute_steps = offsets + int(base_index)
+        sample["future_frame_valid_mask"] = np.logical_and(
+            absolute_steps >= 0, absolute_steps < trajectory_length
+        )
+        return sample
+
     def _attach_progress_fields(
         self, sample: dict, trajectory_id: int, base_index: int
     ) -> dict:
@@ -2459,6 +2512,9 @@ class LeRobotMixtureDataset(Dataset):
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
+                sample = dataset._attach_future_frame_validity(
+                    sample, trajectory_id, step
+                )
                 sample = dataset._attach_progress_fields(sample, trajectory_id, step)
                 
                 return sample

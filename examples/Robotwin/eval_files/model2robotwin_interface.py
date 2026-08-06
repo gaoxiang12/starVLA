@@ -5,11 +5,16 @@ import cv2 as cv
 import numpy as np
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
+from starVLA.task_language import resolve_task_language
 
 try:
     from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
 except ImportError:
     AdaptiveEnsembler = None
+
+
+ROBOTWIN_TO_MODEL_JOINT_ORDER = [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13]
+MODEL_TO_ROBOTWIN_JOINT_ORDER = [0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13]
 
 
 class ModelClient:
@@ -68,6 +73,7 @@ class ModelClient:
 
         server_meta = self.client.get_server_metadata()
         self.action_chunk_size = server_meta["action_chunk_size"]
+        self.task_language_mode = server_meta.get("task_language_mode", "metadata")
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_mode: {action_mode}, normalization_mode: {normalization_mode}, "
@@ -91,10 +97,6 @@ class ModelClient:
         step: int = 0,
     ) -> np.ndarray:
         state = example.get("state", None)
-        # if state is not None:
-        #     state = self.normalize_state(state, self.state_norm_stats)
-        #     state = state[[0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 6, 13]]
-        #     example["state"] = state.reshape(1, -1)
 
         # Store initial state for delta/rel modes
         if self.action_mode in ["delta", "rel"] and self.initial_state is None:
@@ -115,7 +117,6 @@ class ModelClient:
         images = [self._resize_image(image) for image in images]
         example["image"] = images
         example_copy = example.copy()
-        example_copy.pop("state")
         vla_input = {
             "examples": [example_copy],
             "do_sample": False,
@@ -149,7 +150,7 @@ class ModelClient:
         if self.action_mode == "delta":
             self.prev_action = current_action.copy()
 
-        current_action = current_action[[0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13]]
+        current_action = current_action[MODEL_TO_ROBOTWIN_JOINT_ORDER]
         return current_action
 
     def _delta_to_absolute(self, delta_actions: np.ndarray, current_state: np.ndarray) -> np.ndarray:
@@ -200,7 +201,11 @@ def reset_model(model):
 
 def eval(TASK_ENV, model, observation):
     # Get instruction
-    instruction = TASK_ENV.get_instruction()
+    instruction = resolve_task_language(
+        TASK_ENV.get_instruction(),
+        getattr(TASK_ENV, "task_name", TASK_ENV.__class__.__name__),
+        getattr(model, "task_language_mode", "metadata"),
+    )
 
     # Prepare images
     head_img = observation["observation"]["head_camera"]["rgb"]
@@ -210,11 +215,16 @@ def eval(TASK_ENV, model, observation):
     # Order: [head, left, right] to match training order
     images = [head_img, left_img, right_img]
 
-    state = observation["joint_action"]["vector"]
+    state = np.asarray(observation["joint_action"]["vector"], dtype=np.float32)
+    if state.shape != (14,):
+        raise ValueError(f"Expected RoboTwin joint state shape (14,), got {state.shape}")
+    # RoboTwin uses [L joints, L grip, R joints, R grip], while StarVLA's
+    # training transform concatenates [L joints, R joints, L grip, R grip].
+    state = state[ROBOTWIN_TO_MODEL_JOINT_ORDER]
     example = {
         "lang": str(instruction),
         "image": images,
-        "state": state,  # Required for delta/rel action modes
+        "state": state,
     }
 
     action = model.step(example, step=TASK_ENV.take_action_cnt)

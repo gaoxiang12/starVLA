@@ -35,6 +35,27 @@ class _TAESD_Interface(nn.Module):
         self.latent_grid_size = self.image_size // 8
         self.policy_hidden_size = int(wm_cfg.get("policy_hidden_dim", 1536))
 
+        # TAESD emits a wide, shallow map (32x32x4 at 256px).  The action head
+        # wants few, deep tokens, so fold each block of pixels into the channel
+        # axis rather than projecting 4-d patches.
+        self.tokens_per_view = int(
+            wm_cfg.get("visual_tokens_per_view", wm_cfg.get("num_visual_tokens", 16))
+        )
+        tokens_per_side = int(round(self.tokens_per_view**0.5))
+        if tokens_per_side**2 != self.tokens_per_view:
+            raise ValueError(
+                f"TAESD tokens_per_view must be a perfect square, got "
+                f"{self.tokens_per_view}"
+            )
+        if self.latent_grid_size % tokens_per_side != 0:
+            raise ValueError(
+                f"TAESD latent grid {self.latent_grid_size} is not divisible by "
+                f"{tokens_per_side} tokens per side"
+            )
+        self.tokens_per_side = tokens_per_side
+        self.block_size = self.latent_grid_size // tokens_per_side
+        self.patch_feature_dim = self.block_size**2 * self.feature_dim
+
         self.encoder.requires_grad_(self.train_encoder)
         self.encoder.train(self.train_encoder)
         self._model_config = SimpleNamespace(hidden_size=self.policy_hidden_size)
@@ -104,9 +125,17 @@ class _TAESD_Interface(nn.Module):
         )
 
     def encode_patch_frames(self, frames_per_example: List) -> torch.Tensor:
-        """Return flattened spatial features as (B, T, V, N, C)."""
+        """Return space-to-depth tokens as (B, T, V, tokens_per_view, C*block^2)."""
         features = self.encode_feature_frames(frames_per_example)
-        return features.flatten(-2).transpose(-1, -2)
+        batch, num_frames, num_views = features.shape[:3]
+        block, side = self.block_size, self.tokens_per_side
+        tokens = features.view(
+            batch, num_frames, num_views, self.feature_dim, side, block, side, block
+        )
+        tokens = tokens.permute(0, 1, 2, 4, 6, 3, 5, 7)
+        return tokens.reshape(
+            batch, num_frames, num_views, self.tokens_per_view, self.patch_feature_dim
+        )
 
     def build_inputs(self, images: List, instructions: List, **kwargs):
         flat = []

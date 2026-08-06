@@ -20,6 +20,12 @@ The final benchmark is 50 tasks x 2 modes x 100 rollouts = 10,000 rollouts.
 Reduced rollout counts are diagnostics and must not be presented as the final
 benchmark.
 
+Per-rollout MP4 encoding is disabled by the StarVLA launcher because it does
+not affect success detection and adds CPU, I/O, and storage overhead. Set
+`ROBOTWIN_EVAL_VIDEO_LOG=1` only for targeted diagnostic runs. The official
+RoboTwin expert feasibility check remains enabled; see "Fast evaluation
+boundaries" below.
+
 ## Stage A: interface smoke test
 
 Use the latest checkpoint, 3 valid clean rollouts, and the eight-task smoke
@@ -31,15 +37,15 @@ export ROBOTWIN_PATH=/path/to/RoboTwin
 export ROBOTWIN_PYTHON=/path/to/robotwin/bin/python
 export STARVLA_PYTHON=/path/to/starvla/bin/python
 
-CKPT=playground/Checkpoints/lewm_oft_robotwin_dinov2b_spatial4x4_200k/checkpoints/steps_40000_pytorch_model.pt
+CKPT=playground/Checkpoints/lewm_oft_robotwin_dinov2b_spatial4x4_200k/checkpoints/steps_200000_pytorch_model.pt
 MODES=demo_clean EPISODES=3 SEED=91 CUDA_VISIBLE_DEVICES=0 \
 bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
   "$CKPT" examples/Robotwin/eval_files/task_lists/lewm_oft_smoke.txt
 ```
 
-Do not start this alongside training on the same GPU. Inspect at least one
-success and one failure video, and verify that both grippers and both arms move
-in the intended direction.
+Do not start this alongside training on the same GPU. For visual inspection,
+rerun one representative success/failure task with
+`ROBOTWIN_EVAL_VIDEO_LOG=1`; do not encode the whole smoke suite by default.
 
 ## Stage B: checkpoint selection
 
@@ -81,15 +87,38 @@ bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
 One policy server is started per active task. Start with `JOBS_PER_GPU=1`;
 increase it only after measuring memory headroom and simulator stability.
 
-The launcher's default setting name includes the checkpoint step. For example,
-the 40k checkpoint is recorded under:
+## Fast evaluation boundaries
 
-`lewm_oft_robotwin_dinov2b_spatial4x4_200k_dinov2b_lewm_oft_steps_40000`
+Turning off video is metric-preserving: it removes only the ffmpeg process and
+MP4 writes. The expert pass cannot be removed in the same generic way. In the
+official evaluator it serves two purposes before every policy rollout:
+
+1. it rejects seeds for which the scripted expert cannot solve the sampled
+   scene, defining the set of 100 valid rollouts;
+2. it records task-specific object and arm metadata used to instantiate the
+   language instruction.
+
+Running the policy directly after scene setup would therefore change both the
+rollout denominator and, for many tasks, the instruction. Such results are a
+different internal protocol and must not be mixed with the official baseline.
+
+For repeated checkpoint evaluation, the compatible optimization is a two-stage
+protocol: run the official expert once per task/mode/seed, persist a manifest
+containing each accepted scene seed and its resolved instruction metadata, then
+reuse that frozen manifest for every checkpoint. This amortizes expert planning
+while preserving identical scenes and instructions. Until that manifest path
+is implemented and validated, final results continue to use the official
+expert pass.
+
+The launcher's default setting name includes the checkpoint step. For example,
+the 200k checkpoint is recorded under:
+
+`lewm_oft_robotwin_dinov2b_spatial4x4_200k_dinov2b_lewm_oft_steps_200000`
 
 Summarize and validate completeness:
 
 ```bash
-SETTING=lewm_oft_robotwin_dinov2b_spatial4x4_200k_dinov2b_lewm_oft_steps_40000
+SETTING=lewm_oft_robotwin_dinov2b_spatial4x4_200k_dinov2b_lewm_oft_steps_200000
 python examples/Robotwin/eval_files/summarize_robotwin_eval.py \
   --result-root "$ROBOTWIN_PATH/eval_result" \
   --setting "$SETTING" \
@@ -114,7 +143,8 @@ In addition to aggregate scores, retain:
 - the five tasks with the largest Easy-Hard drops;
 - success rates for semantic ordering, precision contact, articulated-object,
   bimanual handover, and long-horizon stacking tasks;
-- 10-20 representative failure videos split into perception, wrong-arm/joint
-  mapping, grasp/contact, temporal/action-chunk, and timeout failures;
+- 10-20 targeted diagnostic reruns with video enabled, split into perception,
+  wrong-arm/joint mapping, grasp/contact, temporal/action-chunk, and timeout
+  failures;
 - checkpoint path/hash, code commit, RoboTwin commit, CUDA/SAPIEN versions,
   seed, rollout count, GPU model, and the generated CSV/JSON report.

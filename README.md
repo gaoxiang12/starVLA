@@ -148,6 +148,28 @@ Achieve **state-of-the-art (SOTA) performance** on a variety of benchmarks, as f
 
 > **📖 New to StarVLA?** Check out our step-by-step [**Quick Start Guide**](docs/starVLA_guideline.md) — a complete walkthrough from installation to training to evaluation using the LIBERO benchmark.
 
+### Live training dashboard
+
+starVLA writes dependency-free local metrics to each run's `metrics.jsonl`.
+To inspect all runs below a checkpoint directory in a live browser dashboard:
+
+```bash
+python scripts/training_dashboard.py playground/Checkpoints
+```
+
+Open `http://localhost:6006`. The page automatically discovers runs, refreshes
+while training appends metrics, and supports metric search, smoothing, recent
+record windows, and linear/logarithmic axes. A single run or a direct
+`metrics.jsonl` path can also be used:
+
+```bash
+python scripts/training_dashboard.py playground/Checkpoints/<run_id> --port 6007
+```
+
+On a remote training host, forward the port with your editor or SSH
+(`ssh -L 6006:127.0.0.1:6006 <host>`). The server binds to `127.0.0.1` by
+default so training metrics are not exposed on the network.
+
 ---
 
 ## Benchmark Results

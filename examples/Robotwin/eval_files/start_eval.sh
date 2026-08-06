@@ -126,6 +126,7 @@ Tasks (positional):
 
 Optional flags:
   -s, --seed              Eval seed (default: 0, env: ROBOTWIN_SEED)
+  -e, --episodes          Valid rollouts per task (default: 100, env: EPISODES)
   -j, --jobs-per-gpu      Concurrent jobs per GPU (default: 1, env: ROBOTWIN_JOBS_PER_GPU)
   -p, --base-port         First port to allocate (default: 5694, env: ROBOTWIN_BASE_PORT)
       --server-timeout    Seconds to wait for server (default: 600, env: ROBOTWIN_SERVER_TIMEOUT)
@@ -289,9 +290,14 @@ resolve_tasks() {
 find_conda_python() {
     local env_name="$1"
     local -a search_dirs=()
+    local conda_exe=""
 
     if [[ -n "${CONDA_EXE:-}" ]]; then
         search_dirs+=("$(dirname "$(dirname "${CONDA_EXE}")")/envs")
+    fi
+    conda_exe="$(command -v conda 2>/dev/null || true)"
+    if [[ -n "${conda_exe}" ]]; then
+        search_dirs+=("$(dirname "$(dirname "${conda_exe}")")/envs")
     fi
     if [[ -n "${CONDA_PREFIX:-}" ]]; then
         search_dirs+=("$(dirname "${CONDA_PREFIX}")")
@@ -370,10 +376,15 @@ launch_task_in_slot() {
         trap cleanup_server EXIT INT TERM
 
         export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+        export PYTHONNOUSERSITE=1
         export STARVLA_PYTHON="${STARVLA_PYTHON}"
         export ROBOTWIN_PYTHON="${ROBOTWIN_PYTHON}"
 
-        bash "${SCRIPT_DIR}/run_policy_server.sh" "${CKPT_PATH}" "${gpu_id}" "${port}" > "${server_log}" 2>&1 &
+        bash "${SCRIPT_DIR}/run_policy_server.sh" "${CKPT_PATH}" "${gpu_id}" "${port}" \
+            > >(
+                "${STARVLA_PYTHON}" -u "${SCRIPT_DIR}/strip_terminal_controls.py" \
+                    > "${server_log}"
+            ) 2>&1 &
         server_pid=$!
 
         if ! wait_for_server "${port}" "${ROBOTWIN_SERVER_TIMEOUT:-600}"; then
@@ -390,7 +401,12 @@ launch_task_in_slot() {
             "${gpu_id}" \
             "${CKPT_PATH}" \
             "${port}" \
-            > >(tee "${eval_log}" | grep --line-buffered "Success rate" | sed -u "s/^/[RESULT] ${task_name}: /") 2>&1
+            > >(
+                "${STARVLA_PYTHON}" -u "${SCRIPT_DIR}/strip_terminal_controls.py" \
+                    | tee "${eval_log}" \
+                    | grep --line-buffered "Success rate" \
+                    | sed -u "s/^/[RESULT] ${task_name}: /"
+            ) 2>&1
     ) &
 
     launched_pid=$!
@@ -406,6 +422,7 @@ TASK_CONFIG=""
 POLICY_NAME=""
 CKPT_PATH=""
 opt_seed=""
+opt_episodes=""
 opt_jobs=""
 opt_port=""
 opt_timeout=""
@@ -417,6 +434,7 @@ while (( $# > 0 )); do
         -n|--name)          POLICY_NAME="$2"; shift 2 ;;
         -c|--ckpt)          CKPT_PATH="$2"; shift 2 ;;
         -s|--seed)          opt_seed="$2"; shift 2 ;;
+        -e|--episodes)      opt_episodes="$2"; shift 2 ;;
         -j|--jobs-per-gpu)  opt_jobs="$2"; shift 2 ;;
         -p|--base-port)     opt_port="$2"; shift 2 ;;
         --server-timeout)   opt_timeout="$2"; shift 2 ;;
@@ -450,16 +468,22 @@ if (( $# == 0 )); then
 fi
 
 ROBOTWIN_SEED="${opt_seed:-${ROBOTWIN_SEED:-0}}"
+ROBOTWIN_TEST_NUM="${opt_episodes:-${EPISODES:-${ROBOTWIN_TEST_NUM:-100}}}"
 ROBOTWIN_JOBS_PER_GPU="${opt_jobs:-${ROBOTWIN_JOBS_PER_GPU:-1}}"
 ROBOTWIN_BASE_PORT="${opt_port:-${ROBOTWIN_BASE_PORT:-5694}}"
 ROBOTWIN_SERVER_TIMEOUT="${opt_timeout:-${ROBOTWIN_SERVER_TIMEOUT:-600}}"
+ROBOTWIN_EVAL_VIDEO_LOG="${ROBOTWIN_EVAL_VIDEO_LOG:-0}"
 if ${opt_install}; then
     ROBOTWIN_AUTO_INSTALL_DEPS=1
 fi
 
 STARVLA_PYTHON="$(resolve_python "${STARVLA_PYTHON:-}" "${ROBOTWIN_STARVLA_ENV:-starvla}")"
 ROBOTWIN_PYTHON="$(resolve_python "${ROBOTWIN_PYTHON:-}" "${ROBOTWIN_ENV:-robotwin}")"
-export STARVLA_PYTHON ROBOTWIN_PYTHON
+if [[ ! "${ROBOTWIN_TEST_NUM}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Episodes must be a positive integer, got: ${ROBOTWIN_TEST_NUM}" >&2
+    exit 1
+fi
+export STARVLA_PYTHON ROBOTWIN_PYTHON ROBOTWIN_TEST_NUM ROBOTWIN_EVAL_VIDEO_LOG
 
 echo "[INFO] starvla python: ${STARVLA_PYTHON}"
 echo "[INFO] robotwin python: ${ROBOTWIN_PYTHON}"
@@ -487,6 +511,7 @@ ckpt_stem="${ckpt_name%.*}"
 timestamp="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="${ROBOTWIN_LOG_ROOT:-$(dirname "${CKPT_PATH}")/robotwin_eval_logs/${POLICY_NAME}_${TASK_CONFIG}_${ckpt_stem}_${timestamp}}"
 mkdir -p "${LOG_DIR}"
+LOG_DIR="$(cd "${LOG_DIR}" && pwd)"
 
 next_port="${BASE_PORT}"
 for gpu_id in "${CUDA_DEVICES[@]}"; do
@@ -498,7 +523,8 @@ for gpu_id in "${CUDA_DEVICES[@]}"; do
     done
 done
 
-echo "[INFO] mode=${TASK_CONFIG}  name=${POLICY_NAME}  seed=${ROBOTWIN_SEED}"
+echo "[INFO] mode=${TASK_CONFIG}  name=${POLICY_NAME}  seed=${ROBOTWIN_SEED}  episodes=${ROBOTWIN_TEST_NUM}"
+echo "[INFO] eval_video_log=${ROBOTWIN_EVAL_VIDEO_LOG}"
 echo "[INFO] ckpt=${CKPT_PATH}"
 echo "[INFO] logs=${LOG_DIR}"
 echo "[INFO] gpus=$(join_arr ',' "${CUDA_DEVICES[@]}")  jobs_per_gpu=${JOBS_PER_GPU}  slots=${TOTAL_SLOTS}"

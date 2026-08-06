@@ -216,6 +216,47 @@ The model is trained using the official **RobotWin 2.0 dataset**.
 
 ---
 
+# LeWM-OFT training and evaluation
+
+The local LeWM-OFT recipe uses all 50 Clean and Randomized task datasets,
+three RGB views, 14-D proprioception, and 16-step absolute-qpos action chunks.
+
+Prepare the LeRobot data:
+
+```bash
+.venv/bin/python examples/Robotwin/data_preparation.py \
+  --tasks all --splits clean randomized
+```
+
+Launch a four-GPU training run (choose free GPUs first):
+
+```bash
+CUDA_DEVS=0,1,2,3 \
+ACCELERATE_BIN=.venv/bin/accelerate \
+WANDB_MODE=disabled \
+bash examples/Robotwin/train_files/run_lewm_oft_dinov2b_train.sh
+```
+
+For long runs, invoke that launcher through the repository's usual detached
+`nohup setsid` pattern and retain `train.log` plus the supervisor PID.
+
+The staged evaluation protocol (interface smoke test, checkpoint selection,
+then the 10,000-rollout final benchmark) is documented in
+`eval_files/LEWM_OFT_EVALUATION.txt`. A one-task smoke command is:
+
+```bash
+EPISODES=3 MODES=demo_clean SEED=91 CUDA_VISIBLE_DEVICES=0 \
+bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
+  /path/to/checkpoint.pt click_bell
+```
+
+If `thirdparty/RoboTwin` exists, the launcher selects it automatically.
+Otherwise, set `ROBOTWIN_PATH`. It also auto-detects `.venv` for StarVLA and a
+conda environment named `robotwin`; explicit `STARVLA_PYTHON` and
+`ROBOTWIN_PYTHON` values take precedence.
+
+---
+
 
 
 # Evaluation
@@ -246,48 +287,8 @@ pip install -r examples/Robotwin/eval_files/requirements.txt
 export ROBOTWIN_PATH=/path/to/RoboTwin
 ```
 
-4. Because RoboTwin is a third-party repository, patch your own local RoboTwin checkout so `script/eval_policy.py` accepts `--policy_ckpt_path`.
-
-Apply the following change in your own RoboTwin repo:
-
-```diff
-diff --git a/script/eval_policy.py b/script/eval_policy.py
-index eded198..9fb36e3 100644
---- a/script/eval_policy.py
-+++ b/script/eval_policy.py
-@@ -69,6 +69,7 @@ def main(usr_args):
-     # checkpoint_num = usr_args['checkpoint_num']
-     policy_name = usr_args["policy_name"]
-     instruction_type = usr_args["instruction_type"]
-+    policy_ckpt_path = usr_args["policy_ckpt_path"]
-     save_dir = None
-     video_save_dir = None
-     video_size = None
-@@ -81,6 +82,7 @@ def main(usr_args):
-     args['task_name'] = task_name
-     args["task_config"] = task_config
-     args["ckpt_setting"] = ckpt_setting
-+    args["policy_ckpt_path"] = policy_ckpt_path
-
-     embodiment_type = args.get("embodiment")
-     embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
-@@ -327,11 +329,13 @@ def eval_policy(task_name,
- def parse_args_and_config():
-     parser = argparse.ArgumentParser()
-     parser.add_argument("--config", type=str, required=True)
-+    parser.add_argument("--policy_ckpt_path", type=str, required=True)
-     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
-     args = parser.parse_args()
-
-     with open(args.config, "r", encoding="utf-8") as f:
-         config = yaml.safe_load(f)
-+    config["policy_ckpt_path"] = args.policy_ckpt_path
-
-     # Parse overrides
-     def parse_override_pairs(pairs):
-```
-
-This patch is intentionally documented here rather than vendored into `starVLA`, because RoboTwin is maintained in a separate repository. The StarVLA launcher passes `--policy_ckpt_path` at runtime; without this patch, RoboTwin cannot forward the checkpoint path into `model2robotwin_interface.py`.
+The StarVLA adapter injects its checkpoint path and configurable rollout budget
+at runtime. No changes to the third-party RoboTwin checkout are required.
 
 Optional:
 
@@ -325,6 +326,7 @@ All remaining arguments after flags are treated as tasks. You can specify:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-s`, `--seed` | `0` | Eval seed (also via `ROBOTWIN_SEED`) |
+| `-e`, `--episodes` | `100` | Valid rollouts per task (also via `EPISODES`) |
 | `-j`, `--jobs-per-gpu` | `1` | Concurrent jobs per visible GPU (also via `ROBOTWIN_JOBS_PER_GPU`) |
 | `-p`, `--base-port` | `5694` | First port to allocate (also via `ROBOTWIN_BASE_PORT`) |
 | `--server-timeout` | `600` | Seconds to wait for the policy server to start (also via `ROBOTWIN_SERVER_TIMEOUT`) |
@@ -429,9 +431,11 @@ These environment variables are read when the corresponding flag is not set:
 | `STARVLA_PYTHON` | auto | Explicit path to the starvla Python binary (skips conda env lookup) |
 | `ROBOTWIN_PYTHON` | auto | Explicit path to the robotwin Python binary (skips conda env lookup) |
 | `ROBOTWIN_SEED` | `0` | Eval seed (overridden by `-s`) |
+| `EPISODES` | `100` | Valid rollouts per task (overridden by `-e`) |
 | `ROBOTWIN_JOBS_PER_GPU` | `1` | Concurrent jobs per GPU (overridden by `-j`) |
 | `ROBOTWIN_BASE_PORT` | `5694` | First port to allocate (overridden by `-p`) |
 | `ROBOTWIN_SERVER_TIMEOUT` | `600` | Server startup timeout in seconds (overridden by `--server-timeout`) |
+| `ROBOTWIN_EVAL_VIDEO_LOG` | `0` | Set to `1` to encode every policy rollout as MP4; disabled by default for throughput |
 | `ROBOTWIN_AUTO_INSTALL_DEPS` | `0` | Set to `1` to bootstrap pip deps (overridden by `--install-deps`) |
 | `ROBOTWIN_LOG_ROOT` | auto | Override the log output directory |
 

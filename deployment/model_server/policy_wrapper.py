@@ -29,6 +29,7 @@ import torch
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import read_mode_config
+from starVLA.task_language import normalize_task_language_mode
 
 from deployment.model_server.policy_norm_processor import PolicyNormProcessor
 
@@ -73,11 +74,20 @@ class PolicyServerWrapper:
         # Co-located metadata.
         model_cfg, _ = read_mode_config(self._ckpt_path)
         self._model_cfg = model_cfg
+        vla_data_cfg = model_cfg.get("datasets", {}).get("vla_data", {})
+        self._task_language_mode = normalize_task_language_mode(
+            vla_data_cfg.get("task_language_mode", "metadata")
+        )
 
         # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
         world_model_cfg = model_cfg["framework"].get("world_model", {})
-        self._visual_context_length = int(world_model_cfg.get("ctx_len", 1))
+        legacy_context_length = int(world_model_cfg.get("ctx_len", 1))
+        self._visual_context_length = (
+            int(world_model_cfg.get("innovation_context_len", legacy_context_length))
+            if bool(world_model_cfg.get("predictable_innovation_enabled", False))
+            else legacy_context_length
+        )
         
         if "action_horizon" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])
@@ -139,6 +149,7 @@ class PolicyServerWrapper:
             "progress_mode": self._progress_mode,
             "fixed_progress": self._fixed_progress,
             "progress_ema": self._progress_ema,
+            "task_language_mode": self._task_language_mode,
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:

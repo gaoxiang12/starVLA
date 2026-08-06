@@ -15,6 +15,7 @@ BASE_WM="${BASE_WM:-facebook/dinov2-base}"
 CUDA_DEVS="${CUDA_DEVS:-0,1,2,3}"
 NUM_PROCESSES="${NUM_PROCESSES:-$(tr ',' '\n' <<<"${CUDA_DEVS}" | wc -l)}"
 BATCH="${BATCH:-8}"
+GRAD_ACCUM="${GRAD_ACCUM:-1}"
 STEPS="${STEPS:-200000}"
 SAVE_INTERVAL="${SAVE_INTERVAL:-10000}"
 WARMUP="${WARMUP:-2000}"
@@ -36,6 +37,7 @@ if ! command -v "${ACCELERATE_BIN}" >/dev/null 2>&1; then
 fi
 
 export CUDA_VISIBLE_DEVICES="${CUDA_DEVS}"
+export ACCELERATE_GRADIENT_ACCUMULATION_STEPS="${GRAD_ACCUM}"
 
 OUTPUT_DIR="${RUN_ROOT}/${RUN_ID}"
 mkdir -p "${OUTPUT_DIR}"
@@ -61,10 +63,12 @@ fi
   --framework.world_model.train_encoder "${TRAIN_ENCODER:-true}" \
   --datasets.vla_data.data_root_dir "${DATA_ROOT}" \
   --datasets.vla_data.data_mix "${DATA_MIX}" \
+  --datasets.vla_data.task_language_mode "${TASK_LANGUAGE_MODE:-dataset_name}" \
   --datasets.vla_data.future_obs_frames true \
   --datasets.vla_data.include_state true \
   --datasets.vla_data.per_device_batch_size "${BATCH}" \
   "${pretrained_args[@]}" \
+  --trainer.gradient_accumulation_steps "${GRAD_ACCUM}" \
   --trainer.is_resume "${IS_RESUME:-false}" \
   --trainer.repair_lr_scheduler_on_resume "${REPAIR_LR_SCHEDULER_ON_RESUME:-false}" \
   --trainer.freeze_modules "${FREEZE_MODULES:-}" \

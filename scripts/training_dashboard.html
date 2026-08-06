@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>starVLA Training Dashboard</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #071017;
+      --panel: #0d1821;
+      --panel-2: #111f2a;
+      --line: #203441;
+      --muted: #8399a6;
+      --text: #eaf5f7;
+      --cyan: #58e0d1;
+      --cyan-soft: rgba(88, 224, 209, .13);
+      --orange: #ffb454;
+      --red: #ff7272;
+      --green: #67df93;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: radial-gradient(circle at 80% -10%, #12313a 0, transparent 32rem), var(--bg); color: var(--text); }
+    button, input, select { font: inherit; }
+    .app { min-height: 100vh; display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+    aside { position: sticky; top: 0; height: 100vh; overflow: auto; border-right: 1px solid var(--line); background: rgba(8, 18, 25, .94); padding: 22px 18px; }
+    .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; letter-spacing: .04em; font-weight: 750; }
+    .brand-mark { width: 29px; height: 29px; border: 1px solid var(--cyan); border-radius: 9px; display: grid; place-items: center; color: var(--cyan); box-shadow: 0 0 22px var(--cyan-soft); }
+    .brand small { color: var(--cyan); font-weight: 650; margin-left: 3px; }
+    label.caption, .caption { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; margin: 16px 0 7px; }
+    select, input[type="search"], .control { width: 100%; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; color: var(--text); background: var(--panel-2); padding: 0 10px; outline: none; }
+    select:focus, input:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px var(--cyan-soft); }
+    .quick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
+    button { cursor: pointer; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); background: var(--panel-2); min-height: 31px; }
+    button:hover { border-color: #3d6170; color: var(--text); }
+    .metric-list { margin-top: 12px; }
+    .metric-group { margin: 4px 0 12px; }
+    .metric-group-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; padding: 7px 4px; }
+    .metric-option { display: flex; gap: 8px; align-items: flex-start; padding: 6px 4px; border-radius: 6px; font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .metric-option:hover { background: var(--cyan-soft); }
+    .metric-option input { accent-color: var(--cyan); margin-top: 1px; flex: none; }
+    main { padding: 25px 28px 48px; min-width: 0; }
+    header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 19px; }
+    h1 { margin: 0; font-size: clamp(20px, 2.5vw, 30px); font-weight: 720; letter-spacing: -.03em; overflow-wrap: anywhere; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .live { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.running { background: var(--green); box-shadow: 0 0 10px var(--green); animation: pulse 1.7s infinite; }
+    .dot.complete { background: var(--cyan); }
+    .dot.failed { background: var(--red); }
+    .dot.stopped, .dot.stale { background: var(--orange); }
+    @keyframes pulse { 50% { opacity: .45; } }
+    .stats { display: grid; grid-template-columns: repeat(5, minmax(115px, 1fr)); gap: 10px; margin-bottom: 13px; }
+    .stat { padding: 14px 15px; border: 1px solid var(--line); border-radius: 10px; background: linear-gradient(145deg, rgba(19, 36, 47, .9), rgba(11, 23, 31, .9)); min-width: 0; }
+    .stat-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
+    .stat-value { margin-top: 7px; font: 650 18px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .progress-track { height: 3px; background: var(--line); border-radius: 2px; margin: 10px 1px 20px; overflow: hidden; }
+    .progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--cyan), #78aaff); transition: width .3s ease; }
+    .toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-bottom: 15px; }
+    .toolbar .field { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .toolbar select { width: auto; min-width: 94px; min-height: 33px; }
+    .refresh-note { margin-left: auto; color: var(--muted); font-size: 11px; }
+    .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .chart-card { border: 1px solid var(--line); border-radius: 11px; background: rgba(13, 24, 33, .88); padding: 13px 14px 10px; min-width: 0; }
+    .chart-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; min-height: 39px; }
+    .chart-name { font: 600 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .chart-values { color: var(--muted); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: right; white-space: nowrap; }
+    .chart-values strong { color: var(--cyan); font-size: 13px; }
+    canvas { display: block; width: 100%; height: 205px; }
+    .empty { grid-column: 1 / -1; display: grid; place-items: center; min-height: 330px; border: 1px dashed var(--line); border-radius: 12px; color: var(--muted); text-align: center; padding: 30px; }
+    .error { color: var(--red); }
+    @media (max-width: 1050px) {
+      .stats { grid-template-columns: repeat(3, 1fr); }
+      .charts { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .app { grid-template-columns: 1fr; }
+      aside { position: static; height: auto; max-height: 440px; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { padding: 20px 15px 40px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      header { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand"><span class="brand-mark">★</span><span>starVLA <small>LIVE</small></span></div>
+      <label class="caption" for="run-select">Training run</label>
+      <select id="run-select"></select>
+      <label class="caption" for="metric-search">Metrics</label>
+      <input id="metric-search" type="search" placeholder="搜索指标…" autocomplete="off">
+      <div class="quick">
+        <button id="losses-button" type="button">Losses</button>
+        <button id="all-button" type="button">All</button>
+        <button id="clear-button" type="button">Clear</button>
+      </div>
+      <div id="metric-list" class="metric-list"></div>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <h1 id="run-title">Loading training metrics…</h1>
+          <div id="run-subtitle" class="subtitle">正在连接本地指标服务</div>
+        </div>
+        <div class="live"><span id="status-dot" class="dot"></span><span id="status-text">connecting</span></div>
+      </header>
+
+      <section class="stats">
+        <div class="stat"><div class="stat-label">Latest step</div><div id="latest-step" class="stat-value">—</div></div>
+        <div class="stat"><div class="stat-label">Progress</div><div id="progress" class="stat-value">—</div></div>
+        <div class="stat"><div class="stat-label">Records</div><div id="record-count" class="stat-value">—</div></div>
+        <div class="stat"><div class="stat-label">Metrics</div><div id="metric-count" class="stat-value">—</div></div>
+        <div class="stat"><div class="stat-label">Last update</div><div id="last-update" class="stat-value">—</div></div>
+      </section>
+      <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+
+      <div class="toolbar">
+        <label class="field">平滑
+          <select id="smooth-select">
+            <option value="1">关闭</option><option value="5">5 点</option><option value="10" selected>10 点</option>
+            <option value="20">20 点</option><option value="50">50 点</option>
+          </select>
+        </label>
+        <label class="field">范围
+          <select id="range-select">
+            <option value="0">全部</option><option value="200">最近 200</option><option value="500">最近 500</option>
+            <option value="1000">最近 1k</option><option value="2000">最近 2k</option>
+          </select>
+        </label>
+        <label class="field">Y 轴
+          <select id="scale-select"><option value="linear">线性</option><option value="log">对数</option></select>
+        </label>
+        <span id="refresh-note" class="refresh-note">每 2 秒自动刷新</span>
+      </div>
+      <section id="charts" class="charts"><div class="empty">等待 metrics.jsonl 数据…</div></section>
+    </main>
+  </div>
+
+  <script>
+    "use strict";
+    const POLL_INTERVAL = __POLL_INTERVAL_MS__;
+    const el = id => document.getElementById(id);
+    const state = {
+      runs: [], runId: null, records: [], names: [], generation: null, cursor: 0,
+      selected: new Set(), metadata: null, polling: false, chartCanvases: new Map()
+    };
+    const COLORS = ["#58e0d1", "#78aaff", "#ffb454", "#cf8cff", "#67df93", "#ff7272"];
+    const PRIMARY = [
+      "action_dit_loss", "l1_action_loss", "latent_loss", "world_model_only_loss",
+      "smooth_joint_total_loss", "smooth_action_l1_loss", "smooth_world_model_loss",
+      "smooth_loss", "smooth_latent_prediction_loss", "mse_score"
+    ];
+
+    function formatNumber(value) {
+      if (!Number.isFinite(value)) return "—";
+      const abs = Math.abs(value);
+      if ((abs > 0 && abs < 1e-3) || abs >= 1e5) return value.toExponential(3);
+      if (abs >= 1000) return value.toLocaleString(undefined, {maximumFractionDigits: 1});
+      return value.toLocaleString(undefined, {maximumSignificantDigits: 5});
+    }
+
+    function formatAge(seconds) {
+      if (!Number.isFinite(seconds)) return "—";
+      if (seconds < 5) return "刚刚";
+      if (seconds < 60) return `${Math.floor(seconds)} 秒前`;
+      if (seconds < 3600) return `${Math.floor(seconds / 60)} 分前`;
+      if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+      return `${Math.floor(seconds / 86400)} 天前`;
+    }
+
+    function extent(values) {
+      let minimum = Infinity, maximum = -Infinity;
+      for (const value of values) {
+        if (!Number.isFinite(value)) continue;
+        if (value < minimum) minimum = value;
+        if (value > maximum) maximum = value;
+      }
+      return [minimum, maximum];
+    }
+
+    function category(name) {
+      const lower = name.toLowerCase();
+      if (lower.startsWith("learning_rate/")) return "Learning rates";
+      if (lower.startsWith("timing/")) return "Timing";
+      if (lower.includes("loss") || lower.includes("mse") || lower.includes("error")) return "Losses & errors";
+      if (["ratio", "cosine", "rms", "std", "rank", "fraction", "scale", "sensitivity"].some(x => lower.includes(x))) return "Diagnostics";
+      return "Other";
+    }
+
+    function storageKey() { return `starvla-dashboard:${state.runId}:metrics`; }
+
+    function chooseDefaults() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(storageKey())); } catch (_) { /* ignored */ }
+      if (Array.isArray(saved)) {
+        state.selected = new Set(saved.filter(name => state.names.includes(name)));
+      } else {
+        const primary = PRIMARY.filter(name => state.names.includes(name));
+        const losses = state.names.filter(name => category(name) === "Losses & errors");
+        state.selected = new Set((primary.length ? primary : losses).slice(0, 10));
+      }
+    }
+
+    function saveSelection() {
+      try { localStorage.setItem(storageKey(), JSON.stringify([...state.selected])); } catch (_) { /* ignored */ }
+    }
+
+    function buildMetricList() {
+      const host = el("metric-list");
+      host.replaceChildren();
+      const grouped = new Map();
+      for (const name of state.names) {
+        const group = category(name);
+        if (!grouped.has(group)) grouped.set(group, []);
+        grouped.get(group).push(name);
+      }
+      for (const groupName of ["Losses & errors", "Diagnostics", "Learning rates", "Timing", "Other"]) {
+        const names = grouped.get(groupName);
+        if (!names?.length) continue;
+        const group = document.createElement("div");
+        group.className = "metric-group";
+        group.dataset.group = groupName;
+        const title = document.createElement("div");
+        title.className = "metric-group-title";
+        title.textContent = `${groupName} · ${names.length}`;
+        group.append(title);
+        for (const name of names) {
+          const label = document.createElement("label");
+          label.className = "metric-option";
+          label.dataset.name = name.toLowerCase();
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = state.selected.has(name);
+          input.addEventListener("change", () => {
+            input.checked ? state.selected.add(name) : state.selected.delete(name);
+            saveSelection(); renderCharts();
+          });
+          const span = document.createElement("span");
+          span.textContent = name;
+          label.append(input, span);
+          group.append(label);
+        }
+        host.append(group);
+      }
+      filterMetrics();
+    }
+
+    function filterMetrics() {
+      const query = el("metric-search").value.trim().toLowerCase();
+      document.querySelectorAll(".metric-group").forEach(group => {
+        let visible = 0;
+        group.querySelectorAll(".metric-option").forEach(option => {
+          const show = !query || option.dataset.name.includes(query);
+          option.hidden = !show;
+          if (show) visible += 1;
+        });
+        group.hidden = visible === 0;
+      });
+    }
+
+    function setSelection(predicate) {
+      state.selected = new Set(state.names.filter(predicate));
+      saveSelection(); buildMetricList(); renderCharts();
+    }
+
+    async function fetchJson(url) {
+      const response = await fetch(url, {cache: "no-store"});
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `${response.status} ${response.statusText}`);
+      return body;
+    }
+
+    async function refreshRuns(initial = false) {
+      try {
+        const data = await fetchJson("/api/runs");
+        state.runs = data.runs;
+        const select = el("run-select");
+        const previous = state.runId;
+        select.replaceChildren();
+        for (const run of state.runs) {
+          const option = document.createElement("option");
+          option.value = run.id;
+          option.textContent = `${run.state === "running" ? "● " : ""}${run.name}`;
+          select.append(option);
+        }
+        if (!state.runs.length) throw new Error("没有找到 metrics.jsonl");
+        const requested = new URLSearchParams(location.search).get("run");
+        const next = state.runs.some(run => run.id === previous) ? previous
+          : (initial && state.runs.some(run => run.id === requested) ? requested : state.runs[0].id);
+        select.value = next;
+        if (next !== previous) loadRun(next);
+      } catch (error) {
+        showError(error);
+      }
+    }
+
+    function loadRun(runId) {
+      state.runId = runId;
+      state.records = [];
+      state.names = [];
+      state.selected = new Set();
+      state.generation = null;
+      state.cursor = 0;
+      state.metadata = null;
+      el("run-title").textContent = state.runs.find(run => run.id === runId)?.name || runId;
+      el("run-subtitle").textContent = "正在读取 metrics.jsonl…";
+      history.replaceState(null, "", `?run=${encodeURIComponent(runId)}`);
+      buildMetricList();
+      renderCharts();
+      pollMetrics();
+    }
+
+    async function pollMetrics() {
+      if (state.polling || !state.runId) return;
+      state.polling = true;
+      const requestedRun = state.runId;
+      try {
+        const params = new URLSearchParams({run: requestedRun, after: String(state.cursor)});
+        if (state.generation !== null) params.set("generation", String(state.generation));
+        const data = await fetchJson(`/api/metrics?${params}`);
+        if (requestedRun !== state.runId) return;
+        const recordsChanged = data.reset || data.records.length > 0;
+        if (data.reset) state.records = data.records;
+        else state.records.push(...data.records);
+        state.generation = data.generation;
+        state.cursor = data.cursor;
+        state.metadata = data;
+        const namesChanged = data.metric_names.length !== state.names.length || data.metric_names.some((x, i) => x !== state.names[i]);
+        if (namesChanged) {
+          const hadNames = state.names.length > 0;
+          state.names = data.metric_names;
+          if (!hadNames) chooseDefaults();
+          else state.selected = new Set([...state.selected].filter(name => state.names.includes(name)));
+          buildMetricList();
+        }
+        updateSummary();
+        if (recordsChanged || namesChanged) renderCharts();
+      } catch (error) {
+        if (requestedRun === state.runId) showError(error);
+      } finally {
+        state.polling = false;
+      }
+    }
+
+    function showError(error) {
+      el("status-dot").className = "dot failed";
+      el("status-text").textContent = "disconnected";
+      el("run-subtitle").innerHTML = `<span class="error"></span>`;
+      el("run-subtitle").querySelector("span").textContent = error.message || String(error);
+    }
+
+    function updateSummary() {
+      const data = state.metadata;
+      if (!data) return;
+      const run = data.run;
+      const step = Number(data.latest_step);
+      const target = Number(run.max_train_steps);
+      const percent = Number.isFinite(step) && Number.isFinite(target) && target > 0 ? Math.min(100, 100 * step / target) : null;
+      el("run-title").textContent = run.name;
+      el("run-subtitle").textContent = `${state.names.length} 个数值指标 · metrics.jsonl ${formatNumber(data.file_size / 1024)} KiB${data.parse_errors ? ` · ${data.parse_errors} 行解析失败` : ""}`;
+      el("latest-step").textContent = Number.isFinite(step) ? step.toLocaleString() : "—";
+      el("progress").textContent = percent === null ? "—" : `${percent.toFixed(percent < 1 ? 2 : 1)}%`;
+      el("record-count").textContent = data.record_count.toLocaleString();
+      el("metric-count").textContent = state.names.length.toLocaleString();
+      el("last-update").textContent = formatAge(Date.now() / 1000 - run.last_update_unix);
+      el("progress-bar").style.width = `${percent ?? 0}%`;
+      el("status-dot").className = `dot ${run.state}`;
+      el("status-text").textContent = run.state + (run.pid ? ` · PID ${run.pid}` : "");
+    }
+
+    function visibleRecords() {
+      const count = Number(el("range-select").value);
+      return count > 0 ? state.records.slice(-count) : state.records;
+    }
+
+    function movingAverage(values, windowSize) {
+      if (windowSize <= 1) return values.slice();
+      const result = new Array(values.length).fill(null);
+      let sum = 0, count = 0;
+      for (let i = 0; i < values.length; i++) {
+        const value = values[i];
+        if (Number.isFinite(value)) { sum += value; count += 1; }
+        if (i >= windowSize) {
+          const old = values[i - windowSize];
+          if (Number.isFinite(old)) { sum -= old; count -= 1; }
+        }
+        result[i] = count ? sum / count : null;
+      }
+      return result;
+    }
+
+    function metricSeries(name) {
+      const records = visibleRecords();
+      return {
+        steps: records.map(record => Number(record.step)),
+        raw: records.map(record => Number.isFinite(record[name]) ? Number(record[name]) : null)
+      };
+    }
+
+    function renderCharts() {
+      const host = el("charts");
+      host.replaceChildren();
+      state.chartCanvases.clear();
+      const selected = state.names.filter(name => state.selected.has(name));
+      if (!state.records.length || !selected.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = !state.records.length ? "等待 metrics.jsonl 数据…" : "从左侧选择要显示的指标";
+        host.append(empty);
+        return;
+      }
+      selected.forEach((name, index) => {
+        const {raw} = metricSeries(name);
+        const finite = raw.filter(Number.isFinite);
+        if (!finite.length) return;
+        const card = document.createElement("article");
+        card.className = "chart-card";
+        const head = document.createElement("div");
+        head.className = "chart-head";
+        const title = document.createElement("div");
+        title.className = "chart-name";
+        title.textContent = name;
+        const values = document.createElement("div");
+        values.className = "chart-values";
+        const latest = finite[finite.length - 1];
+        const [minimum, maximum] = extent(finite);
+        values.innerHTML = `<strong>${formatNumber(latest)}</strong><br>min ${formatNumber(minimum)} · max ${formatNumber(maximum)}`;
+        const canvas = document.createElement("canvas");
+        head.append(title, values);
+        card.append(head, canvas);
+        host.append(card);
+        state.chartCanvases.set(name, {canvas, color: COLORS[index % COLORS.length]});
+      });
+      requestAnimationFrame(drawAllCharts);
+    }
+
+    function linePath(context, steps, values, mapX, mapY, color, alpha, width) {
+      context.beginPath();
+      let started = false;
+      for (let i = 0; i < values.length; i++) {
+        if (!Number.isFinite(values[i]) || !Number.isFinite(steps[i])) { started = false; continue; }
+        const x = mapX(steps[i]), y = mapY(values[i]);
+        if (!Number.isFinite(y)) { started = false; continue; }
+        if (!started) { context.moveTo(x, y); started = true; } else context.lineTo(x, y);
+      }
+      context.strokeStyle = color;
+      context.globalAlpha = alpha;
+      context.lineWidth = width;
+      context.stroke();
+      context.globalAlpha = 1;
+    }
+
+    function drawChart(name, canvas, color) {
+      const ratio = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(300, rect.width), height = 205;
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      context.clearRect(0, 0, width, height);
+      const {steps, raw} = metricSeries(name);
+      const windowSize = Number(el("smooth-select").value);
+      const smooth = movingAverage(raw, windowSize);
+      const logScale = el("scale-select").value === "log";
+      const transform = value => logScale ? (value > 0 ? Math.log10(value) : NaN) : value;
+      const values = raw.filter(value => Number.isFinite(transform(value))).map(transform);
+      if (!values.length || !steps.length) return;
+      let [minX, maxX] = extent(steps);
+      let [minY, maxY] = extent(values);
+      if (minX === maxX) { minX -= 1; maxX += 1; }
+      if (minY === maxY) { const pad = Math.abs(minY || 1) * .05; minY -= pad; maxY += pad; }
+      const yPad = (maxY - minY) * .08;
+      minY -= yPad; maxY += yPad;
+      const margin = {left: 61, right: 12, top: 11, bottom: 27};
+      const plotW = width - margin.left - margin.right, plotH = height - margin.top - margin.bottom;
+      const mapX = value => margin.left + (value - minX) / (maxX - minX) * plotW;
+      const mapY = value => margin.top + (maxY - transform(value)) / (maxY - minY) * plotH;
+      context.font = "10px ui-monospace, monospace";
+      context.fillStyle = "#8399a6";
+      context.strokeStyle = "#203441";
+      context.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = margin.top + plotH * i / 4;
+        context.beginPath(); context.moveTo(margin.left, y); context.lineTo(width - margin.right, y); context.stroke();
+        const transformed = maxY - (maxY - minY) * i / 4;
+        const labelValue = logScale ? 10 ** transformed : transformed;
+        context.fillText(formatNumber(labelValue), 2, y + 3);
+      }
+      for (let i = 0; i <= 4; i++) {
+        const x = margin.left + plotW * i / 4;
+        const value = minX + (maxX - minX) * i / 4;
+        context.fillText(formatNumber(value), x - 12, height - 6);
+      }
+      const stride = Math.max(1, Math.ceil(raw.length / 1800));
+      const sampledSteps = steps.filter((_, i) => i % stride === 0 || i === steps.length - 1);
+      const sampledRaw = raw.filter((_, i) => i % stride === 0 || i === raw.length - 1);
+      const sampledSmooth = smooth.filter((_, i) => i % stride === 0 || i === smooth.length - 1);
+      linePath(context, sampledSteps, sampledRaw, mapX, mapY, color, windowSize > 1 ? .22 : .9, windowSize > 1 ? 1 : 1.7);
+      if (windowSize > 1) linePath(context, sampledSteps, sampledSmooth, mapX, mapY, color, 1, 2);
+    }
+
+    function drawAllCharts() {
+      for (const [name, chart] of state.chartCanvases) drawChart(name, chart.canvas, chart.color);
+    }
+
+    el("run-select").addEventListener("change", event => loadRun(event.target.value));
+    el("metric-search").addEventListener("input", filterMetrics);
+    el("losses-button").addEventListener("click", () => setSelection(name => category(name) === "Losses & errors"));
+    el("all-button").addEventListener("click", () => setSelection(() => true));
+    el("clear-button").addEventListener("click", () => setSelection(() => false));
+    el("smooth-select").addEventListener("change", drawAllCharts);
+    el("range-select").addEventListener("change", renderCharts);
+    el("scale-select").addEventListener("change", drawAllCharts);
+    window.addEventListener("resize", drawAllCharts);
+    el("refresh-note").textContent = `每 ${(POLL_INTERVAL / 1000).toLocaleString()} 秒自动刷新`;
+
+    refreshRuns(true);
+    setInterval(pollMetrics, POLL_INTERVAL);
+    setInterval(() => refreshRuns(false), Math.max(10000, POLL_INTERVAL * 5));
+    setInterval(updateSummary, 1000);
+  </script>
+</body>
+</html>

@@ -39,6 +39,12 @@ from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
 )
+from starVLA.model.modules.world_model.reconstructive_latent_world_model import (
+    ReconstructiveSpatialLatentWorldModel,
+)
+from starVLA.model.modules.world_model.smooth_spatial_latent_world_model import (
+    SmoothSpatialLatentWorldModel,
+)
 from starVLA.model.modules.world_model.latent_progress import (
     LatentGoalPredictor,
     LatentProgressChecker,
@@ -385,17 +391,100 @@ class LeWMOFTDefaultConfig:
     # === World Model backbone (LeWM ViT encoder) ===
     world_model: dict = field(
         default_factory=lambda: {
-            "base_wm": "WinKawaks/vit-tiny-patch16-224",
+            # ``base_wm`` is required and has no default: every launcher sets it
+            # explicitly (DINOv2/DINOv3 .pth, TAESD, Qwen3-VL). The old
+            # vit-tiny default / qwenvl.base_vlm fallback was removed.
             "train_encoder": False,  # frozen ViT by default; flip for joint finetune
             "num_views": 2,          # camera views per frame (e.g. primary + wrist)
             "n_future": 2,            # number of future latents to predict
             "ctx_len": 1,             # clean context frames (current frame only)
+            "world_model_only": False,
+            "freeze_latent_stats": False,
+            # Optional joint reconstructive compact-latent experiment.  It is
+            # world-model-only, keeps DINO frozen, and optimizes exactly three
+            # objectives together: DINO reconstruction, latent prediction,
+            # and proprioceptive-state decoding.
+            "reconstructive_latent_enabled": False,
+            "reconstructive_pool_grid_size": 4,
+            "reconstructive_latent_grid_size": 2,
+            "reconstructive_latent_dim": 256,
+            "reconstructive_codec_hidden_dim": 512,
+            "reconstructive_state_dim": 14,
+            "reconstructive_state_hidden_dim": 512,
+            "reconstructive_predictor_dim": 256,
+            "reconstructive_predictor_depth": 4,
+            "reconstructive_predictor_heads": 8,
+            "reconstructive_predictor_ffn": 1024,
+            "reconstructive_reconstruction_weight": 1.0,
+            "reconstructive_prediction_weight": 1.0,
+            "reconstructive_state_weight": 0.5,
+            # Predictable 4x4 spatial latent with direct future-latent L2,
+            # latent SIGReg, and explicit temporal smoothness.  This is a
+            # separate world-model-only experiment with no reconstruction,
+            # state input, or action input.
+            "smooth_latent_enabled": False,
+            "smooth_action_enabled": False,
+            "smooth_action_loss_weight": 1.0,
+            "smooth_world_model_loss_weight": 1.0,
+            "smooth_latent_grid_size": 4,
+            "smooth_spatial_token_dim": 128,
+            "smooth_latent_dim": 384,
+            "smooth_predictor_dim": 384,
+            "smooth_predictor_depth": 4,
+            "smooth_predictor_heads": 6,
+            "smooth_predictor_ffn": 1024,
+            "smooth_prediction_weight": 1.0,
+            "smooth_sigreg_weight": 0.02,
+            "smooth_slow_weight": 0.05,
+            "smooth_acceleration_weight": 0.10,
+            "smooth_temporal_order_weight": 0.05,
+            "smooth_temporal_order_margin": 0.10,
+            "smooth_sigreg_knots": 17,
+            "smooth_sigreg_num_proj": 1024,
             "loss_latent_weight": 1.0,
+            "latent_cosine_weight": 0.0,
+            # Multi-step rollout supervision. ``rollout_steps=1`` reproduces the
+            # validated single-shot objective exactly; higher values re-anchor
+            # the predictor on its own output and need a dataset that provides
+            # ``n_future * rollout_steps`` future frames.
+            "rollout_steps": 1,
+            "loss_rollout_weight": 0.0,
+            "predictor_state_dim": 0,
+            "predictor_state_history": 1,
+            "predictor_state_current_index": 0,
             "residual_predictor_dim": 384,
             "residual_predictor_depth": 4,
             "residual_predictor_heads": 6,
             "residual_predictor_ffn": 1024,
             "residual_predictor_sigreg_weight": 0.0,
+            # Optional low-rank innovation bottleneck. The legacy predictor is
+            # unchanged unless this is explicitly enabled. The auxiliary
+            # weights below are inactive while the branch is disabled.
+            "predictable_innovation_enabled": False,
+            "innovation_rank": 64,
+            "innovation_transition_tokens": 4,
+            "innovation_context_len": None,
+            "innovation_fixed_mean_path": None,
+            "innovation_require_fixed_mean": False,
+            "innovation_min_calibration_samples": 0,
+            "innovation_training_stage": "joint",
+            "innovation_predictor_dim": 384,
+            "innovation_predictor_depth": 4,
+            "innovation_predictor_heads": 6,
+            "innovation_predictor_ffn": 1024,
+            "innovation_code_weight": 1.0,
+            "innovation_capture_weight": 0.25,
+            "innovation_variance_weight": 1.0,
+            "innovation_covariance_weight": 0.01,
+            "innovation_min_std": 0.25,
+            # Optional residual booster that consumes longer causal visual and
+            # proprio histories while preserving the warm-start prediction.
+            "context_correction_depth": 0,
+            "context_correction_state_dim": 0,
+            "context_correction_dim": 384,
+            "context_correction_heads": 6,
+            "context_correction_ffn": 1024,
+            "context_correction_freeze_base": False,
             # Spatial tokens are fixed grid cells, not learned pooling queries.
             # ``num_visual_tokens`` remains a legacy alias for per-view count.
             "visual_tokens_per_view": 16,
@@ -414,12 +503,14 @@ class LeWMOFTDefaultConfig:
             "dense_patch_grid_size": None,
             "dense_patch_gate_init": 1.0,
             "dense_patch_freeze_base": True,
+
             # Add a zero-initialized proprio residual to each action query.
             "use_state_cond": False,
             "state_cond_dim": 8,
             "state_cond_hidden_dim": 256,
             "state_cond_dropout": 0.1,
             "state_cond_only": False,
+
             # === Optional state probe (align latents to future proprio) ===
             "use_state_probe": False,
             "state_dim": 8,
@@ -460,12 +551,6 @@ class LeWMOFTDefaultConfig:
             "transition_alignment_l1_weight": 0.1,
             "transition_detach_action_queries": False,
             "transition_joint_freeze_base": True,
-        }
-    )
-
-    qwenvl: dict = field(
-        default_factory=lambda: {
-            "base_vlm": "WinKawaks/vit-tiny-patch16-224",
         }
     )
 
@@ -559,9 +644,191 @@ class LeWM_OFT(baseframework):
 
         self.n_future = int(wm_cfg.get("n_future", 2))
         self.wm_ctx_len = int(wm_cfg.get("ctx_len", 1))
+        self.world_model_only = bool(wm_cfg.get("world_model_only", False))
+        self.reconstructive_latent_enabled = bool(
+            wm_cfg.get("reconstructive_latent_enabled", False)
+        )
+        self.smooth_latent_enabled = bool(
+            wm_cfg.get("smooth_latent_enabled", False)
+        )
+        self.smooth_action_enabled = bool(
+            wm_cfg.get("smooth_action_enabled", False)
+        )
+        self.smooth_action_loss_weight = float(
+            wm_cfg.get("smooth_action_loss_weight", 1.0)
+        )
+        self.smooth_world_model_loss_weight = float(
+            wm_cfg.get("smooth_world_model_loss_weight", 1.0)
+        )
+        if min(
+            self.smooth_action_loss_weight,
+            self.smooth_world_model_loss_weight,
+        ) < 0:
+            raise ValueError("smooth joint loss weights must be non-negative")
+        if self.smooth_action_enabled and not self.smooth_latent_enabled:
+            raise ValueError(
+                "smooth_action_enabled requires smooth_latent_enabled=true"
+            )
+        self.freeze_latent_stats = bool(wm_cfg.get("freeze_latent_stats", False))
+        self.predictor_state_dim = int(wm_cfg.get("predictor_state_dim", 0))
+        self.predictor_state_history = int(wm_cfg.get("predictor_state_history", 1))
+        self.predictor_state_current_index = int(
+            wm_cfg.get("predictor_state_current_index", 0)
+        )
+        self.context_correction_state_dim = int(
+            wm_cfg.get("context_correction_state_dim", 0)
+        )
+        self.context_correction_freeze_base = bool(
+            wm_cfg.get("context_correction_freeze_base", False)
+        )
+        if self.predictor_state_history < 1:
+            raise ValueError("predictor_state_history must be at least 1")
         self.loss_latent_weight = float(
             wm_cfg.get("loss_delta_weight", wm_cfg.get("loss_latent_weight", 1.0))
         )
+        self.latent_cosine_weight = float(wm_cfg.get("latent_cosine_weight", 0.0))
+        self.rollout_steps = int(wm_cfg.get("rollout_steps", 1))
+        self.loss_rollout_weight = float(wm_cfg.get("loss_rollout_weight", 0.0))
+        if self.rollout_steps < 1:
+            raise ValueError("world_model.rollout_steps must be at least 1")
+        if self.rollout_steps == 1 and self.loss_rollout_weight > 0:
+            raise ValueError(
+                "world_model.loss_rollout_weight requires rollout_steps >= 2"
+            )
+        # The deployed action path always consumes exactly ``n_future``
+        # predictions, so extra rollout frames stay inside the world model and
+        # never change the action-head token layout or checkpoint shapes.
+        self.predictable_innovation_enabled = bool(
+            wm_cfg.get("predictable_innovation_enabled", False)
+        )
+        innovation_context_len_cfg = wm_cfg.get("innovation_context_len", None)
+        self.innovation_context_len = (
+            int(innovation_context_len_cfg)
+            if innovation_context_len_cfg is not None
+            else self.wm_ctx_len
+        )
+        self.innovation_require_fixed_mean = bool(
+            wm_cfg.get("innovation_require_fixed_mean", False)
+        )
+        self.innovation_min_calibration_samples = int(
+            wm_cfg.get("innovation_min_calibration_samples", 0)
+        )
+        self.innovation_training_stage = str(
+            wm_cfg.get("innovation_training_stage", "joint")
+        ).lower()
+        if self.innovation_training_stage not in {"basis", "predictor", "joint"}:
+            raise ValueError(
+                "innovation_training_stage must be basis, predictor, or joint"
+            )
+        if self.predictable_innovation_enabled:
+            if self.wm_ctx_len != 1:
+                raise ValueError(
+                    "predictable innovation preserves the legacy ctx_len=1 path; "
+                    "use innovation_context_len for private visual history"
+                )
+            if self.innovation_context_len < self.wm_ctx_len:
+                raise ValueError(
+                    "innovation_context_len cannot be shorter than ctx_len"
+                )
+            if not self.world_model_only:
+                raise ValueError(
+                    "predictable innovation is currently a world_model_only "
+                    "representation experiment"
+                )
+        if self.reconstructive_latent_enabled:
+            if not self.world_model_only:
+                raise ValueError(
+                    "reconstructive_latent_enabled requires world_model_only=true"
+                )
+            if bool(wm_cfg.get("train_encoder", False)):
+                raise ValueError(
+                    "reconstructive latent training requires train_encoder=false; "
+                    "DINO is a fixed reconstruction target"
+                )
+            if self.wm_ctx_len != 1:
+                raise ValueError(
+                    "the first reconstructive latent implementation requires ctx_len=1"
+                )
+            if self.predictable_innovation_enabled:
+                raise ValueError(
+                    "reconstructive latent and predictable innovation are separate "
+                    "experiments"
+                )
+            if self.rollout_steps != 1:
+                raise ValueError(
+                    "reconstructive latent training currently requires rollout_steps=1"
+                )
+        if self.smooth_latent_enabled:
+            if self.smooth_action_enabled and self.world_model_only:
+                raise ValueError(
+                    "smooth_action_enabled requires world_model_only=false"
+                )
+            if not self.smooth_action_enabled and not self.world_model_only:
+                raise ValueError(
+                    "a representation-only smooth latent run requires "
+                    "world_model_only=true"
+                )
+            if bool(wm_cfg.get("train_encoder", False)):
+                raise ValueError(
+                    "smooth latent training requires train_encoder=false; DINO "
+                    "must remain frozen"
+                )
+            if self.wm_ctx_len != 1 or self.n_future != 2:
+                raise ValueError(
+                    "smooth latent training requires ctx_len=1 and n_future=2"
+                )
+            if self.reconstructive_latent_enabled:
+                raise ValueError(
+                    "smooth latent and reconstructive latent are separate experiments"
+                )
+            if self.predictable_innovation_enabled:
+                raise ValueError(
+                    "smooth latent and predictable innovation are separate experiments"
+                )
+            if (
+                self.predictor_state_dim > 0
+                or self.context_correction_state_dim > 0
+                or self.use_state_cond
+                or bool(wm_cfg.get("use_state_probe", False))
+            ):
+                raise ValueError(
+                    "smooth latent training does not consume or decode robot state"
+                )
+            smooth_transition_mode = wm_cfg.get("transition_mode", "off")
+            smooth_transition_enabled = (
+                smooth_transition_mode is not False
+                and str(smooth_transition_mode).lower() != "off"
+            )
+            if self.smooth_action_enabled and (
+                bool(wm_cfg.get("use_dense_patch_action", False))
+                or bool(wm_cfg.get("use_progress_checker", False))
+                or smooth_transition_enabled
+            ):
+                raise ValueError(
+                    "smooth action training accepts only current/predicted global "
+                    "latents; dense patches, progress, and transition auxiliaries "
+                    "must be disabled"
+                )
+        self.innovation_code_weight = float(
+            wm_cfg.get("innovation_code_weight", 1.0)
+        )
+        self.innovation_capture_weight = float(
+            wm_cfg.get("innovation_capture_weight", 0.25)
+        )
+        self.innovation_variance_weight = float(
+            wm_cfg.get("innovation_variance_weight", 1.0)
+        )
+        self.innovation_covariance_weight = float(
+            wm_cfg.get("innovation_covariance_weight", 0.01)
+        )
+        for weight_name in (
+            "innovation_code_weight",
+            "innovation_capture_weight",
+            "innovation_variance_weight",
+            "innovation_covariance_weight",
+        ):
+            if getattr(self, weight_name) < 0:
+                raise ValueError(f"{weight_name} must be non-negative")
         self.loss_sigreg_weight = float(
             wm_cfg.get(
                 "residual_predictor_sigreg_weight",
@@ -569,7 +836,14 @@ class LeWM_OFT(baseframework):
             )
         )
 
-        patch_dim = int(self.backbone.encoder.config.hidden_size)
+        # DINOv3 reports its patch width through the HF encoder config; the
+        # TAESD / Qwen vision interfaces expose it directly.
+        patch_dim = getattr(self.backbone, "patch_feature_dim", None) or getattr(
+            self.backbone, "feature_dim", None
+        )
+        if patch_dim is None:
+            patch_dim = self.backbone.encoder.config.hidden_size
+        patch_dim = int(patch_dim)
         self.visual_tokens_per_view = int(
             wm_cfg.get("visual_tokens_per_view", wm_cfg.get("num_visual_tokens", 16))
         )
@@ -593,6 +867,8 @@ class LeWM_OFT(baseframework):
             goal_dim=self.task_emb_dim,
             n_future=self.n_future,
             num_tokens=self.num_visual_tokens,
+            context_len=self.wm_ctx_len,
+            state_dim=self.predictor_state_dim,
             dim=int(
                 wm_cfg.get("residual_predictor_dim", wm_cfg.get("delta_head_dim", 384))
             ),
@@ -605,15 +881,186 @@ class LeWM_OFT(baseframework):
             ffn_dim=int(
                 wm_cfg.get("residual_predictor_ffn", wm_cfg.get("delta_head_ffn", 1024))
             ),
+            predictable_innovation_enabled=self.predictable_innovation_enabled,
+            innovation_rank=int(wm_cfg.get("innovation_rank", 64)),
+            innovation_transition_tokens=int(
+                wm_cfg.get("innovation_transition_tokens", 4)
+            ),
+            innovation_context_len=self.innovation_context_len,
+            innovation_require_fixed_mean=self.innovation_require_fixed_mean,
+            innovation_predictor_dim=int(
+                wm_cfg.get("innovation_predictor_dim", 384)
+            ),
+            innovation_predictor_depth=int(
+                wm_cfg.get("innovation_predictor_depth", 4)
+            ),
+            innovation_predictor_heads=int(
+                wm_cfg.get("innovation_predictor_heads", 6)
+            ),
+            innovation_predictor_ffn_dim=int(
+                wm_cfg.get("innovation_predictor_ffn", 1024)
+            ),
+            innovation_min_std=float(wm_cfg.get("innovation_min_std", 0.25)),
+            context_correction_depth=int(wm_cfg.get("context_correction_depth", 0)),
+            context_correction_state_dim=self.context_correction_state_dim,
+            context_correction_dim=int(wm_cfg.get("context_correction_dim", 384)),
+            context_correction_heads=int(wm_cfg.get("context_correction_heads", 6)),
+            context_correction_ffn_dim=int(wm_cfg.get("context_correction_ffn", 1024)),
             sigreg_weight=self.loss_sigreg_weight,
             stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.99)),
         )
+        self.reconstructive_world_model = (
+            ReconstructiveSpatialLatentWorldModel(
+                patch_dim=patch_dim,
+                num_views=self.num_views,
+                goal_dim=self.task_emb_dim,
+                state_dim=int(wm_cfg.get("reconstructive_state_dim", 14)),
+                n_future=self.n_future,
+                context_len=self.wm_ctx_len,
+                pool_grid_size=int(
+                    wm_cfg.get("reconstructive_pool_grid_size", 4)
+                ),
+                latent_grid_size=int(
+                    wm_cfg.get("reconstructive_latent_grid_size", 2)
+                ),
+                latent_dim=int(wm_cfg.get("reconstructive_latent_dim", 256)),
+                codec_hidden_dim=int(
+                    wm_cfg.get("reconstructive_codec_hidden_dim", 512)
+                ),
+                state_hidden_dim=int(
+                    wm_cfg.get("reconstructive_state_hidden_dim", 512)
+                ),
+                predictor_dim=int(
+                    wm_cfg.get("reconstructive_predictor_dim", 256)
+                ),
+                predictor_depth=int(
+                    wm_cfg.get("reconstructive_predictor_depth", 4)
+                ),
+                predictor_heads=int(
+                    wm_cfg.get("reconstructive_predictor_heads", 8)
+                ),
+                predictor_ffn_dim=int(
+                    wm_cfg.get("reconstructive_predictor_ffn", 1024)
+                ),
+                reconstruction_weight=float(
+                    wm_cfg.get("reconstructive_reconstruction_weight", 1.0)
+                ),
+                prediction_weight=float(
+                    wm_cfg.get("reconstructive_prediction_weight", 1.0)
+                ),
+                state_weight=float(
+                    wm_cfg.get("reconstructive_state_weight", 0.5)
+                ),
+                stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.99)),
+            )
+            if self.reconstructive_latent_enabled
+            else None
+        )
+        self.smooth_world_model = (
+            SmoothSpatialLatentWorldModel(
+                patch_dim=patch_dim,
+                num_views=self.num_views,
+                goal_dim=self.task_emb_dim,
+                latent_dim=int(wm_cfg.get("smooth_latent_dim", 384)),
+                spatial_token_dim=int(
+                    wm_cfg.get("smooth_spatial_token_dim", 128)
+                ),
+                grid_size=int(wm_cfg.get("smooth_latent_grid_size", 4)),
+                n_future=self.n_future,
+                rollout_steps=self.rollout_steps,
+                rollout_weight=self.loss_rollout_weight,
+                predictor_dim=int(wm_cfg.get("smooth_predictor_dim", 384)),
+                predictor_depth=int(wm_cfg.get("smooth_predictor_depth", 4)),
+                predictor_heads=int(wm_cfg.get("smooth_predictor_heads", 6)),
+                predictor_ffn_dim=int(
+                    wm_cfg.get("smooth_predictor_ffn", 1024)
+                ),
+                prediction_weight=float(
+                    wm_cfg.get("smooth_prediction_weight", 1.0)
+                ),
+                sigreg_weight=float(wm_cfg.get("smooth_sigreg_weight", 0.02)),
+                slow_weight=float(wm_cfg.get("smooth_slow_weight", 0.05)),
+                acceleration_weight=float(
+                    wm_cfg.get("smooth_acceleration_weight", 0.10)
+                ),
+                temporal_order_weight=float(
+                    wm_cfg.get("smooth_temporal_order_weight", 0.05)
+                ),
+                temporal_order_margin=float(
+                    wm_cfg.get("smooth_temporal_order_margin", 0.10)
+                ),
+                sigreg_knots=int(wm_cfg.get("smooth_sigreg_knots", 17)),
+                sigreg_num_proj=int(
+                    wm_cfg.get("smooth_sigreg_num_proj", 1024)
+                ),
+            )
+            if self.smooth_latent_enabled
+            else None
+        )
+        innovation_fixed_mean_path = wm_cfg.get(
+            "innovation_fixed_mean_path", None
+        )
+        if self.predictable_innovation_enabled and innovation_fixed_mean_path:
+            mean_path = Path(str(innovation_fixed_mean_path))
+            if not mean_path.is_file():
+                raise FileNotFoundError(
+                    f"innovation fixed mean not found: {mean_path}"
+                )
+            payload = torch.load(mean_path, map_location="cpu", weights_only=True)
+            if not isinstance(payload, dict) or "mean" not in payload:
+                raise ValueError(
+                    f"innovation fixed mean file must contain a 'mean' tensor: {mean_path}"
+                )
+            calibration_count = int(payload.get("sample_count", 0))
+            if calibration_count < self.innovation_min_calibration_samples:
+                raise ValueError(
+                    f"innovation mean has {calibration_count} samples, fewer than "
+                    f"required {self.innovation_min_calibration_samples}"
+                )
+            frame_indices = payload.get("frame_indices")
+            expected_frame_indices = torch.tensor([-2, -1, 0, 4, 8])
+            if frame_indices is not None and not torch.equal(
+                torch.as_tensor(frame_indices).cpu(), expected_frame_indices
+            ):
+                raise ValueError(
+                    "innovation mean was calibrated with incompatible frame indices: "
+                    f"{torch.as_tensor(frame_indices).tolist()}"
+                )
+            calibrated_mix = payload.get("data_mix")
+            configured_mix = str(self.config.datasets.vla_data.data_mix)
+            if calibrated_mix is not None and str(calibrated_mix) != configured_mix:
+                raise ValueError(
+                    f"innovation mean data_mix={calibrated_mix!r} does not match "
+                    f"training data_mix={configured_mix!r}"
+                )
+            self.world_model.predictable_innovation.set_fixed_error_mean(
+                payload["mean"], sample_count=calibration_count
+            )
+            calibration_scale = payload.get("delta_scale")
+            self._innovation_calibration_delta_scale = (
+                float(torch.as_tensor(calibration_scale).item())
+                if calibration_scale is not None
+                else None
+            )
+        elif self.predictable_innovation_enabled and self.innovation_require_fixed_mean:
+            raise ValueError(
+                "innovation_require_fixed_mean=true requires "
+                "innovation_fixed_mean_path"
+            )
+        action_visual_token_dim = (
+            int(wm_cfg.get("smooth_latent_dim", 384))
+            if self.smooth_action_enabled
+            else self.visual_token_dim
+        )
+        action_visual_num_tokens = (
+            1 if self.smooth_action_enabled else self.num_visual_tokens
+        )
         self.visual_action_head = VisualActionCrossAttn(
-            token_dim=self.visual_token_dim,
+            token_dim=action_visual_token_dim,
             action_hidden_dim=wm_hidden,
             chunk_len=self.chunk_len,
             num_frames=self.wm_ctx_len + self.n_future,
-            num_tokens=self.num_visual_tokens,
+            num_tokens=action_visual_num_tokens,
             num_heads=int(wm_cfg.get("visual_action_heads", 8)),
             state_dim=int(wm_cfg.get("state_cond_dim", 8)) if self.use_state_cond else 0,
             state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
@@ -837,6 +1284,75 @@ class LeWM_OFT(baseframework):
             self.progress_checker.requires_grad_(True)
             self.progress_action_conditioner.requires_grad_(True)
 
+        if self.world_model_only:
+            if self.transition_mode != "off" or self.use_progress_checker:
+                raise ValueError(
+                    "world_model_only requires transition_mode=off and "
+                    "use_progress_checker=false"
+                )
+            # Keep the pretrained visual coordinate system fixed. Ordinary
+            # world-model-only runs retain their historical trainable set.
+            # Innovation runs instead optimize only the new bottleneck: the
+            # mature base predictor and its task embedding remain immutable.
+            self.requires_grad_(False)
+            if self.smooth_latent_enabled:
+                if self.smooth_world_model is None:
+                    raise RuntimeError(
+                        "smooth_latent_enabled requires smooth_world_model"
+                    )
+                self.smooth_world_model.requires_grad_(True)
+                self.task_embedding.requires_grad_(True)
+            elif self.reconstructive_latent_enabled:
+                if self.reconstructive_world_model is None:
+                    raise RuntimeError(
+                        "reconstructive_latent_enabled requires "
+                        "reconstructive_world_model"
+                    )
+                self.reconstructive_world_model.requires_grad_(True)
+                self.task_embedding.requires_grad_(True)
+            elif self.predictable_innovation_enabled:
+                predictable_innovation = getattr(
+                    self.world_model, "predictable_innovation", None
+                )
+                if predictable_innovation is None:
+                    raise RuntimeError(
+                        "predictable_innovation_enabled requires "
+                        "world_model.predictable_innovation"
+                    )
+                if self.innovation_training_stage in {"basis", "joint"}:
+                    predictable_innovation.basis.requires_grad_(True)
+                    predictable_innovation.spatial_basis.requires_grad_(True)
+                if self.innovation_training_stage in {"predictor", "joint"}:
+                    predictable_innovation.predictor.requires_grad_(True)
+            else:
+                self.world_model.requires_grad_(True)
+                self.task_embedding.requires_grad_(True)
+            if (
+                self.context_correction_freeze_base
+                and not self.predictable_innovation_enabled
+            ):
+                if self.world_model.context_correction is None:
+                    raise ValueError(
+                        "context_correction_freeze_base requires "
+                        "context_correction_depth > 0"
+                    )
+                self.world_model.residual_predictor.requires_grad_(False)
+                self.task_embedding.requires_grad_(False)
+
+        if self.smooth_action_enabled:
+            if self.smooth_world_model is None:
+                raise RuntimeError(
+                    "smooth_action_enabled requires smooth_world_model"
+                )
+            # This joint policy has exactly one visual path. Frozen DINO feeds
+            # the two-stage global projector; only the compact world model,
+            # its task conditioning, and the latent-only action path train.
+            self.requires_grad_(False)
+            self.smooth_world_model.requires_grad_(True)
+            self.task_embedding.requires_grad_(True)
+            self.visual_action_head.requires_grad_(True)
+            self.action_model.requires_grad_(True)
+
     def reset_progress_state(self) -> None:
         """Clear episode-local start, goal, and filtered progress caches."""
         self._progress_start_latent = None
@@ -1043,7 +1559,11 @@ class LeWM_OFT(baseframework):
 
     def _current_state_tensor(self, examples: List[dict], device: torch.device) -> torch.Tensor:
         """Stack only the current normalized proprio state from each example."""
-        state_dim = int(self.config.framework.world_model.get("state_cond_dim", 8))
+        state_dim = (
+            self.predictor_state_dim
+            if self.predictor_state_dim > 0
+            else int(self.config.framework.world_model.get("state_cond_dim", 8))
+        )
         current_states = []
         for example in examples:
             raw_state = example.get("state")
@@ -1060,6 +1580,111 @@ class LeWM_OFT(baseframework):
                 )
             current_states.append(state)
         return torch.as_tensor(np.stack(current_states), device=device, dtype=torch.float32)
+
+    def _predictor_state_tensor(
+        self, examples: List[dict], device: torch.device
+    ) -> torch.Tensor:
+        """Stack current state or a causal state history for the world model."""
+        state_dim = max(self.predictor_state_dim, self.context_correction_state_dim)
+        if state_dim <= 0:
+            raise ValueError("predictor state requested with no configured state dimension")
+        histories = []
+        for example in examples:
+            raw_state = example.get("state")
+            if raw_state is None:
+                raise KeyError(
+                    "state-conditioned latent prediction requires normalized "
+                    "'state' in every example"
+                )
+            state = np.asarray(raw_state, dtype=np.float32)
+            if state.ndim == 1:
+                state = state[None]
+            if state.ndim != 2 or state.shape[1] != state_dim:
+                raise ValueError(
+                    f"expected state shape ({state_dim},) or (T, {state_dim}), "
+                    f"got {state.shape}"
+                )
+            if self.predictor_state_history == 1:
+                histories.append(state[self.predictor_state_current_index])
+                continue
+            if state.shape[0] < self.predictor_state_history:
+                padding = np.repeat(
+                    state[:1], self.predictor_state_history - state.shape[0], axis=0
+                )
+                state = np.concatenate([padding, state], axis=0)
+            histories.append(state[-self.predictor_state_history :])
+        return torch.as_tensor(
+            np.stack(histories), device=device, dtype=torch.float32
+        )
+
+    def _reconstructive_state_tensor(
+        self,
+        examples: List[dict],
+        device: torch.device,
+        *,
+        frame_count: int,
+    ) -> torch.Tensor:
+        """Stack proprio states aligned one-to-one with reconstructive frames."""
+
+        if self.reconstructive_world_model is None:
+            raise RuntimeError("reconstructive state requested while branch is disabled")
+        state_dim = self.reconstructive_world_model.state_dim
+        aligned = []
+        for example in examples:
+            raw_state = example.get("state")
+            if raw_state is None:
+                raise KeyError(
+                    "reconstructive latent training requires aligned 'state' in "
+                    "every example"
+                )
+            state = np.asarray(raw_state, dtype=np.float32)
+            if state.ndim == 1:
+                state = state[None]
+            if state.ndim != 2 or state.shape[1] != state_dim:
+                raise ValueError(
+                    "expected reconstructive state shape "
+                    f"(T, {state_dim}), got {state.shape}"
+                )
+            if state.shape[0] != frame_count:
+                raise ValueError(
+                    "DINO frames and robot state must use identical temporal "
+                    f"indices: got {frame_count} image frames and "
+                    f"{state.shape[0]} state frames"
+                )
+            aligned.append(state)
+        return torch.as_tensor(
+            np.stack(aligned), device=device, dtype=torch.float32
+        )
+
+    def _smooth_future_valid_mask_tensor(
+        self,
+        examples: List[dict],
+        device: torch.device,
+        *,
+        frame_count: int,
+    ) -> torch.Tensor:
+        """Stack validity for the smooth frames before padded-frame losses."""
+
+        masks = []
+        for example in examples:
+            raw_mask = example.get("future_frame_valid_mask")
+            if raw_mask is None:
+                raise KeyError(
+                    "smooth latent training requires 'future_frame_valid_mask'; "
+                    "enable datasets.vla_data.future_obs_valid_mask"
+                )
+            mask = np.asarray(raw_mask, dtype=np.bool_)
+            if mask.shape != (frame_count,):
+                raise ValueError(
+                    f"expected future frame valid mask ({frame_count},), "
+                    f"got {mask.shape}"
+                )
+            if not bool(mask[0]):
+                raise ValueError("the current frame must always be valid")
+            masks.append(mask)
+        return torch.as_tensor(
+            np.stack(masks), device=device, dtype=torch.bool
+        )
 
     def _visual_token_regularization(self, tokens: torch.Tensor):
         """Return diversity/variance penalties and a collapse diagnostic."""
@@ -1132,6 +1757,45 @@ class LeWM_OFT(baseframework):
             dtype=torch.long,
         )
         return self.task_embedding(ids)  # (B, task_emb_dim)
+
+    def _select_innovation_training_sequence(
+        self, temporal: torch.Tensor
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], tuple[int, ...]]:
+        """Keep legacy current/+4/+8 semantics with private visual history.
+
+        The local-dynamics dataset is packed as ``[t-2,t-1,t,t+4,t+8]``. The
+        frozen 220k predictor/action path still receives ``[t,t+4,t+8]``;
+        only the new innovation predictor consumes the recent three frames.
+        """
+
+        if not self.predictable_innovation_enabled:
+            required = self.wm_ctx_len + self.n_future * self.rollout_steps
+            if temporal.shape[1] < required:
+                raise ValueError(
+                    f"expected at least {required} temporal frames, got {temporal.shape[1]}"
+                )
+            indices = tuple(range(required))
+            return temporal[:, :required], None, indices
+
+        required = self.innovation_context_len + self.n_future
+        if temporal.shape[1] < required:
+            raise ValueError(
+                "predictable innovation requires "
+                f"{required} frames (private context + future), got {temporal.shape[1]}"
+            )
+        current_index = self.innovation_context_len - 1
+        indices = (current_index,) + tuple(
+            range(self.innovation_context_len, required)
+        )
+        legacy_sequence = temporal[:, indices]
+        innovation_context = temporal[:, : self.innovation_context_len]
+        expected_legacy = self.wm_ctx_len + self.n_future
+        if legacy_sequence.shape[1] != expected_legacy:
+            raise RuntimeError(
+                f"internal temporal split produced {legacy_sequence.shape[1]} legacy "
+                f"frames, expected {expected_legacy}"
+            )
+        return legacy_sequence, innovation_context, indices
 
     def _transition_auxiliary_losses(
         self,
@@ -1229,6 +1893,9 @@ class LeWM_OFT(baseframework):
     def _should_update_latent_stats(self) -> bool:
         """Whether the latent-delta normalizer should track this training run."""
 
+        if getattr(self, "freeze_latent_stats", False):
+            return False
+
         transition_freezes_visual_coordinates = (
             self.transition_mode in {"teacher", "student"}
             or (
@@ -1245,12 +1912,25 @@ class LeWM_OFT(baseframework):
         )
 
     def forward(self, examples: List[dict] = None, **kwargs) -> Tuple:
+        calibration_scale = getattr(
+            self, "_innovation_calibration_delta_scale", None
+        )
+        if calibration_scale is not None:
+            current_scale = float(self.world_model.delta_scale.detach().item())
+            if not math.isclose(
+                current_scale, calibration_scale, rel_tol=1e-6, abs_tol=1e-6
+            ):
+                raise RuntimeError(
+                    "fixed innovation mean delta_scale mismatch: "
+                    f"calibration={calibration_scale:.9f}, model={current_scale:.9f}"
+                )
         instructions = [example["lang"] for example in examples]
-        actions = [example["action"] for example in examples]
-
         device = next(self.parameters()).device
-        actions = torch.tensor(np.array(actions), device=device, dtype=torch.float32)
-        actions_target = actions[:, -self.action_horizon :, :]
+        actions_target = None
+        if not self.world_model_only:
+            actions = [example["action"] for example in examples]
+            actions = torch.tensor(np.array(actions), device=device, dtype=torch.float32)
+            actions_target = actions[:, -self.action_horizon :, :]
 
         # === Encode the current frame + future frames into a latent sequence ===
         # frames_per_example[b] = [current_views, future_views_1, ..., future_views_Tf]
@@ -1281,6 +1961,154 @@ class LeWM_OFT(baseframework):
                 frames_per_example
             )  # (B, 1+Tf, V, N, D)
 
+        if self.smooth_latent_enabled:
+            if self.smooth_world_model is None:
+                raise RuntimeError(
+                    "smooth_latent_enabled requires a constructed branch"
+                )
+            required_frames = self.smooth_world_model.required_frames
+            if patch_tokens.shape[1] != required_frames:
+                raise ValueError(
+                    "smooth latent training requires exactly "
+                    f"{required_frames} image frames "
+                    "(consecutive targets plus one far frame), "
+                    f"got {patch_tokens.shape[1]}"
+                )
+            with torch.autocast("cuda", dtype=torch.float32):
+                task_emb = self._embed_task(
+                    instructions, device=patch_tokens.device
+                )
+                valid_mask = self._smooth_future_valid_mask_tensor(
+                    examples,
+                    patch_tokens.device,
+                    frame_count=required_frames,
+                )
+                smooth = self.smooth_world_model(
+                    patch_tokens.float(),
+                    goal=task_emb,
+                    valid_mask=valid_mask,
+                )
+                if self.smooth_action_enabled:
+                    if actions_target is None:
+                        raise RuntimeError(
+                            "smooth action training requires action targets"
+                        )
+                    # The policy sees exactly three global latent tokens:
+                    # current z_t and the two action-free predicted futures.
+                    # True future latents remain training targets only.
+                    action_latents = torch.cat(
+                        [smooth["latent"][:, :1], smooth["pred_future_latent"]],
+                        dim=1,
+                    ).unsqueeze(2)
+                    action_queries = self._pool_visual_tokens_to_action_queries(
+                        action_latents, state=None
+                    )
+                    pred_actions = self.action_model.predict_action(action_queries)
+                    full_l1_action_loss = self.l1_loss(
+                        pred_actions, actions_target
+                    )
+                    total_loss = (
+                        self.smooth_action_loss_weight * full_l1_action_loss
+                        + self.smooth_world_model_loss_weight * smooth["loss"]
+                    )
+                    output = {
+                        "action_loss": total_loss,
+                        "l1_action_loss": full_l1_action_loss.detach(),
+                        "full_l1_action_loss": full_l1_action_loss.detach(),
+                        "latent_loss": smooth[
+                            "latent_prediction_loss"
+                        ].detach(),
+                        "latent_cosine_loss": total_loss.detach() * 0.0,
+                        "sigreg_loss": smooth["sigreg_loss"].detach(),
+                        "smooth_action_l1_loss": full_l1_action_loss.detach(),
+                        "smooth_world_model_loss": smooth["loss"].detach(),
+                        "smooth_joint_total_loss": total_loss.detach(),
+                    }
+                else:
+                    zero = smooth["loss"].detach() * 0.0
+                    output = {
+                        "action_loss": smooth["loss"],
+                        "l1_action_loss": zero,
+                        "full_l1_action_loss": zero,
+                        "latent_loss": smooth[
+                            "latent_prediction_loss"
+                        ].detach(),
+                        "latent_cosine_loss": zero,
+                        "sigreg_loss": smooth["sigreg_loss"].detach(),
+                        "world_model_only_loss": smooth["loss"].detach(),
+                    }
+            for name, value in smooth.items():
+                if torch.is_tensor(value) and value.numel() == 1:
+                    output[f"smooth_{name}"] = value.detach()
+            return output
+
+        if self.reconstructive_latent_enabled:
+            if self.reconstructive_world_model is None:
+                raise RuntimeError(
+                    "reconstructive_latent_enabled requires a constructed branch"
+                )
+            required_frames = self.wm_ctx_len + self.n_future
+            if patch_tokens.shape[1] != required_frames:
+                raise ValueError(
+                    "reconstructive latent training requires exactly "
+                    f"{required_frames} image frames, got {patch_tokens.shape[1]}"
+                )
+            with torch.autocast("cuda", dtype=torch.float32):
+                task_emb = self._embed_task(
+                    instructions, device=patch_tokens.device
+                )
+                aligned_state = self._reconstructive_state_tensor(
+                    examples,
+                    patch_tokens.device,
+                    frame_count=required_frames,
+                )
+                reconstructive = self.reconstructive_world_model(
+                    patch_tokens.float(),
+                    state=aligned_state,
+                    goal=task_emb,
+                    update_stats=True,
+                )
+            zero = reconstructive["loss"].detach() * 0.0
+            output = {
+                "action_loss": reconstructive["loss"],
+                "l1_action_loss": zero,
+                "full_l1_action_loss": zero,
+                "latent_loss": reconstructive["latent_prediction_loss"].detach(),
+                "latent_cosine_loss": zero,
+                "world_model_only_loss": reconstructive["loss"].detach(),
+            }
+            scalar_names = (
+                "reconstruction_loss",
+                "latent_prediction_loss",
+                "state_loss",
+                "reconstruction_nmse",
+                "predicted_dino_mse",
+                "dino_copy_mse",
+                "predicted_dino_to_copy_ratio",
+                "predicted_state_mse",
+                "state_copy_mse",
+                "predicted_state_to_copy_ratio",
+                "latent_sample_std",
+                "latent_dynamic_rms",
+                "delta_scale",
+                "delta_target_rms",
+                "delta_pred_rms",
+                "delta_copy_mse",
+                "delta_pred_mse",
+                "delta_mean_baseline_mse",
+                "delta_to_copy_ratio",
+                "delta_direction_cosine",
+            )
+            for name in scalar_names:
+                if name in reconstructive:
+                    output[f"reconstructive_{name}"] = reconstructive[
+                        name
+                    ].detach()
+            for name, value in reconstructive.items():
+                if name.startswith("latent_loss_horizon_"):
+                    output[f"reconstructive_{name}"] = value.detach()
+            return output
+
         with torch.autocast("cuda", dtype=torch.float32):
             latent, content_latent = self.visual_token_pooler(
                 patch_tokens.float(), return_content=True
@@ -1296,9 +2124,24 @@ class LeWM_OFT(baseframework):
                 latent = latent[:, :-2]
                 content_latent = content_latent[:, :-2]
                 patch_tokens = patch_tokens[:, :-2]
+
+            # A ctx3 innovation dataset carries five frames, but the validated
+            # base/action path remains ctx1. Select [0,+4,+8] for all legacy
+            # consumers and keep [t-2,t-1,t] exclusively for the new predictor.
+            latent, innovation_context, temporal_indices = (
+                self._select_innovation_training_sequence(latent)
+            )
+            content_latent = content_latent[:, list(temporal_indices)]
+            patch_tokens = patch_tokens[:, list(temporal_indices)]
             current_state = (
                 self._current_state_tensor(examples, latent.device)
                 if self.use_state_cond
+                else None
+            )
+            predictor_state = (
+                self._predictor_state_tensor(examples, latent.device)
+                if self.predictor_state_dim > 0
+                or self.context_correction_state_dim > 0
                 else None
             )
 
@@ -1307,10 +2150,13 @@ class LeWM_OFT(baseframework):
                 latent,
                 ctx_len=self.wm_ctx_len,
                 goal=task_emb,
+                state=predictor_state,
+                innovation_context=innovation_context,
                 # Freeze the EMA only when the visual coordinate system itself
                 # is frozen. In joint/combined from-scratch training the
                 # encoder and pooler move, so delta_scale must track that drift.
                 update_stats=self._should_update_latent_stats(),
+                rollout_steps=self.rollout_steps,
             )
             pred_future_latent = wm_out["pred_future_latent"]
 
@@ -1329,93 +2175,140 @@ class LeWM_OFT(baseframework):
                 content_diag = self._visual_content_diagnostics(content_latent)
                 pred_content_diag = self._visual_content_diagnostics(pred_content)
 
-            action_queries = self._pool_visual_tokens_to_action_queries(
-                head_tokens, state=current_state
-            )
-            action_queries, dense_patch_metrics = (
-                self._augment_action_queries_with_dense_patches(
-                    action_queries, patch_tokens
-                )
-            )
             progress_output = None
-            if self.use_progress_checker:
-                progress_target = torch.as_tensor(
-                    [example["progress_target"] for example in examples],
-                    device=latent.device,
-                    dtype=torch.float32,
-                )
-                episode_ids = [
-                    example.get("progress_episode_id", index)
-                    for index, example in enumerate(examples)
-                ]
-                progress_output = self._training_progress(
-                    start_latent=progress_start_latent,
-                    current_latent=latent[:, self.wm_ctx_len - 1],
-                    target_goal_latent=progress_goal_latent,
-                    task_embedding=task_emb,
-                    target=progress_target,
-                    episode_ids=episode_ids,
-                )
-                action_queries = self._condition_action_queries_on_progress(
-                    action_queries, progress_output["progress"]
-                )
-            transition_losses = (
-                self._transition_auxiliary_losses(action_queries, latent)
-                if self.transition_mode != "off"
-                else None
-            )
-            pred_actions = self.action_model.predict_action(action_queries)
-            full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
+            transition_losses = None
+            dense_patch_metrics = {}
             prefix_l1_action_loss = None
             sampled_prefix_mean = None
-            if self.random_prefix_loss_weight > 0 and self.random_execution_horizons:
-                choices = torch.tensor(
-                    self.random_execution_horizons,
-                    device=pred_actions.device,
-                    dtype=torch.long,
-                )
-                choice_indices = torch.randint(
-                    choices.numel(), (B,), device=pred_actions.device
-                )
-                sampled_prefix_lengths = choices[choice_indices]
-                sampled_prefix_mean = sampled_prefix_lengths.float().mean()
-                prefix_l1_action_loss = prefix_l1_loss(
-                    pred_actions, actions_target, sampled_prefix_lengths
-                )
-                l1_action_loss = (
-                    full_l1_action_loss
-                    + self.random_prefix_loss_weight * prefix_l1_action_loss
-                ) / (1.0 + self.random_prefix_loss_weight)
-            else:
+            future_action_sensitivity = None
+            future_action_sensitivity_ratio = None
+            if self.world_model_only:
+                full_l1_action_loss = latent.new_zeros(())
                 l1_action_loss = full_l1_action_loss
-            if self.visual_diagnostics:
-                with torch.no_grad():
-                    ablated_tokens = head_tokens[:1].detach().clone()
-                    ablated_tokens[:, self.wm_ctx_len :] = ablated_tokens[
-                        :, self.wm_ctx_len - 1 : self.wm_ctx_len
-                    ].expand(-1, ablated_tokens.shape[1] - self.wm_ctx_len, -1, -1)
-                    ablated_queries = self._pool_visual_tokens_to_action_queries(
-                        ablated_tokens, state=current_state[:1] if current_state is not None else None
+            else:
+                action_queries = self._pool_visual_tokens_to_action_queries(
+                    head_tokens, state=current_state
+                )
+                action_queries, dense_patch_metrics = (
+                    self._augment_action_queries_with_dense_patches(
+                        action_queries, patch_tokens
                     )
-                    if progress_output is not None:
-                        ablated_queries = self._condition_action_queries_on_progress(
-                            ablated_queries, progress_output["progress"][:1]
+                )
+                if self.use_progress_checker:
+                    progress_target = torch.as_tensor(
+                        [example["progress_target"] for example in examples],
+                        device=latent.device,
+                        dtype=torch.float32,
+                    )
+                    episode_ids = [
+                        example.get("progress_episode_id", index)
+                        for index, example in enumerate(examples)
+                    ]
+                    progress_output = self._training_progress(
+                        start_latent=progress_start_latent,
+                        current_latent=latent[:, self.wm_ctx_len - 1],
+                        target_goal_latent=progress_goal_latent,
+                        task_embedding=task_emb,
+                        target=progress_target,
+                        episode_ids=episode_ids,
+                    )
+                    action_queries = self._condition_action_queries_on_progress(
+                        action_queries, progress_output["progress"]
+                    )
+                transition_losses = (
+                    self._transition_auxiliary_losses(action_queries, latent)
+                    if self.transition_mode != "off"
+                    else None
+                )
+                pred_actions = self.action_model.predict_action(action_queries)
+                full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
+                if self.random_prefix_loss_weight > 0 and self.random_execution_horizons:
+                    choices = torch.tensor(
+                        self.random_execution_horizons,
+                        device=pred_actions.device,
+                        dtype=torch.long,
+                    )
+                    choice_indices = torch.randint(
+                        choices.numel(), (B,), device=pred_actions.device
+                    )
+                    sampled_prefix_lengths = choices[choice_indices]
+                    sampled_prefix_mean = sampled_prefix_lengths.float().mean()
+                    prefix_l1_action_loss = prefix_l1_loss(
+                        pred_actions, actions_target, sampled_prefix_lengths
+                    )
+                    l1_action_loss = (
+                        full_l1_action_loss
+                        + self.random_prefix_loss_weight * prefix_l1_action_loss
+                    ) / (1.0 + self.random_prefix_loss_weight)
+                else:
+                    l1_action_loss = full_l1_action_loss
+                if self.visual_diagnostics:
+                    with torch.no_grad():
+                        ablated_tokens = head_tokens[:1].detach().clone()
+                        ablated_tokens[:, self.wm_ctx_len :] = ablated_tokens[
+                            :, self.wm_ctx_len - 1 : self.wm_ctx_len
+                        ].expand(
+                            -1,
+                            ablated_tokens.shape[1] - self.wm_ctx_len,
+                            -1,
+                            -1,
                         )
-                    ablated_actions = self.action_model.predict_action(ablated_queries)
-                    future_action_sensitivity = (
-                        pred_actions[:1].detach() - ablated_actions
-                    ).abs().mean()
-                    future_action_sensitivity_ratio = future_action_sensitivity / (
-                        pred_actions[:1].detach().abs().mean() + 1e-6
-                    )
+                        ablated_queries = self._pool_visual_tokens_to_action_queries(
+                            ablated_tokens,
+                            state=current_state[:1]
+                            if current_state is not None
+                            else None,
+                        )
+                        if progress_output is not None:
+                            ablated_queries = self._condition_action_queries_on_progress(
+                                ablated_queries, progress_output["progress"][:1]
+                            )
+                        ablated_actions = self.action_model.predict_action(ablated_queries)
+                        future_action_sensitivity = (
+                            pred_actions[:1].detach() - ablated_actions
+                        ).abs().mean()
+                        future_action_sensitivity_ratio = future_action_sensitivity / (
+                            pred_actions[:1].detach().abs().mean() + 1e-6
+                        )
 
             latent_loss = wm_out["latent_loss"]
+            latent_cosine_loss = wm_out["latent_cosine_loss"]
+            innovation_auxiliary_loss = latent.new_zeros(())
+            if self.predictable_innovation_enabled:
+                required_innovation_losses = (
+                    "innovation_code_loss",
+                    "innovation_capture_loss",
+                    "innovation_variance_loss",
+                    "innovation_covariance_loss",
+                )
+                missing_innovation_losses = [
+                    name for name in required_innovation_losses if name not in wm_out
+                ]
+                if missing_innovation_losses:
+                    raise KeyError(
+                        "predictable innovation world model omitted required losses: "
+                        f"{missing_innovation_losses}"
+                    )
+                innovation_auxiliary_loss = (
+                    self.innovation_code_weight * wm_out["innovation_code_loss"]
+                    + self.innovation_capture_weight
+                    * wm_out["innovation_capture_loss"]
+                    + self.innovation_variance_weight
+                    * wm_out["innovation_variance_loss"]
+                    + self.innovation_covariance_weight
+                    * wm_out["innovation_covariance_loss"]
+                )
+            rollout_latent_loss = wm_out.get("rollout_latent_loss")
             total_loss = (
                 l1_action_loss
                 + self.loss_latent_weight * latent_loss
+                + self.latent_cosine_weight * latent_cosine_loss
+                + innovation_auxiliary_loss
                 + self.visual_token_diversity_weight * visual_token_diversity_loss
                 + self.visual_token_variance_weight * visual_token_variance_loss
             )
+            if rollout_latent_loss is not None:
+                total_loss = total_loss + self.loss_rollout_weight * rollout_latent_loss
             sigreg_loss = wm_out.get("sigreg_loss")
             if progress_output is not None:
                 total_loss = total_loss + progress_output["progress_auxiliary_loss"]
@@ -1470,13 +2363,34 @@ class LeWM_OFT(baseframework):
             "l1_action_loss": l1_action_loss.detach(),
             "full_l1_action_loss": full_l1_action_loss.detach(),
             "latent_loss": latent_loss.detach(),
+            "latent_cosine_loss": latent_cosine_loss.detach(),
         }
+        if self.world_model_only:
+            out["world_model_only_loss"] = total_loss.detach()
+        if self.predictable_innovation_enabled:
+            out["innovation_auxiliary_loss"] = innovation_auxiliary_loss.detach()
+            for metric_name, metric_value in wm_out.items():
+                if (
+                    metric_name.startswith("innovation_")
+                    and torch.is_tensor(metric_value)
+                    and metric_value.numel() == 1
+                ):
+                    out[metric_name] = metric_value.detach()
+        for metric_name, metric_value in wm_out.items():
+            if metric_name.startswith("latent_loss_horizon_"):
+                out[metric_name] = metric_value.detach()
+        for metric_name, metric_value in wm_out.items():
+            if metric_name.startswith("rollout_") and torch.is_tensor(metric_value):
+                out[metric_name] = metric_value.detach()
         if prefix_l1_action_loss is not None:
             out["prefix_l1_action_loss"] = prefix_l1_action_loss.detach()
             out["sampled_prefix_mean"] = sampled_prefix_mean.detach()
         if sigreg_loss is not None:
             out["sigreg_loss"] = sigreg_loss.detach()
         for metric_name in (
+            "latent_base_loss",
+            "context_correction_rms",
+            "context_correction_to_base_ratio",
             "delta_scale",
             "delta_target_rms",
             "delta_pred_rms",
@@ -1501,8 +2415,11 @@ class LeWM_OFT(baseframework):
             out["visual_pred_content_effective_rank"] = pred_content_diag[
                 "effective_rank"
             ]
-            out["future_action_sensitivity"] = future_action_sensitivity
-            out["future_action_sensitivity_ratio"] = future_action_sensitivity_ratio
+            if future_action_sensitivity is not None:
+                out["future_action_sensitivity"] = future_action_sensitivity
+                out["future_action_sensitivity_ratio"] = (
+                    future_action_sensitivity_ratio
+                )
         if self.use_state_probe:
             out["state_loss"] = state_loss.detach()
         if transition_losses is not None:
@@ -1530,15 +2447,68 @@ class LeWM_OFT(baseframework):
     def predict_action(self, examples: List[dict], **kwargs) -> np.ndarray:
         if type(examples) is not list:
             examples = [examples]
+        if self.smooth_latent_enabled and not self.smooth_action_enabled:
+            raise RuntimeError(
+                "the smooth spatial latent branch is world-model-only and is "
+                "not connected to the action head"
+            )
+        if self.reconstructive_latent_enabled:
+            raise RuntimeError(
+                "the initial reconstructive latent branch is world-model-only "
+                "and is not connected to the action head"
+            )
         instructions = [example["lang"] for example in examples]
 
         train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
+        if self.smooth_action_enabled:
+            frames_per_example = []
+            for example in examples:
+                current = to_pil_preserve(example["image"])
+                if train_obs_image_size:
+                    current = resize_images(
+                        current, target_size=train_obs_image_size
+                    )
+                frames_per_example.append([current])
+
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                patch_tokens = self.backbone.encode_patch_frames(
+                    frames_per_example
+                )
+            with torch.autocast("cuda", dtype=torch.float32):
+                current_latent = self.smooth_world_model.projector(
+                    patch_tokens.float()
+                )
+                task_emb = self._embed_task(
+                    instructions, device=current_latent.device
+                )
+                predicted_delta = self.smooth_world_model.predictor(
+                    current_latent.unsqueeze(2), goal=task_emb, state=None
+                ).squeeze(2)
+                predicted_future = current_latent + predicted_delta
+                action_latents = torch.cat(
+                    [current_latent, predicted_future], dim=1
+                ).unsqueeze(2)
+                action_queries = self._pool_visual_tokens_to_action_queries(
+                    action_latents, state=None
+                )
+                pred_actions = self.action_model.predict_action(action_queries)
+            return {
+                "normalized_actions": pred_actions.detach().cpu().numpy()
+            }
+
+        inference_history_len = (
+            self.innovation_context_len
+            if self.predictable_innovation_enabled
+            else self.wm_ctx_len
+        )
         frames_per_example = []
         for example in examples:
             history = example.get("image_history") or [example["image"]]
-            frames = [to_pil_preserve(frame) for frame in history[-self.wm_ctx_len :]]
-            if len(frames) < self.wm_ctx_len:
-                frames = [frames[0]] * (self.wm_ctx_len - len(frames)) + frames
+            frames = [
+                to_pil_preserve(frame) for frame in history[-inference_history_len:]
+            ]
+            if len(frames) < inference_history_len:
+                frames = [frames[0]] * (inference_history_len - len(frames)) + frames
             if train_obs_image_size:
                 frames = resize_images(frames, target_size=train_obs_image_size)
             frames_per_example.append(frames)
@@ -1549,14 +2519,34 @@ class LeWM_OFT(baseframework):
             )  # (B, ctx, V, N, D)
 
         with torch.autocast("cuda", dtype=torch.float32):
-            latent = self.visual_token_pooler(patch_tokens.float())
+            latent_history = self.visual_token_pooler(patch_tokens.float())
+            innovation_context = (
+                latent_history
+                if self.predictable_innovation_enabled
+                else None
+            )
+            latent = latent_history[:, -self.wm_ctx_len :]
+            # Dense-policy adapters remain current-frame-only even when the
+            # innovation branch receives a longer private history.
+            patch_tokens = patch_tokens[:, -self.wm_ctx_len :]
             task_emb = self._embed_task(instructions, device=latent.device)
             current_state = (
                 self._current_state_tensor(examples, latent.device)
                 if self.use_state_cond
                 else None
             )
-            pred_future_latent = self.world_model.regress_future(latent, goal=task_emb)
+            predictor_state = (
+                self._predictor_state_tensor(examples, latent.device)
+                if self.predictor_state_dim > 0
+                or self.context_correction_state_dim > 0
+                else None
+            )
+            pred_future_latent = self.world_model.regress_future(
+                latent,
+                goal=task_emb,
+                state=predictor_state,
+                innovation_context=innovation_context,
+            )
             head_tokens = torch.cat(
                 [latent[:, : self.wm_ctx_len], pred_future_latent], dim=1
             )
@@ -1624,7 +2614,6 @@ if __name__ == "__main__":
     cfg = OmegaConf.load(args.config_yaml)
 
     cfg.framework.name = "LeWMOFT"
-    cfg.framework.qwenvl.base_vlm = "WinKawaks/vit-tiny-patch16-224"
     cfg.framework.world_model = {
         "base_wm": "WinKawaks/vit-tiny-patch16-224",
         "train_encoder": False,
