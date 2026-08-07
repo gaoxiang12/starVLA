@@ -50,8 +50,6 @@ framework:
     loss_rollout_weight: 1.0
 
     # All existing LeWMOFT alternatives remain outside this experiment.
-    reconstructive_latent_enabled: false
-    predictable_innovation_enabled: false
     predictor_state_dim: 0
     loss_latent_weight: 0.0
     latent_cosine_weight: 0.0

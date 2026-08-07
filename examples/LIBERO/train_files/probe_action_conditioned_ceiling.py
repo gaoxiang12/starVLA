@@ -4,8 +4,8 @@
 The deployed LeWM-OFT world model is action-free: it predicts the future
 visual-token residual from the current tokens plus a task embedding.  Its
 training metric has been stuck near ``delta_to_copy_ratio ~ 0.50`` while several
-capacity-oriented follow-ups (longer context, an 11M residual booster, a
-low-rank innovation code) produced almost no gain.  Two very different
+capacity-oriented follow-ups (including longer context and an 11M residual
+booster) produced almost no gain.  Two very different
 explanations survive that evidence:
 
   * the residual is genuinely aleatoric given the observation, so 0.5 is an
@@ -103,8 +103,6 @@ def _load_model(config_path: Path, checkpoint_path: Path, device: torch.device):
     model.eval().to(device)
     if int(getattr(model, "predictor_state_dim", 0)) != 0:
         raise RuntimeError("probe assumes the deployed predictor is state-free")
-    if bool(getattr(model, "predictable_innovation_enabled", False)):
-        raise RuntimeError("probe targets the plain deployed residual predictor")
     return cfg, model
 
 

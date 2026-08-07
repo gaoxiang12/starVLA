@@ -70,30 +70,6 @@ class AgilexWMDataConfig(AgilexDataConfig):
         return config
 
 
-class AgilexReconstructiveWMDataConfig(AgilexDataConfig):
-    """Short-horizon frames and proprio states for reconstructive WM training.
-
-    Image and state indices are intentionally identical.  The reconstructive
-    latent branch rejects current-only state because it decodes state from
-    every real latent frame and evaluates decoded state from predicted future
-    latents.
-    """
-
-    frame_indices = [0, 1, 2]
-
-    def modality_config(self):
-        config = super().modality_config()
-        config["video"] = ModalityConfig(
-            delta_indices=self.frame_indices,
-            modality_keys=self.video_keys,
-        )
-        config["state"] = ModalityConfig(
-            delta_indices=self.frame_indices,
-            modality_keys=self.state_keys,
-        )
-        return config
-
-
 # ---------------------------------------------------------------------------
 # DataConfig — Agilex 50 (action_indices=50)
 # ---------------------------------------------------------------------------
@@ -167,7 +143,6 @@ class ArxX5DataConfig:
 ROBOT_TYPE_CONFIG_MAP = {
     "robotwin": AgilexDataConfig(),
     "robotwin_wm": AgilexWMDataConfig(),
-    "robotwin_reconstructive_wm": AgilexReconstructiveWMDataConfig(),
     "robotwin50": AgilexData50Config(),
     "arx_x5": ArxX5DataConfig(),
 }
@@ -363,17 +338,5 @@ DATASET_NAMED_MIXTURES["robotwin_all_wm"] = [
 DATASET_NAMED_MIXTURES["robotwin_all_50_wm"] = DATASET_NAMED_MIXTURES["robotwin_all_50"]
 DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
     (dataset, weight, "robotwin_wm")
-    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
-]
-
-# Joint reconstructive world-model runs use short, aligned image/state
-# horizons.  Keep these names separate from the established [0,8,16] recipes
-# so an existing baseline can never silently change its temporal semantics.
-DATASET_NAMED_MIXTURES["robotwin_all_reconstructive_wm"] = [
-    (dataset, weight, "robotwin_reconstructive_wm")
-    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_all"]
-]
-DATASET_NAMED_MIXTURES["robotwin_clean_reconstructive_wm"] = [
-    (dataset, weight, "robotwin_reconstructive_wm")
     for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
 ]

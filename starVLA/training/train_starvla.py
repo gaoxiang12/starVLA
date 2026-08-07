@@ -128,8 +128,7 @@ class VLATrainer(TrainerUtils):
         self.total_batch_size = self._calculate_total_batch_size()
         world_model_cfg = self.config.framework.get("world_model", {})
         # A representation-only run has no meaningful action prediction to
-        # score. In particular, reconstructive compact-latent experiments do
-        # not connect their latent to the action head by design.
+        # score.
         self.action_evaluation_enabled = not bool(
             world_model_cfg.get("world_model_only", False)
         )
@@ -522,9 +521,6 @@ class VLATrainer(TrainerUtils):
             "visual_pred_content_effective_rank",
             "future_action_sensitivity",
             "future_action_sensitivity_ratio",
-            "dense_patch_gate",
-            "dense_patch_residual_rms",
-            "dense_patch_query_update_ratio",
             "state_loss",
             "transition_teacher_recon_loss",
             "transition_teacher_l1_loss",
@@ -551,8 +547,6 @@ class VLATrainer(TrainerUtils):
             for k, v in output_dict.items():
                 if (
                     k.startswith("latent_loss_horizon_")
-                    or k.startswith("innovation_")
-                    or k.startswith("reconstructive_")
                     or k.startswith("smooth_")
                 ) and torch.is_tensor(v):
                     step_log[k] = v.item()

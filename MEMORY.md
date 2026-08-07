@@ -155,9 +155,6 @@ instead of trusting an old snapshot.
   the live training-curves dashboard first. Do not default to asking them to
   inspect `train.log` or `metrics.jsonl` manually; those files remain backend
   diagnostics for the agent when investigating failures or missing metrics.
-- The run `lewm_oft_dinov3b_densepatch_action_zeroout_from200k` is an exception:
-  it was launched in a persistent PTY without `nohup` or `setsid`.
-
 ## Dataset task-language preflight
 
 - Before launching training or evaluation on any new or changed dataset,
@@ -215,6 +212,33 @@ instead of trusting an old snapshot.
   deterministic future-token residual predictor -> visual-action cross
   attention -> OFT action head.
 
+## LIBERO smooth-global joint run
+
+- The current smooth-global 384-D latent/action joint run is training at:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_smooth_global384_action_joint_200k
+  ```
+
+  Its 160k checkpoint was saved on 2026-08-07 and is
+  `checkpoints/steps_160000_pytorch_model.pt`. The training mixture has 1,803
+  episodes across the four standard LIBERO suites, 40 semantic tasks, and 40
+  unique canonical language strings. Each string has 33--50 episodes after
+  combining the base and augmented LIBERO-10 data. All 40 evaluation strings
+  exactly match training strings, and the checkpoint's 4,096-bucket MD5 task
+  conditioning has no collisions among them.
+- A detached closed-loop evaluation of the 160k checkpoint was launched on
+  2026-08-07 with seed 7, 10 tasks per suite, 10 trials per task, the model's
+  8-step execution horizon, progress conditioning disabled, and GPUs 1/2/3/5.
+  The launcher, supervisor PID, live status, and eventual summary are
+  `eval_steps_160000.sh`, `eval_steps_160000.pid`,
+  `eval_steps_160000.status`, and `libero_success_rates_steps_160000.txt` in
+  the run directory. Re-check the volatile process/status before relying on
+  it. The user `zskj` currently lacks the host `video`/`render` groups, so EGL
+  cannot open `/dev/dri`; this evaluation uses one Xvfb + Mesa software-GL
+  display per suite while retaining GPU policy inference. The GLX smoke test
+  and the first completed spatial/object/goal rollouts passed.
+
 ## LIBERO latent-below-0.5 experiments
 
 - The first isolated world-model-only experiment was launched detached on
@@ -261,146 +285,17 @@ instead of trusting an old snapshot.
   help, but the gain is too small to justify another full-resolution residual
   booster. Its final checkpoint, log, metrics, and `STATUS.complete` are kept.
 
-## LIBERO predictable local-dynamics experiment
+## Removed predictable-innovation branch
 
-- The next experiment redefines the target rather than adding another 384-D
-  residual head. Frozen-base cumulative errors at +4/+8 are converted into
-  local increments; a shared 4x32 row-orthonormal spatial basis and shared
-  64x384 row-orthonormal channel basis encode each increment as four 64-D
-  transition modes. Decoding and cumulative summation returns to the original
-  normalized DINO delta coordinates, so `latent_loss` remains directly
-  comparable. The code has 512 dimensions (`2*4*64`) instead of the rejected
-  per-spatial-token candidate's 4,096 dimensions (`2*32*64`).
-- The predictor is action- and state-free. Its private visual history is the
-  deployment-compatible `[t-2,t-1,t]`; the validated 220k base predictor and
-  action path remain strictly ctx1 and see `[t,t+4,t+8]`. Policy-server
-  metadata now advertises `innovation_context_len=3` only for such checkpoints.
-- Fixed token identity is removed with a frozen raw-coordinate training-set
-  mean, never a micro-batch mean. Calibration used 8,192 samples from
-  `libero_all_wm_l10_augmented_localctx3_h8` with the frozen DINOv3 encoder,
-  spatial pooler, task embedding, and 220k base predictor. Artifact:
-
-  ```text
-  playground/Checkpoints/lewm_oft_libero_dinov3b_localinc_calibration/train_local_error_mean_8192.pt
-  ```
-
-  It is finite fp32 with shape `[1,2,32,384]`, `delta_scale=1.680324673652649`,
-  mean RMS 0.0113793, dynamic std mean 0.843115, and first-half/second-half mean
-  RMS difference 0.0189181 (2.24% of dynamic std).
-- Training is deliberately staged. Stage A trains only the two bases (24,704
-  parameters) for 2k steps using dynamic capture; Stage B freezes the learned
-  coordinates and trains only the causal predictor (6,048,320 parameters) for
-  10k steps. Both preserve all 319 source checkpoint keys by shape, use batch
-  4 / accumulation 8 / global batch 32, and do not touch the RoboTwin GPU4 run.
-  Stage A run directory and detached supervisor are:
-
-  ```text
-  playground/Checkpoints/lewm_oft_libero_dinov3b_wmonly_localbasis_m4r64_fixedmean_2k
-  supervisor PID 3080835, GPU 0, port 29649
-  ```
-
-  At its initial random-basis batch, dynamic explained fraction was about
-  0.0259 versus the isotropic separable null
-  `(4/32)*(64/384)=0.02083`. By step 1,050, the per-optimizer-step aggregated
-  trailing-500-step window explained 0.3173 of dynamic error, reduced raw
-  normalized MSE by an oracle 0.1613 (0.1617 / 0.1609 at +4 / +8), and had
-  p10 explained fraction 0.3095. The fixed-mean-only gain remained only
-  `-0.0000196`, `delta_scale` was unchanged, and the zero/frozen student still
-  matched the base exactly. This is strong representation capture, not yet
-  causal predictability.
-- Automatic promotion is supervised by the detached pipeline at:
-
-  ```text
-  playground/Checkpoints/lewm_oft_libero_dinov3b_predictable_local_dynamics_pipeline
-  strict watcher PID 1575005
-  ```
-
-  It waits for the successful Stage-A supervisor exit, then requires a
-  loadable step-2k checkpoint and final model, the step-2k summary record,
-  exact basis/predictor invariants, and 20 complete eight-microbatch groups in
-  steps 1,500--1,975. The representation gate requires explained fraction
-  >=0.25, p10>=0.20, raw oracle gain>=0.10, each horizon gain>=0.07, effective
-  rank>=6, orthogonality error<1e-4, negligible fixed-mean gain, and no recent
-  collapse. Only then does it launch the action/state-free Stage-B predictor
-  on GPU0 and run the separate predictor training gate at 10k.
-- The first cumulative per-token implementation attempts were stopped before
-  warmup and archived because seed/policy compatibility and then mixed
-  batch-token statistics invalidated their conclusions. Do not use artifacts
-  from directories suffixed `unseeded_attempt_20260804_112633` or
-  `tokenbias_attempt_20260804_113320`.
-- A training PASS is only a feasibility gate. The current calibration and both
-  stages sample the full training mixture, so an episode split made afterward
-  must not be called leakage-free held-out evaluation. A strict result requires
-  a frozen per-dataset episode manifest made *before* calibration, with the
-  mean, basis, and predictor all fit on train episodes only, followed by paired
-  held-out raw gain/confidence intervals and zero-code/history-null/
-  matched-history-shuffle ablations. The separate RoboTwin training on GPU 4
-  remained alive and unchanged.
-- Stage B completed all 10k steps but failed its predictor gate over steps
-  8k--10k: code NMSE was `0.99994`, cosine `0.00748`, predicted effective rank
-  `3.01`, raw normalized-latent gain `0.0000098`, and realized oracle headroom
-  `0.000062`. The learned Stage-A coordinates therefore captured error energy
-  but were not learned by the action/state-free predictor on the normal stream.
-- A separate fixed-anchor capacity probe was then run without changing either
-  Stage A/B. It strict-loaded the Stage-A 2k checkpoint, cached one unpadded
-  sample from each of 128 distinct episodes, and trained only the 6.048M
-  predictor parameters in fp32 with a code-only objective. It passed three
-  consecutive full-set gates and stopped at step 550: code NMSE `0.03735`,
-  cosine `0.98154`, and realized headroom `0.93424`. Artifacts are at:
-
-  ```text
-  playground/Checkpoints/lewm_oft_libero_dinov3b_localinc_stageb_overfit128_fp32_seed42_2k
-  playground/Checkpoints/lewm_oft_libero_dinov3b_localinc_stageb_anchor_overfit_pipeline
-  ```
-
-  This rules out a basic gradient disconnection or fixed-sample memorization
-  capacity failure. It does **not** establish held-out predictability: the
-  optimizer is an easier capacity recipe (`1e-3`, fixed-energy code NMSE,
-  no raw loss), and the gate is on its training anchors only. The next probe
-  must fit a predictive subspace on train episodes, select on validation, and
-  open disjoint test episodes once. GPU 4 sharing for this short diagnostic was
-  explicitly authorized; its extra approximately 1.5 GiB was released, and
-  the RoboTwin run remained alive.
-- Stage C implemented that conditional held-out probe in
-  `diagnose_raw_predictive_subspace.py`. It ignores the Stage-A code/basis as a
-  target, freezes the full-mixture 220k encoder/pooler/base/task path, and fits
-  a new reduced-rank regression target on the raw local residual left after the
-  base prediction at +4/+8. Inputs are current latent, two causal history-motion
-  differences, the frozen base prediction, and goal; no action, state, or future
-  input is used. One unpadded anchor per disjoint episode is split
-  train/validation/test=`640/192/256`, covering all 40 tasks. Normalisation,
-  response mean, kernels, and subspaces are train-only; rank/ridge are selected
-  on validation before the sealed test cache is opened for metrics.
-- The final audited Stage-C run completed normally in:
-
-  ```text
-  playground/Checkpoints/lewm_oft_libero_dinov3b_raw_predictive_subspace_probe_train640_val192_test256_seed42_bijective_v3
-  ```
-
-  The history-shuffle null is a true bijection with no fixed points and exactly
-  preserves the empirical history marginal. Train/test keep all 640/256 donors
-  within task; validation keeps 189/192 within task and cycles its three
-  singleton tasks as an explicit fallback. All four validation variants
-  (full, no-history, task-only, fit-time shuffled history) selected rank 0. The
-  best nonzero full candidate was rank 4 / ridge 10, but was worse than the
-  train-mean correction: raw MSE `0.508957` versus `0.508733`, gain
-  `-0.000224`, code NMSE `1.03413`, cosine `0.08385`, and realized oracle
-  headroom `-0.1090`. On the sealed test set, the frozen base raw MSE was
-  `0.508689`; the selected rank-0/train-mean result was `0.509461`, a gain of
-  `-0.000772` with 2,000-repeat paired-task bootstrap 95% CI
-  `[-0.000941,-0.000612]`. Only 2/40 tasks improved, and all eight scientific
-  gates failed. Fifteen declared artifact hashes, tensor finiteness, split
-  isolation, selection freeze, and status files were audited successfully.
-- Stage C therefore gives a clear negative result for this exact recipe: the
-  +4/+8 frozen-base residual contains compressible/oracle energy, and the
-  128-anchor probe proves memorisation capacity, but no episode-held-out linear
-  action/state-free predictable subspace was found from current/history/base/
-  goal inputs. Do not scale rank, fitting time, or another neural head on this
-  same target. If continuing without action conditioning, change the prediction
-  problem first (for example +1/+2 local horizons and an explicitly
-  predictability-trained representation). This remains a conditional probe,
-  not an end-to-end leakage-free benchmark, because its frozen representation
-  was trained on the full mixture.
+- The opt-in predictable-innovation bottleneck and its calibration, staged
+  training, gating, overfit, and held-out diagnostic code were removed from
+  LeWM-OFT on 2026-08-07. The policy server again derives visual history only
+  from `world_model.ctx_len`.
+- The archived experiments gave a negative result worth retaining: the learned
+  basis captured residual energy, but the action/state-free predictor produced
+  effectively no held-out raw latent gain. Historical checkpoints and reports
+  remain under `playground/Checkpoints`, but current source no longer supports
+  loading or training that architecture.
 
 ## LIBERO-10 augmented-data run
 
@@ -570,38 +465,15 @@ instead of trusting an old snapshot.
   that the EMA is active.
 
 
-## Patch Policy-style dense current-patch action residual
+## Removed dense current-patch action residual
 
-- The validated DINOv3-B/16 encoder yields a `14 x 14 x 768` patch grid per
-  view. The baseline compresses this to a `4 x 4 x 384` grid per view before
-  its compact world model.
-- The low-risk Patch Policy experiment keeps that compact path frozen and adds
-  a training/deployment action residual that cross-attends the action queries
-  to all current-frame raw patches (`2 x 14 x 14`). It never consumes true
-  future patches.
-- The residual output projection is zero-initialized, so step-0 action outputs
-  are exactly equal to the validated 200k baseline while gradients can open the
-  dense branch immediately.
-- Launcher:
-
-  ```bash
-  CUDA_DEVS=<free-gpu-ids> \
-  ACCELERATE_BIN=.venv/bin/accelerate \
-  WANDB_MODE=disabled \
-  bash examples/LIBERO/train_files/run_lewm_oft_dinov3_dense_patch_action.sh
-  ```
-
-- Formal 20k-step run started on 2026-07-23 from the validated 200k baseline:
-
-  ```text
-  playground/Checkpoints/lewm_oft_dinov3b_densepatch_action_zeroout_from200k
-  ```
-
-  At step 100/500, action L1 was `0.05023 / 0.04813` and
-  `dense_patch_query_update_ratio` was `0.00790 / 0.01631`, confirming that the
-  branch is active. Monitor `action_dit_loss` for policy fitting and
-  `dense_patch_query_update_ratio` plus `dense_patch_residual_rms` for branch
-  usage. Checkpoints are written every 2k steps.
+- The opt-in action-query residual over unpooled current-frame patches was
+  removed from LeWM-OFT on 2026-08-07, together with its launcher, metrics, and
+  optimizer/config plumbing. Historical checkpoints remain under
+  `playground/Checkpoints`, but an enabled legacy branch is no longer loadable.
+- This does not remove the dense-only 14x14 model below; that model uses dense
+  tokens as its primary world-model representation rather than as an action
+  residual alongside the compact path.
 
 ## Dense-only 14x14 strict baseline control
 
@@ -612,8 +484,8 @@ instead of trusting an old snapshot.
 - The only intended model variable is spatial resolution: each of two views
   keeps all `14 x 14 = 196` DINO patches (392 tokens/frame). The world model
   predicts two future 392-token frames, and the action head reads the current
-  plus predicted future dense tokens. The 4x4 path and dense residual adapter
-  are disabled.
+  plus predicted future dense tokens. It has no parallel 4x4 path or separate
+  dense action adapter.
 - Match the baseline training protocol: all 131.131M parameters train for 200k
   optimizer steps, per-GPU batch 8 on four GPUs (global batch 32), base/action
   LR `1e-4`, encoder LR `1e-6`, latent loss weight 1, SIGReg weight 0, seed 42.
@@ -639,52 +511,16 @@ instead of trusting an old snapshot.
   Re-check the PID, log, metrics, and GPU state rather than trusting this
   volatile snapshot.
 
-## Joint reconstructive compact-latent world model
+## Removed joint reconstructive compact-latent branch
 
-- The opt-in RoboTwin Clean implementation is
-  `world_model.reconstructive_latent_enabled=true`. DINOv3-B/16 remains
-  frozen; the trainable path jointly optimizes only a spatial codec, compact
-  latent predictor, state decoder, and task embedding.
-- It uses one training flow and exactly three weighted objectives: normalized
-  pooled-DINO reconstruction, future compact-latent prediction, and aligned
-  14-D robot-state decoding. There are no variance/covariance losses and no
-  state/action input to the dynamics predictor.
-- The dedicated data type `robotwin_reconstructive_wm` loads image and state
-  indices `[0,1,2]`. Keep it separate from the established RoboTwin world-model
-  recipe, whose image indices are `[0,8,16]` and state is current-only.
-- Config and launcher:
-
-  ```text
-  examples/Robotwin/train_files/starvla_reconstructive_latent_wm_robotwin_clean.yaml
-  examples/Robotwin/train_files/run_reconstructive_latent_wm_clean.sh
-  ```
-
-  This is a world-model-only representation experiment; `predict_action`
-  intentionally rejects it because the compact latent is not yet connected to
-  the action head. No formal run was launched when the implementation landed.
-
-- The corresponding LIBERO experiment uses the same three-loss architecture
-  with two views, 8-D normalized state, and aligned consecutive frame indices
-  `[0,1,2]`. It samples the same four-suite plus recovered/teacher LIBERO-10
-  mixture as the previous augmented-L10 experiments. It starts the compact
-  branch from scratch (only DINOv3-B is pretrained), with micro-batch 4,
-  accumulation 8, global batch 32, and 50k optimizer steps. Config, launcher,
-  and run directory are:
-
-  ```text
-  examples/LIBERO/train_files/starvla_reconstructive_latent_wm_libero.yaml
-  examples/LIBERO/train_files/run_reconstructive_latent_wm_libero.sh
-  playground/Checkpoints/lewm_oft_libero_dinov3b_reconstructive_latent_joint_short12_50k
-  ```
-
-  It was launched detached on shared GPU 4 on 2026-08-04 with supervisor PID
-  `1818532`. At step 20 it used about 4.55 GiB in addition to the existing
-  RoboTwin process, leaving about 22.5 GiB free. The logged three losses were
-  finite and optimization had started. The first launch attempt is preserved
-  as `train.attempt1_world_model_eval_guard.log`; it stopped before step 1
-  because the trainer tried to run an irrelevant action diagnostic at step 0.
-  `train_starvla.py` now skips action evaluation for every explicit
-  `world_model_only` run.
+- The opt-in `world_model.reconstructive_latent_enabled` branch and its
+  dedicated module, tests, configs, launchers, and data registrations were
+  removed from LeWM-OFT on 2026-08-07. It was world-model-only and never
+  connected to `predict_action`; removing it does not change the default
+  model's parameters or inference path.
+- Historical checkpoint artifacts may still contain the old configuration and
+  state-dict keys, but current source no longer supports loading or training
+  that architecture.
 
 ## Smooth spatial latent world model
 

@@ -50,8 +50,6 @@ framework:
     state_cond_only: false
     use_state_probe: false
     use_progress_checker: false
-    use_dense_patch_action: false
-    dense_patch_freeze_base: true
     transition_mode: false
     progress_anchor_weight: 0.5
     progress_detach_action: true

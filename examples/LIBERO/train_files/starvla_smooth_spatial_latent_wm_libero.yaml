@@ -38,8 +38,6 @@ framework:
     smooth_sigreg_num_proj: 1024
 
     # All existing LeWMOFT alternatives remain outside this experiment.
-    reconstructive_latent_enabled: false
-    predictable_innovation_enabled: false
     predictor_state_dim: 0
     rollout_steps: 1
     loss_latent_weight: 0.0

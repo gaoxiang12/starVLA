@@ -279,6 +279,27 @@ class LiberoSmoothLatentDataConfigTest(unittest.TestCase):
 
 
 class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
+    def test_removed_branch_options_fail_fast(self):
+        from starVLA.model.framework.WM4A.LeWMOFT import LeWM_OFT
+
+        for option in (
+            "reconstructive_latent_enabled",
+            "predictable_innovation_enabled",
+            "use_dense_patch_action",
+        ):
+            with self.subTest(option=option):
+                config = OmegaConf.load(
+                    REPO_ROOT
+                    / "examples/LIBERO/train_files/"
+                    "starvla_smooth_global_latent_action_joint_libero_200k.yaml"
+                )
+                config.framework.world_model[option] = True
+
+                with self.assertRaisesRegex(
+                    ValueError, "removed experimental branches"
+                ):
+                    LeWM_OFT(config=config)
+
     def test_joint_action_path_uses_only_one_global_token_per_frame(self):
         class FakeEncoder(nn.Module):
             def __init__(self):
@@ -307,6 +328,12 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
         wm.smooth_predictor_ffn = 32
         wm.smooth_sigreg_knots = 5
         wm.smooth_sigreg_num_proj = 16
+        # Historical inactive checkpoints retain these obsolete defaults.
+        # False flags must remain loadable even though the branches are gone.
+        wm.reconstructive_latent_enabled = False
+        wm.predictable_innovation_enabled = False
+        wm.innovation_context_len = None
+        wm.use_dense_patch_action = False
 
         with patch(
             "starVLA.model.modules.world_model.dinov3_loader.load_dinov3",

@@ -41,8 +41,6 @@ framework:
     smooth_sigreg_knots: 17
     smooth_sigreg_num_proj: 1024
 
-    reconstructive_latent_enabled: false
-    predictable_innovation_enabled: false
     predictor_state_dim: 0
     context_correction_state_dim: 0
     rollout_steps: 1
@@ -54,7 +52,6 @@ framework:
     visual_diagnostics: false
     use_state_cond: false
     use_state_probe: false
-    use_dense_patch_action: false
     use_progress_checker: false
     transition_mode: "off"
 

@@ -112,19 +112,6 @@ class Libero4in1WMDataConfig(Libero4in1DataConfig):
         ])
 
 
-class Libero4in1ReconstructiveWMDataConfig(Libero4in1WMDataConfig):
-    """Short, aligned frames for joint reconstructive latent training.
-
-    The compact latent reconstructs frozen DINO features and decodes robot
-    state at every real frame, so image and state must use identical temporal
-    indices.  Consecutive +1/+2 targets test the more predictable local motion
-    regime suggested by the held-out Stage-C diagnosis.
-    """
-
-    video_indices = [0, 1, 2]
-    state_indices = [0, 1, 2]
-
-
 class Libero4in1SmoothLatentWMDataConfig(Libero4in1DataConfig):
     """Consecutive prediction targets plus a ranking-only same-episode frame."""
 
@@ -180,16 +167,6 @@ class Libero4in1WMContext3Horizon8DataConfig(Libero4in1WMDataConfig):
     state_indices = [-8, -4, 0]
 
 
-class Libero4in1WMLocalDynamicsContext3Horizon8DataConfig(Libero4in1WMDataConfig):
-    """Recent visual motion for local dynamics, then baseline +4/+8 targets."""
-
-    # Match the standard deployment history deque: its final three consecutive
-    # observations are [t-2,t-1,t]. The innovation branch alone consumes these;
-    # the frozen base predictor still receives only t.
-    video_indices = [-2, -1, 0, 4, 8]
-    state_indices = [0]
-
-
 class Libero4in1WMRolloutHorizon16DataConfig(Libero4in1WMDataConfig):
     """Four future frames at the deployed +4 cadence for multi-step rollout.
 
@@ -212,18 +189,12 @@ class Libero4in1WMRolloutHorizon32DataConfig(Libero4in1WMDataConfig):
 ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
     "libero_franka_wm": Libero4in1WMDataConfig(),
-    "libero_franka_reconstructive_wm": (
-        Libero4in1ReconstructiveWMDataConfig()
-    ),
     "libero_franka_smooth_latent_wm": Libero4in1SmoothLatentWMDataConfig(),
     "libero_franka_smooth_latent_wm_rollout": (
         Libero4in1SmoothLatentWMRolloutDataConfig()
     ),
     "libero_franka_wm_ctx2_h8": Libero4in1WMContext2Horizon8DataConfig(),
     "libero_franka_wm_ctx3_h8": Libero4in1WMContext3Horizon8DataConfig(),
-    "libero_franka_wm_localctx3_h8": (
-        Libero4in1WMLocalDynamicsContext3Horizon8DataConfig()
-    ),
     "libero_franka_wm_ctx2_h20": Libero4in1WMContext2Horizon20DataConfig(),
     "libero_franka_wm_rollout_h16": Libero4in1WMRolloutHorizon16DataConfig(),
     "libero_franka_wm_rollout_h32": Libero4in1WMRolloutHorizon32DataConfig(),
@@ -368,15 +339,6 @@ DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_ctx3_h8"] = [
     ]
 ]
 
-# Same trajectory distribution, but with the deployment-compatible recent
-# history [t-2,t-1,t] used by the compact local-dynamics bottleneck.
-DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_localctx3_h8"] = [
-    (dataset, weight, "libero_franka_wm_localctx3_h8")
-    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
-        "libero_all_wm_l10_augmented"
-    ]
-]
-
 # Same trajectories again, extended to +12/+16 (and +32) so the world model can
 # be supervised on its own re-anchored predictions instead of only on
 # teacher-forced single-shot targets.
@@ -389,16 +351,6 @@ DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_rollout_h16"] = [
 
 DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_rollout_h32"] = [
     (dataset, weight, "libero_franka_wm_rollout_h32")
-    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
-        "libero_all_wm_l10_augmented"
-    ]
-]
-
-# Preserve the exact augmented four-suite trajectory distribution used by the
-# previous LIBERO world-model experiments, changing only the temporal schema
-# to aligned consecutive image/state frames.
-DATASET_NAMED_MIXTURES["libero_all_reconstructive_wm_l10_augmented"] = [
-    (dataset, weight, "libero_franka_reconstructive_wm")
     for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
         "libero_all_wm_l10_augmented"
     ]

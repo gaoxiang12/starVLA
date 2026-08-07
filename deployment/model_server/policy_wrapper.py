@@ -82,12 +82,7 @@ class PolicyServerWrapper:
         # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
         world_model_cfg = model_cfg["framework"].get("world_model", {})
-        legacy_context_length = int(world_model_cfg.get("ctx_len", 1))
-        self._visual_context_length = (
-            int(world_model_cfg.get("innovation_context_len", legacy_context_length))
-            if bool(world_model_cfg.get("predictable_innovation_enabled", False))
-            else legacy_context_length
-        )
+        self._visual_context_length = int(world_model_cfg.get("ctx_len", 1))
         
         if "action_horizon" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])

@@ -6,11 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from starVLA.model.modules.world_model.predictable_innovation_bottleneck import (
-    PredictableInnovationBottleneck,
-)
-
-
 class SIGReg(nn.Module):
     """Regularize projected features toward an isotropic unit Gaussian."""
 
@@ -342,16 +337,6 @@ class VisualTokenLatentWorldModel(nn.Module):
         context_correction_dim: int = 384,
         context_correction_heads: int = 6,
         context_correction_ffn_dim: int = 1024,
-        predictable_innovation_enabled: bool = False,
-        innovation_rank: int = 64,
-        innovation_transition_tokens: int = 4,
-        innovation_context_len: Optional[int] = None,
-        innovation_require_fixed_mean: bool = False,
-        innovation_predictor_dim: int = 384,
-        innovation_predictor_depth: int = 4,
-        innovation_predictor_heads: int = 6,
-        innovation_predictor_ffn_dim: int = 1024,
-        innovation_min_std: float = 0.25,
         sigreg_weight: float = 0.0,
         stats_momentum: float = 0.99,
     ) -> None:
@@ -387,34 +372,6 @@ class VisualTokenLatentWorldModel(nn.Module):
                 ffn_dim=context_correction_ffn_dim,
             )
             if context_correction_depth > 0
-            else None
-        )
-        if predictable_innovation_enabled and self.context_correction is not None:
-            raise ValueError(
-                "predictable innovation and context residual correction are "
-                "separate ablations and cannot be enabled together"
-            )
-        self.predictable_innovation = (
-            PredictableInnovationBottleneck(
-                latent_dim=latent_dim,
-                goal_dim=goal_dim,
-                n_future=self.n_future,
-                num_tokens=self.num_tokens,
-                context_len=(
-                    int(innovation_context_len)
-                    if innovation_context_len is not None
-                    else self.context_len
-                ),
-                rank=innovation_rank,
-                transition_tokens=innovation_transition_tokens,
-                predictor_dim=innovation_predictor_dim,
-                predictor_depth=innovation_predictor_depth,
-                predictor_heads=innovation_predictor_heads,
-                predictor_ffn_dim=innovation_predictor_ffn_dim,
-                min_code_std=innovation_min_std,
-                require_fixed_mean=innovation_require_fixed_mean,
-            )
-            if predictable_innovation_enabled
             else None
         )
         self.sigreg = SIGReg() if sigreg_weight > 0 else None
@@ -456,7 +413,6 @@ class VisualTokenLatentWorldModel(nn.Module):
         context: torch.Tensor,
         goal: Optional[torch.Tensor] = None,
         state: Optional[torch.Tensor] = None,
-        innovation_context: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if context.shape[1] != self.context_len:
             raise ValueError(
@@ -467,15 +423,6 @@ class VisualTokenLatentWorldModel(nn.Module):
         if self.context_correction is not None:
             predicted_delta = predicted_delta + self.context_correction(
                 context, predicted_delta, goal=goal, state=state
-            )
-        if self.predictable_innovation is not None:
-            innovation_input = (
-                context if innovation_context is None else innovation_context
-            )
-            predicted_delta = self.predictable_innovation.inference(
-                innovation_input.detach(),
-                predicted_delta,
-                goal=goal.detach() if goal is not None else None,
             )
         scale = self.delta_scale.clamp_min(self._stats_eps)
         return anchor + predicted_delta * scale
@@ -498,11 +445,6 @@ class VisualTokenLatentWorldModel(nn.Module):
         """
         if int(steps) < 1:
             raise ValueError(f"rollout steps must be at least 1, got {steps}")
-        if self.predictable_innovation is not None:
-            raise NotImplementedError(
-                "predictable innovation consumes a private observed history "
-                "that cannot be synthesized during rollout"
-            )
         predictions = []
         window = context
         for _ in range(int(steps)):
@@ -579,7 +521,6 @@ class VisualTokenLatentWorldModel(nn.Module):
         ctx_len: int,
         goal: Optional[torch.Tensor] = None,
         state: Optional[torch.Tensor] = None,
-        innovation_context: Optional[torch.Tensor] = None,
         update_stats: bool = True,
         rollout_steps: int = 1,
     ) -> dict[str, torch.Tensor]:
@@ -601,12 +542,6 @@ class VisualTokenLatentWorldModel(nn.Module):
                 f"{self.n_future * rollout_steps} future frames, "
                 f"got {total_frames - ctx_len}"
             )
-        if rollout_steps > 1 and self.predictable_innovation is not None:
-            raise NotImplementedError(
-                "predictable innovation and multi-step rollout are separate "
-                "ablations and cannot be enabled together"
-            )
-
         anchor = latent[:, ctx_len - 1 : ctx_len]
         future = latent[:, ctx_len : ctx_len + self.n_future]
         residual = (future - anchor).detach()
@@ -619,26 +554,12 @@ class VisualTokenLatentWorldModel(nn.Module):
             latent[:, :ctx_len], goal=goal, state=state
         )
         correction = None
-        innovation_output = None
         predicted_delta = base_predicted_delta
         if self.context_correction is not None:
             correction = self.context_correction(
                 latent[:, :ctx_len], base_predicted_delta, goal=goal, state=state
             )
             predicted_delta = base_predicted_delta + correction
-        if self.predictable_innovation is not None:
-            innovation_input = (
-                latent[:, :ctx_len]
-                if innovation_context is None
-                else innovation_context
-            )
-            innovation_output = self.predictable_innovation(
-                innovation_input.detach(),
-                base_predicted_delta,
-                target_delta=target_delta,
-                goal=goal.detach() if goal is not None else None,
-            )
-            predicted_delta = innovation_output["final_prediction"]
         predicted_residual = predicted_delta * scale
         predicted_future = anchor + predicted_residual
         squared_error = (predicted_delta.float() - target_delta.float()).square()
@@ -664,32 +585,6 @@ class VisualTokenLatentWorldModel(nn.Module):
                     correction.float().square().mean().sqrt()
                     / base_predicted_delta.float().square().mean().sqrt().clamp_min(1e-8)
                 )
-        if innovation_output is not None:
-            # Keep the externally anchored names in raw normalized DINO-delta
-            # coordinates. Code-space losses are useful training signals but
-            # never replace ``latent_loss`` as the comparable headline metric.
-            output["latent_base_loss"] = innovation_output[
-                "innovation_base_mse"
-            ].detach()
-            output["innovation_oracle_raw_loss"] = innovation_output[
-                "innovation_oracle_mse"
-            ].detach()
-            output["innovation_final_raw_loss"] = innovation_output[
-                "innovation_final_mse"
-            ].detach()
-            output["innovation_base_raw_loss"] = innovation_output[
-                "innovation_base_mse"
-            ].detach()
-            output["innovation_target_code_std"] = innovation_output[
-                "innovation_target_std"
-            ].detach()
-            for metric_name, metric_value in innovation_output.items():
-                if (
-                    metric_name.startswith("innovation_")
-                    and torch.is_tensor(metric_value)
-                    and metric_value.numel() == 1
-                ):
-                    output[metric_name] = metric_value
         per_horizon_loss = squared_error.mean(dim=(0, 2, 3))
         for horizon_index, horizon_loss in enumerate(per_horizon_loss, start=1):
             output[f"latent_loss_horizon_{horizon_index}"] = horizon_loss
