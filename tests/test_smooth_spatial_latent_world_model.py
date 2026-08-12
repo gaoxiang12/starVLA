@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class GridSpatialLatentProjectorTest(unittest.TestCase):
-    def test_fixed_grid_projection_is_detached_from_dino(self):
+    def test_fixed_grid_projection_keeps_explicit_positioned_tokens(self):
         projector = GridSpatialLatentProjector(
             patch_dim=8,
             spatial_token_dim=4,
@@ -30,28 +30,62 @@ class GridSpatialLatentProjectorTest(unittest.TestCase):
         )
         patches = torch.randn(3, 4, 2, 16, 8, requires_grad=True)
 
-        latent = projector(patches)
-        latent.square().mean().backward()
+        tokens, content = projector(patches, return_content=True)
+        tokens.square().mean().backward()
 
-        self.assertEqual(latent.shape, (3, 4, 4))
+        self.assertEqual(tokens.shape, (3, 4, 8, 4))
+        self.assertEqual(content.shape, (3, 4, 8, 4))
         self.assertEqual(projector.spatial_token_count, 8)
-        self.assertEqual(projector.num_tokens, 1)
+        self.assertEqual(projector.num_tokens, 8)
         self.assertIsNone(patches.grad)
         self.assertIsNotNone(projector.token_projection.weight.grad)
-        self.assertIsNotNone(projector.global_projection.weight.grad)
         token_row_gram = (
             projector.token_projection.weight.detach()
             @ projector.token_projection.weight.detach().T
         )
-        global_row_gram = (
-            projector.global_projection.weight.detach()
-            @ projector.global_projection.weight.detach().T
-        )
         torch.testing.assert_close(
             token_row_gram, torch.eye(4), atol=1e-5, rtol=1e-5
         )
+        position = projector.position_tokens()
         torch.testing.assert_close(
-            global_row_gram, torch.eye(4), atol=1e-5, rtol=1e-5
+            tokens - content,
+            position.view(1, 1, 8, 4).expand_as(tokens),
+        )
+
+    def test_joint_encoder_projection_propagates_patch_gradients(self):
+        projector = GridSpatialLatentProjector(
+            patch_dim=8,
+            spatial_token_dim=4,
+            latent_dim=4,
+            num_views=2,
+            grid_size=2,
+            detach_input=False,
+        )
+        patches = torch.randn(2, 3, 2, 16, 8, requires_grad=True)
+
+        projector(patches).square().mean().backward()
+
+        self.assertIsNotNone(patches.grad)
+        self.assertGreater(patches.grad.abs().sum(), 0)
+
+    def test_optional_per_token_width_adapter_preserves_token_axis(self):
+        projector = GridSpatialLatentProjector(
+            patch_dim=8,
+            spatial_token_dim=2,
+            latent_dim=4,
+            num_views=2,
+            grid_size=2,
+        )
+        tokens = projector(torch.randn(1, 2, 2, 16, 8))
+
+        self.assertEqual(tokens.shape, (1, 2, 8, 4))
+        self.assertIsInstance(projector.latent_projection, nn.Linear)
+        latent_row_gram = (
+            projector.latent_projection.weight.detach().T
+            @ projector.latent_projection.weight.detach()
+        )
+        torch.testing.assert_close(
+            latent_row_gram, torch.eye(2), atol=1e-5, rtol=1e-5
         )
 
 
@@ -114,7 +148,10 @@ class SmoothSpatialLatentWorldModelTest(unittest.TestCase):
         torch.testing.assert_close(output["valid_fraction_horizon_1"], torch.tensor(0.75))
         torch.testing.assert_close(output["valid_fraction_horizon_2"], torch.tensor(0.50))
         torch.testing.assert_close(output["valid_far_fraction"], torch.tensor(0.25))
-        torch.testing.assert_close(output["sigreg_sample_count"], torch.tensor(10.0))
+        torch.testing.assert_close(output["sigreg_sample_count"], torch.tensor(80.0))
+        self.assertEqual(output["latent"].shape, (4, 4, 8, 4))
+        self.assertEqual(output["content_latent"].shape, (4, 4, 8, 4))
+        self.assertEqual(output["pred_future_latent"].shape, (4, 2, 8, 4))
         self.assertLessEqual(
             float(output["latent_effective_rank_fraction"]), 1.0 + 1e-5
         )
@@ -136,18 +173,20 @@ class SmoothSpatialLatentWorldModelTest(unittest.TestCase):
         self.assertGreater(
             model.projector.token_projection.weight.grad.abs().sum(), 0
         )
-        self.assertGreater(
-            model.projector.global_projection.weight.grad.abs().sum(), 0
-        )
         self.assertGreater(model.predictor.out.weight.grad.abs().sum(), 0)
 
     def test_second_difference_and_far_order_constraints(self):
         class FixedProjector(nn.Module):
             latent_dim = 4
-            num_tokens = 1
+            num_tokens = 8
 
-            def forward(self, latent):
+            def forward(self, latent, return_content=False):
+                if return_content:
+                    return latent, latent
                 return latent
+
+            def add_position(self, content):
+                return content
 
         acceleration_model = self._make_model(
             prediction_weight=0.0,
@@ -157,8 +196,12 @@ class SmoothSpatialLatentWorldModelTest(unittest.TestCase):
             temporal_order_weight=0.0,
         )
         acceleration_model.projector = FixedProjector()
-        linear = torch.tensor([0.0, 1.0, 2.0, 4.0]).view(1, 4, 1).expand(-1, -1, 4)
-        jerk = torch.tensor([0.0, 1.0, 3.0, 4.0]).view(1, 4, 1).expand(-1, -1, 4)
+        linear = torch.tensor([0.0, 1.0, 2.0, 4.0]).view(
+            1, 4, 1, 1
+        ).expand(-1, -1, 8, 4)
+        jerk = torch.tensor([0.0, 1.0, 3.0, 4.0]).view(
+            1, 4, 1, 1
+        ).expand(-1, -1, 8, 4)
 
         linear_output = acceleration_model(linear, goal=torch.zeros(1, 5))
         jerk_output = acceleration_model(jerk, goal=torch.zeros(1, 5))
@@ -174,7 +217,7 @@ class SmoothSpatialLatentWorldModelTest(unittest.TestCase):
             temporal_order_weight=1.0,
         )
         order_model.projector = FixedProjector()
-        constant = torch.zeros(1, 4, 4)
+        constant = torch.zeros(1, 4, 8, 4)
 
         constant_output = order_model(constant, goal=torch.zeros(1, 5))
         ordered_output = order_model(linear, goal=torch.zeros(1, 5))
@@ -184,6 +227,38 @@ class SmoothSpatialLatentWorldModelTest(unittest.TestCase):
         )
         torch.testing.assert_close(
             ordered_output["temporal_order_loss"], torch.zeros(())
+        )
+
+    def test_prediction_loss_averages_spatial_tokens_instead_of_summing(self):
+        class FixedProjector(nn.Module):
+            latent_dim = 4
+            num_tokens = 8
+
+            def forward(self, latent, return_content=False):
+                if return_content:
+                    return latent, latent
+                return latent
+
+            def add_position(self, content):
+                return content
+
+        model = self._make_model(
+            sigreg_weight=0.0,
+            slow_weight=0.0,
+            acceleration_weight=0.0,
+            temporal_order_weight=0.0,
+        )
+        model.projector = FixedProjector()
+        latent = torch.tensor([0.0, 1.0, 2.0, 4.0]).view(
+            1, 4, 1, 1
+        ).expand(-1, -1, 8, 4)
+
+        output = model(latent, goal=torch.zeros(1, 5))
+
+        # The zero-initialized predictor copies current content. Per-element
+        # MSE is therefore mean([1**2, 2**2]) = 2.5, independent of K=8.
+        torch.testing.assert_close(
+            output["latent_prediction_loss"], torch.tensor(2.5)
         )
 
     def test_two_step_rollout_supervision_and_diagnostics(self):
@@ -278,7 +353,7 @@ class LiberoSmoothLatentDataConfigTest(unittest.TestCase):
         )
 
 
-class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
+class SmoothSpatialTokenActionIntegrationTest(unittest.TestCase):
     def test_removed_branch_options_fail_fast(self):
         from starVLA.model.framework.WM4A.LeWMOFT import LeWM_OFT
 
@@ -300,7 +375,7 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
                 ):
                     LeWM_OFT(config=config)
 
-    def test_joint_action_path_uses_only_one_global_token_per_frame(self):
+    def test_joint_action_path_uses_full_spatial_grid_per_frame(self):
         class FakeEncoder(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -310,7 +385,7 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
         config = OmegaConf.load(
             REPO_ROOT
             / "examples/LIBERO/train_files/"
-            "starvla_smooth_global_latent_action_joint_libero_200k.yaml"
+            "starvla_smooth_spatial32x384_action_joint_libero_statecond_trainenc_200k.yaml"
         )
         wm = config.framework.world_model
         config.framework.lang_cond.num_buckets = 32
@@ -343,6 +418,15 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
 
             model = LeWM_OFT(config=config)
 
+        self.assertEqual(
+            model.action_hidden_dim,
+            int(config.framework.action_model.action_hidden_dim),
+        )
+        self.assertNotEqual(
+            model.action_hidden_dim,
+            2 * int(model.backbone.encoder.config.hidden_size),
+        )
+
         def fake_encode(_self, frames):
             return torch.randn(len(frames), len(frames[0]), 2, 16, 32)
 
@@ -357,6 +441,7 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
                 "future_frame_valid_mask": [True, True, True, True],
                 "lang": f"task {index}",
                 "action": np.random.randn(8, 7).astype(np.float32),
+                "state": np.random.randn(1, 8).astype(np.float32),
             }
             for index in range(2)
         ]
@@ -369,6 +454,7 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
         output["action_loss"].backward()
 
         allowed_prefixes = (
+            "backbone.",
             "smooth_world_model.",
             "task_embedding.",
             "visual_action_head.",
@@ -382,9 +468,9 @@ class SmoothGlobalLatentActionIntegrationTest(unittest.TestCase):
         self.assertTrue(
             all(name.startswith(allowed_prefixes) for name in trainable)
         )
-        self.assertEqual(model.visual_action_head.num_tokens, 1)
+        self.assertEqual(model.visual_action_head.num_tokens, 32)
         self.assertIsNotNone(
-            model.smooth_world_model.projector.global_projection.weight.grad
+            model.smooth_world_model.projector.latent_projection.weight.grad
         )
         self.assertIsNotNone(model.smooth_world_model.predictor.out.weight.grad)
         self.assertIsNotNone(model.visual_action_head.kv_proj.weight.grad)

@@ -3,6 +3,7 @@ import unittest
 import torch
 
 from starVLA.model.framework.WM4A.LeWMOFT import (
+    CompositionalTextEncoder,
     LeWM_OFT,
     VisualActionCrossAttn,
     VisualTokenPooler,
@@ -18,6 +19,36 @@ from starVLA.model.modules.world_model.wala_transition_auxiliary import (
 
 
 class VisualTokenComponentsTest(unittest.TestCase):
+    def test_compositional_text_encoder_is_collision_free_and_trainable(self):
+        encoder = CompositionalTextEncoder(
+            output_dim=24,
+            hidden_dim=32,
+            depth=1,
+            num_heads=4,
+            ffn_dim=64,
+            max_length=32,
+            dropout=0.0,
+        )
+        token_ids, valid = encoder.tokenize(
+            [" Pick  up   the cup ", "pick up the bowl", "拿起杯子"],
+            device=torch.device("cpu"),
+        )
+        normalized_ids, normalized_valid = encoder.tokenize(
+            ["pick up the cup"], device=torch.device("cpu")
+        )
+        self.assertTrue(torch.equal(token_ids[0], normalized_ids[0]))
+        self.assertTrue(torch.equal(valid[0], normalized_valid[0]))
+        self.assertFalse(torch.equal(token_ids[0], token_ids[1]))
+        self.assertGreater(int(valid[2].sum()), 2)
+
+        output = encoder(
+            ["pick up the cup", "pick up the bowl"],
+            device=torch.device("cpu"),
+        )
+        self.assertEqual(output.shape, (2, 24))
+        output.square().mean().backward()
+        self.assertIsNotNone(encoder.token_embedding.weight.grad)
+
     def test_prefix_l1_loss_masks_tail_per_sample(self):
         pred = torch.zeros(2, 4, 1, requires_grad=True)
         target = torch.tensor(

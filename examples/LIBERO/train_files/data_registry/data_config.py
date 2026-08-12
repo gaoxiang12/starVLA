@@ -125,6 +125,39 @@ class Libero4in1SmoothLatentWMDataConfig(Libero4in1DataConfig):
         return cfg
 
 
+class Libero4in1SmoothLatentWMStateCondDataConfig(
+    Libero4in1SmoothLatentWMDataConfig
+):
+    """Smooth latent WM config that also normalizes proprio state.
+
+    The base smooth config inherits the plain transform, which normalizes
+    actions only. use_state_cond in the smooth action head expects normalized
+    state (same convention as Libero4in1WMDataConfig), so this variant adds the
+    mean_std state normalization to the smooth frame scheme.
+    """
+
+    def transform(self):
+        return ComposedModalityTransform(transforms=[
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={
+                    "action.x": "min_max",
+                    "action.y": "min_max",
+                    "action.z": "min_max",
+                    "action.roll": "min_max",
+                    "action.pitch": "min_max",
+                    "action.yaw": "min_max",
+                },
+            ),
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={k: "mean_std" for k in self.state_keys},
+            ),
+        ])
+
+
 class Libero4in1SmoothLatentWMRolloutDataConfig(Libero4in1DataConfig):
     """Consecutive targets for a two-step autoregressive rollout plus far frame.
 
@@ -190,6 +223,9 @@ ROBOT_TYPE_CONFIG_MAP = {
     "libero_franka": Libero4in1DataConfig(),
     "libero_franka_wm": Libero4in1WMDataConfig(),
     "libero_franka_smooth_latent_wm": Libero4in1SmoothLatentWMDataConfig(),
+    "libero_franka_smooth_latent_wm_statecond": (
+        Libero4in1SmoothLatentWMStateCondDataConfig()
+    ),
     "libero_franka_smooth_latent_wm_rollout": (
         Libero4in1SmoothLatentWMRolloutDataConfig()
     ),
@@ -361,6 +397,15 @@ DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_rollout_h32"] = [
 # a same-episode temporal-order reference.
 DATASET_NAMED_MIXTURES["libero_all_smooth_latent_wm_l10_augmented"] = [
     (dataset, weight, "libero_franka_smooth_latent_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
+        "libero_all_wm_l10_augmented"
+    ]
+]
+
+# Same smooth distribution, but with the state-conditioned schema that
+# normalizes proprio state for the action head (use_state_cond=true).
+DATASET_NAMED_MIXTURES["libero_all_smooth_latent_wm_l10_augmented_statecond"] = [
+    (dataset, weight, "libero_franka_smooth_latent_wm_statecond")
     for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES[
         "libero_all_wm_l10_augmented"
     ]

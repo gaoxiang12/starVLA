@@ -11,6 +11,7 @@ import hashlib
 import math
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 _workspace_root = Path(__file__).parent.parent.parent.parent.parent
@@ -259,6 +260,101 @@ class VisualActionCrossAttn(nn.Module):
         return out  # (B, chunk_len, action_hidden_dim)
 
 
+class CompositionalTextEncoder(nn.Module):
+    """Encode instructions without assigning an opaque ID to each sentence.
+
+    UTF-8 bytes provide a deterministic, collision-free vocabulary for every
+    language and allow related instructions to share parameters. A compact
+    Transformer composes those tokens into the task vector consumed by the
+    latent predictor and action path.
+    """
+
+    PAD_TOKEN = 0
+    BOS_TOKEN = 1
+    EOS_TOKEN = 2
+    BYTE_OFFSET = 3
+    VOCAB_SIZE = BYTE_OFFSET + 256
+
+    def __init__(
+        self,
+        *,
+        output_dim: int,
+        hidden_dim: int = 256,
+        depth: int = 2,
+        num_heads: int = 4,
+        ffn_dim: int = 512,
+        max_length: int = 128,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.output_dim = int(output_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.max_length = int(max_length)
+        if self.max_length < 2:
+            raise ValueError("text encoder max_length must be at least 2")
+        if self.hidden_dim % int(num_heads) != 0:
+            raise ValueError(
+                "text encoder hidden_dim must be divisible by num_heads, got "
+                f"{self.hidden_dim} and {num_heads}"
+            )
+
+        self.token_embedding = nn.Embedding(
+            self.VOCAB_SIZE, self.hidden_dim, padding_idx=self.PAD_TOKEN
+        )
+        self.position_embedding = nn.Embedding(self.max_length, self.hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=int(num_heads),
+            dim_feedforward=int(ffn_dim),
+            dropout=float(dropout),
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=int(depth), enable_nested_tensor=False
+        )
+        self.out_norm = nn.LayerNorm(self.hidden_dim)
+        self.out_proj = nn.Linear(self.hidden_dim, self.output_dim)
+
+    @staticmethod
+    def normalize(instruction: Optional[str]) -> str:
+        text = unicodedata.normalize("NFKC", instruction or "")
+        return " ".join(text.strip().lower().split())
+
+    def tokenize(
+        self, instructions: List[str], *, device: torch.device
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        token_ids = torch.full(
+            (len(instructions), self.max_length),
+            self.PAD_TOKEN,
+            device=device,
+            dtype=torch.long,
+        )
+        for row, instruction in enumerate(instructions):
+            byte_values = list(self.normalize(instruction).encode("utf-8"))
+            byte_values = byte_values[: self.max_length - 2]
+            values = (
+                [self.BOS_TOKEN]
+                + [value + self.BYTE_OFFSET for value in byte_values]
+                + [self.EOS_TOKEN]
+            )
+            token_ids[row, : len(values)] = torch.tensor(
+                values, device=device, dtype=torch.long
+            )
+        valid_mask = token_ids.ne(self.PAD_TOKEN)
+        return token_ids, valid_mask
+
+    def forward(self, instructions: List[str], *, device: torch.device) -> torch.Tensor:
+        token_ids, valid_mask = self.tokenize(instructions, device=device)
+        positions = torch.arange(self.max_length, device=device).unsqueeze(0)
+        hidden = self.token_embedding(token_ids) + self.position_embedding(positions)
+        hidden = self.encoder(hidden, src_key_padding_mask=~valid_mask)
+        pooled = (hidden * valid_mask.unsqueeze(-1)).sum(dim=1)
+        pooled = pooled / valid_mask.sum(dim=1, keepdim=True).clamp_min(1)
+        return self.out_proj(self.out_norm(pooled))
+
+
 @dataclass
 class LeWMOFTDefaultConfig:
     """LeWM-OFT default parameters."""
@@ -277,16 +373,14 @@ class LeWMOFTDefaultConfig:
             "ctx_len": 1,             # clean context frames (current frame only)
             "world_model_only": False,
             "freeze_latent_stats": False,
-            # Predictable 4x4 spatial latent with direct future-latent L2,
-            # latent SIGReg, and explicit temporal smoothness.  This is a
-            # separate world-model-only experiment with no reconstruction,
-            # state input, or action input.
+            # Predictable per-cell 4x4 spatial tokens with direct future-token
+            # L2, content-only SIGReg, and explicit temporal smoothness.
             "smooth_latent_enabled": False,
             "smooth_action_enabled": False,
             "smooth_action_loss_weight": 1.0,
             "smooth_world_model_loss_weight": 1.0,
             "smooth_latent_grid_size": 4,
-            "smooth_spatial_token_dim": 128,
+            "smooth_spatial_token_dim": 384,
             "smooth_latent_dim": 384,
             "smooth_predictor_dim": 384,
             "smooth_predictor_depth": 4,
@@ -401,15 +495,23 @@ class LeWMOFTDefaultConfig:
         }
     )
 
-    # === Language / task conditioning (le-wm-style task embedding) ===
-    # le-wm conditions its action head on a per-task one-hot. starVLA only
-    # exposes language strings, so we hash each instruction into a fixed bucket
-    # and look up a learnable embedding (an implicit task-id embedding that needs
-    # no predefined task list). ``embed_dim: null`` -> world-model hidden size.
+    # === Language / task conditioning ===
+    # Legacy runs use a whole-sentence hash table. New runs may select a compact
+    # compositional text encoder. ``embed_dim: null`` -> world-model hidden size.
     lang_cond: dict = field(
         default_factory=lambda: {
+            # ``hash`` preserves legacy checkpoints. New training recipes
+            # should explicitly select ``text`` for compositional language
+            # conditioning instead of treating every full sentence as an ID.
+            "type": "hash",
             "num_buckets": 4096,
             "embed_dim": None,
+            "text_hidden_dim": 256,
+            "text_depth": 2,
+            "text_heads": 4,
+            "text_ffn_dim": 512,
+            "text_max_length": 128,
+            "text_dropout": 0.1,
         }
     )
 
@@ -470,23 +572,43 @@ class LeWM_OFT(baseframework):
                 f"({self.action_horizon}), got {self.random_execution_horizons}"
             )
 
-        self.config.framework.action_model.action_hidden_dim = wm_hidden
+        configured_action_hidden = self.config.framework.action_model.get(
+            "action_hidden_dim", None
+        )
+        self.action_hidden_dim = int(configured_action_hidden or wm_hidden)
+        self.config.framework.action_model.action_hidden_dim = self.action_hidden_dim
         self.action_model = get_action_model(config=self.config)
-        self.action_hidden_dim = wm_hidden
 
         self.l1_loss = nn.L1Loss()
 
         # === Language / task conditioning ===
-        # Hash each instruction into a fixed bucket and look up a learnable task
-        # embedding (an implicit one-hot / task-id embedding requiring no
-        # predefined task list; stable across train/eval because identical
-        # instruction strings hash identically). Feeds the world model as the
-        # per-task ``goal`` conditioning.
+        # Legacy checkpoints use a whole-sentence hash embedding. New recipes
+        # can use a compact compositional text encoder so related instructions
+        # share token parameters and arbitrary text has no bucket collisions.
         lang_cfg = self.config.framework.get("lang_cond", {}) or {}
+        self.lang_cond_type = str(lang_cfg.get("type", "hash")).strip().lower()
+        if self.lang_cond_type not in {"hash", "text"}:
+            raise ValueError(
+                "framework.lang_cond.type must be 'hash' or 'text', got "
+                f"{self.lang_cond_type!r}"
+            )
         self.num_task_buckets = int(lang_cfg.get("num_buckets", 4096))
         _emb_dim = lang_cfg.get("embed_dim", None)
         self.task_emb_dim = int(_emb_dim) if _emb_dim else wm_hidden
-        self.task_embedding = nn.Embedding(self.num_task_buckets, self.task_emb_dim)
+        if self.lang_cond_type == "hash":
+            self.task_embedding = nn.Embedding(
+                self.num_task_buckets, self.task_emb_dim
+            )
+        else:
+            self.task_embedding = CompositionalTextEncoder(
+                output_dim=self.task_emb_dim,
+                hidden_dim=int(lang_cfg.get("text_hidden_dim", 256)),
+                depth=int(lang_cfg.get("text_depth", 2)),
+                num_heads=int(lang_cfg.get("text_heads", 4)),
+                ffn_dim=int(lang_cfg.get("text_ffn_dim", 512)),
+                max_length=int(lang_cfg.get("text_max_length", 128)),
+                dropout=float(lang_cfg.get("text_dropout", 0.1)),
+            )
 
         self.n_future = int(wm_cfg.get("n_future", 2))
         self.wm_ctx_len = int(wm_cfg.get("ctx_len", 1))
@@ -551,23 +673,33 @@ class LeWM_OFT(baseframework):
                     "a representation-only smooth latent run requires "
                     "world_model_only=true"
                 )
-            if bool(wm_cfg.get("train_encoder", False)):
-                raise ValueError(
-                    "smooth latent training requires train_encoder=false; DINO "
-                    "must remain frozen"
+            # Joint encoder finetuning is allowed for the smooth path when the
+            # run explicitly opts in (train_encoder=true); the base coordinate
+            # system then adapts jointly with the projector/predictor.
+            smooth_train_encoder = bool(wm_cfg.get("train_encoder", False))
+            if smooth_train_encoder:
+                logger.warning(
+                    "smooth latent training with train_encoder=true: DINO "
+                    "backbone will be finetuned jointly with the smooth "
+                    "world model and action head"
                 )
             if self.wm_ctx_len != 1 or self.n_future != 2:
                 raise ValueError(
                     "smooth latent training requires ctx_len=1 and n_future=2"
                 )
+            # The smooth world-model path itself stays vision-only, but the
+            # action head may consume normalized proprio state when the run
+            # opts in via use_state_cond (mirrors the classic path).
             if (
                 self.predictor_state_dim > 0
                 or self.context_correction_state_dim > 0
-                or self.use_state_cond
                 or bool(wm_cfg.get("use_state_probe", False))
             ):
                 raise ValueError(
-                    "smooth latent training does not consume or decode robot state"
+                    "smooth latent world-model state consumption requires "
+                    "use_state_cond; predictor_state_dim / "
+                    "context_correction_state_dim / use_state_probe must be 0 "
+                    "for the smooth latent path"
                 )
             smooth_transition_mode = wm_cfg.get("transition_mode", "off")
             smooth_transition_enabled = (
@@ -649,7 +781,7 @@ class LeWM_OFT(baseframework):
                 goal_dim=self.task_emb_dim,
                 latent_dim=int(wm_cfg.get("smooth_latent_dim", 384)),
                 spatial_token_dim=int(
-                    wm_cfg.get("smooth_spatial_token_dim", 128)
+                    wm_cfg.get("smooth_spatial_token_dim", 384)
                 ),
                 grid_size=int(wm_cfg.get("smooth_latent_grid_size", 4)),
                 n_future=self.n_future,
@@ -679,6 +811,7 @@ class LeWM_OFT(baseframework):
                 sigreg_num_proj=int(
                     wm_cfg.get("smooth_sigreg_num_proj", 1024)
                 ),
+                detach_input=not bool(wm_cfg.get("train_encoder", False)),
             )
             if self.smooth_latent_enabled
             else None
@@ -689,11 +822,13 @@ class LeWM_OFT(baseframework):
             else self.visual_token_dim
         )
         action_visual_num_tokens = (
-            1 if self.smooth_action_enabled else self.num_visual_tokens
+            self.smooth_world_model.projector.num_tokens
+            if self.smooth_action_enabled
+            else self.num_visual_tokens
         )
         self.visual_action_head = VisualActionCrossAttn(
             token_dim=action_visual_token_dim,
-            action_hidden_dim=wm_hidden,
+            action_hidden_dim=self.action_hidden_dim,
             chunk_len=self.chunk_len,
             num_frames=self.wm_ctx_len + self.n_future,
             num_tokens=action_visual_num_tokens,
@@ -913,14 +1048,18 @@ class LeWM_OFT(baseframework):
                 raise RuntimeError(
                     "smooth_action_enabled requires smooth_world_model"
                 )
-            # This joint policy has exactly one visual path. Frozen DINO feeds
-            # the two-stage global projector; only the compact world model,
-            # its task conditioning, and the latent-only action path train.
+            # This joint policy has exactly one visual path. DINO feeds fixed
+            # per-view spatial cells; the world model and action head retain
+            # the explicit token grid instead of flattening it globally.
+            # When train_encoder=true, the DINO backbone is additionally
+            # unfrozen for joint finetuning.
             self.requires_grad_(False)
             self.smooth_world_model.requires_grad_(True)
             self.task_embedding.requires_grad_(True)
             self.visual_action_head.requires_grad_(True)
             self.action_model.requires_grad_(True)
+            if bool(wm_cfg.get("train_encoder", False)):
+                self.backbone.requires_grad_(True)
 
     def reset_progress_state(self) -> None:
         """Clear episode-local start, goal, and filtered progress caches."""
@@ -1257,6 +1396,8 @@ class LeWM_OFT(baseframework):
         return int(digest, 16) % self.num_task_buckets
 
     def _embed_task(self, instructions: List[str], device: torch.device) -> torch.Tensor:
+        if self.lang_cond_type == "text":
+            return self.task_embedding(instructions, device=device)
         ids = torch.tensor(
             [self._hash_instruction(s) for s in instructions],
             device=device,
@@ -1442,15 +1583,20 @@ class LeWM_OFT(baseframework):
                         raise RuntimeError(
                             "smooth action training requires action targets"
                         )
-                    # The policy sees exactly three global latent tokens:
-                    # current z_t and the two action-free predicted futures.
-                    # True future latents remain training targets only.
+                    # The policy sees three full spatial token grids: current
+                    # z_t and the two action-free predicted futures. True
+                    # future content remains a training target only.
                     action_latents = torch.cat(
                         [smooth["latent"][:, :1], smooth["pred_future_latent"]],
                         dim=1,
-                    ).unsqueeze(2)
+                    )
+                    current_state = (
+                        self._current_state_tensor(examples, patch_tokens.device)
+                        if self.use_state_cond
+                        else None
+                    )
                     action_queries = self._pool_visual_tokens_to_action_queries(
-                        action_latents, state=None
+                        action_latents, state=current_state
                     )
                     pred_actions = self.action_model.predict_action(action_queries)
                     full_l1_action_loss = self.l1_loss(
@@ -1807,21 +1953,31 @@ class LeWM_OFT(baseframework):
                     frames_per_example
                 )
             with torch.autocast("cuda", dtype=torch.float32):
-                current_latent = self.smooth_world_model.projector(
-                    patch_tokens.float()
+                current_latent, current_content = (
+                    self.smooth_world_model.projector(
+                        patch_tokens.float(), return_content=True
+                    )
                 )
                 task_emb = self._embed_task(
                     instructions, device=current_latent.device
                 )
                 predicted_delta = self.smooth_world_model.predictor(
-                    current_latent.unsqueeze(2), goal=task_emb, state=None
-                ).squeeze(2)
-                predicted_future = current_latent + predicted_delta
+                    current_latent, goal=task_emb, state=None
+                )
+                predicted_future_content = current_content + predicted_delta
+                predicted_future = self.smooth_world_model.projector.add_position(
+                    predicted_future_content
+                )
                 action_latents = torch.cat(
                     [current_latent, predicted_future], dim=1
-                ).unsqueeze(2)
+                )
+                current_state = (
+                    self._current_state_tensor(examples, current_latent.device)
+                    if self.use_state_cond
+                    else None
+                )
                 action_queries = self._pool_visual_tokens_to_action_queries(
-                    action_latents, state=None
+                    action_latents, state=current_state
                 )
                 pred_actions = self.action_model.predict_action(action_queries)
             return {

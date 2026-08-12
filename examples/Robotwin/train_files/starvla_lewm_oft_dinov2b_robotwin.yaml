@@ -1,4 +1,4 @@
-run_id: lewm_oft_robotwin_dinov2b
+run_id: lewm_oft_robotwin_dinov3b_textcond_action384
 run_root_dir: playground/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
@@ -11,7 +11,7 @@ framework:
   qwenvl:
     base_vlm: WinKawaks/vit-tiny-patch16-224
   world_model:
-    base_wm: facebook/dinov2-base
+    base_wm: dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
     train_encoder: true
     num_views: 3
     n_future: 2
@@ -45,8 +45,14 @@ framework:
     random_execution_horizons: [1, 2, 4, 8, 16]
     random_prefix_loss_weight: 0.0
   lang_cond:
-    num_buckets: 65536
+    type: text
     embed_dim: 384
+    text_hidden_dim: 256
+    text_depth: 2
+    text_heads: 4
+    text_ffn_dim: 512
+    text_max_length: 128
+    text_dropout: 0.1
 
 datasets:
   vla_data:
@@ -54,7 +60,8 @@ datasets:
     include_state: true
     data_root_dir: playground/Datasets/RoboTwin
     data_mix: robotwin_all_wm
-    # All episodes in one RoboTwin task share one stable language/task ID.
+    # Canonical task text keeps training/evaluation wording aligned; the text
+    # encoder composes the words/bytes rather than mapping the full string to ID.
     task_language_mode: dataset_name
     future_obs_frames: true
     action_type: abs_qpos

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Train spatial-token DINOv2-base LeWM-OFT on RoboTwin clean + randomized data.
+# Train spatial-token DINOv3-B LeWM-OFT on RoboTwin clean + randomized data.
 set -euo pipefail
 
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
@@ -10,8 +10,8 @@ CONFIG="${CONFIG:-examples/Robotwin/train_files/starvla_lewm_oft_dinov2b_robotwi
 DATA_ROOT="${DATA_ROOT:-playground/Datasets/RoboTwin}"
 DATA_MIX="${DATA_MIX:-robotwin_all_wm}"
 RUN_ROOT="${RUN_ROOT:-playground/Checkpoints}"
-RUN_ID="${RUN_ID:-lewm_oft_robotwin_dinov2b_spatial4x4_200k}"
-BASE_WM="${BASE_WM:-facebook/dinov2-base}"
+RUN_ID="${RUN_ID:-lewm_oft_robotwin_dinov3b_textcond_action384_spatial4x4_200k}"
+BASE_WM="${BASE_WM:-dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth}"
 CUDA_DEVS="${CUDA_DEVS:-0,1,2,3}"
 NUM_PROCESSES="${NUM_PROCESSES:-$(tr ',' '\n' <<<"${CUDA_DEVS}" | wc -l)}"
 BATCH="${BATCH:-8}"

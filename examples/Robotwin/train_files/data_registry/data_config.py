@@ -340,3 +340,11 @@ DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
     (dataset, weight, "robotwin_wm")
     for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
 ]
+
+# Locally collected Clean click_bell demonstrations.  This mixture expects
+# data_root_dir=playground/Datasets/RoboTwinClickBellClean1000 and intentionally
+# contains no original Clean-50 episodes, so targeted fine-tuning sees exactly
+# the 1,000 newly collected trajectories.
+DATASET_NAMED_MIXTURES["robotwin_click_bell_clean1000_wm"] = [
+    ("click_bell", 1.0, "robotwin_wm"),
+]

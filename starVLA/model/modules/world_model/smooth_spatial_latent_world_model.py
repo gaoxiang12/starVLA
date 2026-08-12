@@ -1,12 +1,11 @@
-"""Predictable, temporally smooth spatial latents over frozen DINOv3 patches.
+"""Predictable, temporally smooth spatial tokens over DINOv3 patches.
 
-The trainable representation is intentionally small: fixed 4x4 spatial cells
-per camera are first compressed by a shared token projection, then their fixed
-camera/grid ordering is flattened and projected to one latent vector per
-frame. There is no reconstruction, state decoding, action conditioning, or
-residual normalization. A deterministic world model predicts future latent
-values directly, while SIGReg and temporal objectives keep the learned
-coordinates non-collapsed and locally smooth.
+Every camera keeps a fixed grid of spatial tokens.  A shared per-cell
+projection maps DINO patch features into the deployed latent width, and
+explicit view/row/column embeddings preserve token identity.  There is no
+global flattening bottleneck: the deterministic world model predicts one
+future residual per spatial token, while SIGReg and temporal objectives act on
+content only so fixed position embeddings cannot satisfy them trivially.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ def _masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
 
 
 class GridSpatialLatentProjector(nn.Module):
-    """Compress fixed DINO spatial cells into one position-aware frame vector."""
+    """Project fixed DINO cells to explicit position-aware spatial tokens."""
 
     def __init__(
         self,
@@ -46,6 +45,7 @@ class GridSpatialLatentProjector(nn.Module):
         latent_dim: int,
         num_views: int,
         grid_size: int = 4,
+        detach_input: bool = True,
     ) -> None:
         super().__init__()
         self.patch_dim = int(patch_dim)
@@ -53,6 +53,7 @@ class GridSpatialLatentProjector(nn.Module):
         self.latent_dim = int(latent_dim)
         self.num_views = int(num_views)
         self.grid_size = int(grid_size)
+        self.detach_input = bool(detach_input)
         if min(
             self.patch_dim,
             self.spatial_token_dim,
@@ -70,23 +71,60 @@ class GridSpatialLatentProjector(nn.Module):
 
         self.tokens_per_view = self.grid_size**2
         self.spatial_token_count = self.num_views * self.tokens_per_view
-        self.num_tokens = 1
+        self.num_tokens = self.spatial_token_count
         self.input_norm = nn.LayerNorm(self.patch_dim)
-        # Stage 1 is shared across every camera/grid position. Stage 2 sees the
-        # fixed flattened order, so it can retain position-specific information
-        # without leaving an explicit 32-token axis in z_t.
         self.token_projection = nn.Linear(
             self.patch_dim, self.spatial_token_dim, bias=False
         )
-        flattened_dim = self.spatial_token_count * self.spatial_token_dim
-        self.global_norm = nn.LayerNorm(flattened_dim)
-        self.global_projection = nn.Linear(
-            flattened_dim, self.latent_dim, bias=False
+        self.latent_projection = (
+            nn.Identity()
+            if self.spatial_token_dim == self.latent_dim
+            else nn.Linear(self.spatial_token_dim, self.latent_dim, bias=False)
         )
+        self.out_norm = nn.LayerNorm(self.latent_dim)
+        self.view_embedding = nn.Embedding(self.num_views, self.latent_dim)
+        self.row_embedding = nn.Embedding(self.grid_size, self.latent_dim)
+        self.col_embedding = nn.Embedding(self.grid_size, self.latent_dim)
         nn.init.orthogonal_(self.token_projection.weight)
-        nn.init.orthogonal_(self.global_projection.weight)
+        if isinstance(self.latent_projection, nn.Linear):
+            nn.init.orthogonal_(self.latent_projection.weight)
+        nn.init.normal_(self.view_embedding.weight, std=0.02)
+        nn.init.normal_(self.row_embedding.weight, std=0.02)
+        nn.init.normal_(self.col_embedding.weight, std=0.02)
 
-    def forward(self, patches: torch.Tensor) -> torch.Tensor:
+    def position_tokens(self) -> torch.Tensor:
+        """Return the fixed flattened ``(view, row, col)`` token identities."""
+
+        device = self.view_embedding.weight.device
+        view_ids = torch.arange(self.num_views, device=device)
+        row_ids = torch.arange(self.grid_size, device=device)
+        col_ids = torch.arange(self.grid_size, device=device)
+        position = self.view_embedding(view_ids).view(
+            self.num_views, 1, 1, self.latent_dim
+        )
+        position = position + self.row_embedding(row_ids).view(
+            1, self.grid_size, 1, self.latent_dim
+        )
+        position = position + self.col_embedding(col_ids).view(
+            1, 1, self.grid_size, self.latent_dim
+        )
+        return position.reshape(self.num_tokens, self.latent_dim)
+
+    def add_position(self, content: torch.Tensor) -> torch.Tensor:
+        """Add position identities to ``(..., K, C)`` content tokens."""
+
+        if content.shape[-2:] != (self.num_tokens, self.latent_dim):
+            raise ValueError(
+                "expected spatial content suffix "
+                f"{(self.num_tokens, self.latent_dim)}, got {tuple(content.shape[-2:])}"
+            )
+        position = self.position_tokens().to(
+            device=content.device, dtype=content.dtype
+        )
+        prefix = (1,) * (content.ndim - 2)
+        return content + position.view(*prefix, self.num_tokens, self.latent_dim)
+
+    def forward(self, patches: torch.Tensor, return_content: bool = False):
         if patches.ndim != 5:
             raise ValueError(
                 "expected DINO patches (B,T,V,N,D), got "
@@ -102,11 +140,15 @@ class GridSpatialLatentProjector(nn.Module):
         if patch_grid * patch_grid != patch_count:
             raise ValueError(f"DINO patch count must form a square grid, got {patch_count}")
 
-        # The DINO encoder is a fixed teacher.  Detaching here makes that
-        # invariant local to this branch even if an outer config is wrong.
-        spatial = patches.detach().float().reshape(
+        # The DINO encoder is a fixed teacher by default.  Detaching here makes
+        # that invariant local to this branch even if an outer config is wrong;
+        # when detach_input=false (train_encoder=true), gradients flow back into
+        # the backbone for joint finetuning.
+        spatial = patches.float().reshape(
             batch * frames * views, patch_grid, patch_grid, channels
         )
+        if self.detach_input:
+            spatial = spatial.detach()
         spatial = spatial.permute(0, 3, 1, 2)
         if patch_grid != self.grid_size:
             spatial = F.adaptive_avg_pool2d(
@@ -115,9 +157,12 @@ class GridSpatialLatentProjector(nn.Module):
         spatial = spatial.permute(0, 2, 3, 1).reshape(
             batch, frames, self.spatial_token_count, channels
         )
-        spatial = self.token_projection(self.input_norm(spatial))
-        flattened = spatial.reshape(batch, frames, -1)
-        return self.global_projection(self.global_norm(flattened))
+        content = self.token_projection(self.input_norm(spatial))
+        content = self.out_norm(self.latent_projection(content))
+        tokens = self.add_position(content)
+        if return_content:
+            return tokens, content
+        return tokens
 
 
 class SmoothSpatialLatentWorldModel(nn.Module):
@@ -140,7 +185,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         num_views: int,
         goal_dim: Optional[int],
         latent_dim: int = 384,
-        spatial_token_dim: int = 128,
+        spatial_token_dim: int = 384,
         grid_size: int = 4,
         n_future: int = 2,
         rollout_steps: int = 1,
@@ -157,6 +202,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         temporal_order_margin: float = 0.10,
         sigreg_knots: int = 17,
         sigreg_num_proj: int = 1024,
+        detach_input: bool = True,
     ) -> None:
         super().__init__()
         self.n_future = int(n_future)
@@ -201,6 +247,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
             latent_dim=latent_dim,
             num_views=num_views,
             grid_size=grid_size,
+            detach_input=detach_input,
         )
         self.predictor = TokenResidualPredictor(
             latent_dim=latent_dim,
@@ -217,22 +264,24 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         self.sigreg = SIGReg(knots=sigreg_knots, num_proj=sigreg_num_proj)
 
     def _sigreg_loss(
-        self, latent: torch.Tensor, valid_mask: torch.Tensor
+        self, content: torch.Tensor, valid_mask: torch.Tensor
     ) -> torch.Tensor:
-        # A frame now contributes one vector rather than 32 token samples.
-        # Pool all valid time groups in the micro-batch so SIGReg has the
-        # largest honest sample set available without adding a stateful queue.
-        valid_latent = latent[valid_mask]
-        if valid_latent.shape[0] == 0:
-            return latent.sum() * 0.0
-        return self.sigreg(valid_latent.reshape(1, -1, latent.shape[-1]))
+        # Treat every valid spatial content token as a sample. Position
+        # embeddings are deliberately excluded: otherwise fixed token identity
+        # could satisfy the anti-collapse objective without visual variation.
+        valid_content = content[valid_mask]
+        if valid_content.shape[0] == 0:
+            return content.sum() * 0.0
+        return self.sigreg(
+            valid_content.reshape(1, -1, content.shape[-1])
+        )
 
     @torch.no_grad()
     def _representation_diagnostics(
-        self, latent: torch.Tensor, valid_mask: torch.Tensor
+        self, content: torch.Tensor, valid_mask: torch.Tensor
     ) -> dict[str, torch.Tensor]:
-        valid_latent = latent[valid_mask]
-        samples = valid_latent.reshape(-1, latent.shape[-1]).float()
+        valid_content = content[valid_mask]
+        samples = valid_content.reshape(-1, content.shape[-1]).float()
         centered = samples - samples.mean(dim=0, keepdim=True)
         covariance = centered.T @ centered / max(centered.shape[0] - 1, 1)
         trace = covariance.diagonal().sum()
@@ -243,7 +292,11 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         sample_std = samples.std(dim=0, unbiased=False).mean()
 
         consecutive_deltas = torch.stack(
-            [latent[:, 1] - latent[:, 0], latent[:, 2] - latent[:, 1]], dim=1
+            [
+                content[:, 1] - content[:, 0],
+                content[:, 2] - content[:, 1],
+            ],
+            dim=1,
         )
         consecutive_valid = torch.stack(
             [
@@ -254,10 +307,10 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         )
         valid_deltas = consecutive_deltas[consecutive_valid]
         if valid_deltas.numel() == 0:
-            delta_dim_std_mean = latent.new_zeros(())
-            dead_dim_fraction = latent.new_ones(())
+            delta_dim_std_mean = content.new_zeros(())
+            dead_dim_fraction = content.new_ones(())
         else:
-            delta_samples = valid_deltas.reshape(-1, latent.shape[-1]).float()
+            delta_samples = valid_deltas.reshape(-1, content.shape[-1]).float()
             delta_dim_std = delta_samples.std(dim=0, unbiased=False)
             delta_dim_std_mean = delta_dim_std.mean()
             dead_dim_fraction = (delta_dim_std < 1e-3).float().mean()
@@ -266,7 +319,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
             "latent_effective_rank": effective_rank,
             "latent_effective_rank_fraction": effective_rank
             / effective_rank_cap,
-            "latent_diagnostic_sample_count": latent.new_tensor(
+            "latent_diagnostic_sample_count": content.new_tensor(
                 samples.shape[0], dtype=torch.float32
             ),
             "temporal_delta_dim_std_mean": delta_dim_std_mean,
@@ -280,7 +333,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         goal: Optional[torch.Tensor] = None,
         valid_mask: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
-        latent = self.projector(patches)
+        latent, content = self.projector(patches, return_content=True)
         if latent.shape[1] != self.required_frames:
             raise ValueError(
                 "smooth latent training expects "
@@ -302,31 +355,42 @@ class SmoothSpatialLatentWorldModel(nn.Module):
                 )
 
         current = latent[:, :1]
-        future = latent[:, 1 : 1 + self.n_future * self.rollout_steps]
+        current_content = content[:, :1]
+        future_content = content[
+            :, 1 : 1 + self.n_future * self.rollout_steps
+        ]
         predicted_delta = self.predictor(
-            current.unsqueeze(2), goal=goal, state=None
-        ).squeeze(2)
-        predicted_future = current + predicted_delta
+            current, goal=goal, state=None
+        )
+        predicted_future_content = current_content + predicted_delta
+        predicted_future = self.projector.add_position(
+            predicted_future_content
+        )
 
         prediction_losses = []
         copy_losses = []
         direction_cosines = []
         horizon_valid_masks = []
         for horizon_index in range(self.n_future):
-            target = future[:, horizon_index]
+            target = future_content[:, horizon_index]
             prediction_error = (
-                predicted_future[:, horizon_index].float() - target.detach().float()
-            ).square().mean(dim=1)
+                predicted_future_content[:, horizon_index].float()
+                - target.detach().float()
+            ).square().mean(dim=(-2, -1))
             copy_error = (
-                current[:, 0].detach().float() - target.detach().float()
-            ).square().mean(dim=1)
+                current_content[:, 0].detach().float()
+                - target.detach().float()
+            ).square().mean(dim=(-2, -1))
             horizon_mask = valid_mask[:, 0] & valid_mask[:, horizon_index + 1]
             horizon_valid_masks.append(horizon_mask)
             prediction_losses.append(_masked_mean(prediction_error, horizon_mask))
             copy_losses.append(_masked_mean(copy_error, horizon_mask))
 
-            predicted_motion = predicted_future[:, horizon_index] - current[:, 0]
-            true_motion = target.detach() - current[:, 0].detach()
+            predicted_motion = (
+                predicted_future_content[:, horizon_index]
+                - current_content[:, 0]
+            )
+            true_motion = target.detach() - current_content[:, 0].detach()
             direction = F.cosine_similarity(
                 predicted_motion.float().flatten(1),
                 true_motion.float().flatten(1),
@@ -343,16 +407,19 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         # the copy-ratio diagnostics remain comparable with single-shot runs.
         rollout_step_losses = []
         if self.rollout_steps > 1:
-            window = torch.cat([current, predicted_future], dim=1)[:, -1:]
+            window = predicted_future[:, -1:]
+            anchor_content = predicted_future_content[:, -1:]
             for step in range(1, self.rollout_steps):
                 rollout_delta = self.predictor(
-                    window.unsqueeze(2), goal=goal, state=None
-                ).squeeze(2)
-                anchor = window[:, -1:]
-                rollout_future = anchor + rollout_delta
+                    window, goal=goal, state=None
+                )
+                rollout_future_content = anchor_content + rollout_delta
+                rollout_future = self.projector.add_position(
+                    rollout_future_content
+                )
                 start = step * self.n_future
-                true_future = future[:, start : start + self.n_future]
-                target_delta = (true_future - anchor).detach()
+                true_future = future_content[:, start : start + self.n_future]
+                target_delta = (true_future - anchor_content).detach()
                 step_errors = []
                 for horizon_index in range(self.n_future):
                     horizon_mask = (
@@ -366,7 +433,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
                                 - target_delta[:, horizon_index].float()
                             )
                             .square()
-                            .mean(dim=1),
+                            .mean(dim=(-2, -1)),
                             horizon_mask,
                         )
                     )
@@ -376,22 +443,34 @@ class SmoothSpatialLatentWorldModel(nn.Module):
                         :, : start + self.n_future + 1
                     ].all(dim=1)
                     error = _masked_mean(
-                        (rollout_future.float() - true_future.float())
+                        (
+                            rollout_future_content.float()
+                            - true_future.float()
+                        )
                         .square()
-                        .mean(dim=(1, 2)),
+                        .mean(dim=(1, 2, 3)),
                         step_mask,
                     )
                     copy = _masked_mean(
-                        (current[:, 0].unsqueeze(1).float() - true_future.float())
+                        (
+                            current_content[:, 0].unsqueeze(1).float()
+                            - true_future.float()
+                        )
                         .square()
-                        .mean(dim=(1, 2)),
+                        .mean(dim=(1, 2, 3)),
                         step_mask,
                     )
                     direction = F.cosine_similarity(
-                        (rollout_future - current[:, 0].unsqueeze(1))
+                        (
+                            rollout_future_content
+                            - current_content[:, 0].unsqueeze(1)
+                        )
                         .float()
                         .flatten(1),
-                        (true_future - current[:, 0].unsqueeze(1))
+                        (
+                            true_future
+                            - current_content[:, 0].unsqueeze(1)
+                        )
                         .float()
                         .flatten(1),
                         dim=-1,
@@ -403,33 +482,36 @@ class SmoothSpatialLatentWorldModel(nn.Module):
                     output[f"rollout_direction_cosine_step_{step + 1}"] = (
                         _masked_mean(direction, step_mask)
                     )
-                window = torch.cat([window, rollout_future], dim=1)[:, -1:]
+                window = rollout_future[:, -1:]
+                anchor_content = rollout_future_content[:, -1:]
         rollout_latent_loss = (
             torch.stack(rollout_step_losses).mean()
             if rollout_step_losses
-            else latent.sum() * 0.0
+            else content.sum() * 0.0
         )
 
-        delta_01 = latent[:, 1] - latent[:, 0]
-        delta_12 = latent[:, 2] - latent[:, 1]
+        delta_01 = content[:, 1] - content[:, 0]
+        delta_12 = content[:, 2] - content[:, 1]
         valid_01 = valid_mask[:, 0] & valid_mask[:, 1]
         valid_12 = valid_mask[:, 1] & valid_mask[:, 2]
-        slow_01 = delta_01.float().square().mean(dim=1)
-        slow_12 = delta_12.float().square().mean(dim=1)
+        slow_01 = delta_01.float().square().mean(dim=(-2, -1))
+        slow_12 = delta_12.float().square().mean(dim=(-2, -1))
         slow_loss = 0.5 * (
             _masked_mean(slow_01, valid_01) + _masked_mean(slow_12, valid_12)
         )
 
         acceleration = delta_12 - delta_01
         valid_acceleration = valid_mask[:, :3].all(dim=1)
-        acceleration_per_sample = acceleration.float().square().mean(dim=1)
+        acceleration_per_sample = acceleration.float().square().mean(
+            dim=(-2, -1)
+        )
         acceleration_loss = _masked_mean(
             acceleration_per_sample, valid_acceleration
         )
 
-        far_delta = latent[:, -1] - latent[:, 0]
+        far_delta = content[:, -1] - content[:, 0]
         near_distance = 0.5 * (slow_01 + slow_12)
-        far_distance = far_delta.float().square().mean(dim=1)
+        far_distance = far_delta.float().square().mean(dim=(-2, -1))
         valid_order = valid_mask.all(dim=1)
         temporal_order_per_sample = F.relu(
             self.temporal_order_margin + near_distance - far_distance
@@ -437,7 +519,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
         temporal_order_loss = _masked_mean(
             temporal_order_per_sample, valid_order
         )
-        sigreg_loss = self._sigreg_loss(latent, valid_mask)
+        sigreg_loss = self._sigreg_loss(content, valid_mask)
 
         total_loss = (
             self.prediction_weight * prediction_loss
@@ -459,7 +541,7 @@ class SmoothSpatialLatentWorldModel(nn.Module):
             order_satisfied = _masked_mean(
                 (far_distance > near_distance).float(), valid_order
             )
-            diagnostics = self._representation_diagnostics(latent, valid_mask)
+            diagnostics = self._representation_diagnostics(content, valid_mask)
 
         output.update({
             "loss": total_loss,
@@ -482,9 +564,13 @@ class SmoothSpatialLatentWorldModel(nn.Module):
             "temporal_order_satisfied_fraction": order_satisfied,
             "valid_near_fraction": valid_acceleration.float().mean(),
             "valid_far_fraction": valid_order.float().mean(),
-            "sigreg_sample_count": valid_mask.sum().to(dtype=torch.float32),
+            "sigreg_sample_count": (
+                valid_mask.sum() * self.projector.num_tokens
+            ).to(dtype=torch.float32),
             "latent": latent,
+            "content_latent": content,
             "pred_future_latent": predicted_future,
+            "pred_future_content_latent": predicted_future_content,
         })
         output.update(diagnostics)
         for horizon_index, (horizon_loss, copy_loss, direction) in enumerate(

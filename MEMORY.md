@@ -135,6 +135,27 @@ instead of trusting an old snapshot.
   encoder (no RoboTwin policy checkpoint), trains the encoder, uses micro-batch
   4 with gradient accumulation 8 (global batch 32), and targets 200k steps.
 
+- The canonical Clean-50 run completed normally at 200k on 2026-08-10. Its
+  reduced seed-0 Clean evaluation scored `click_bell` at `9/10`; this small
+  sample is only a preliminary baseline. On 2026-08-12 a paired 100-rollout
+  Clean baseline was launched on GPU 5 under
+  `click_bell_baseline_seed0_n100` in the run directory.
+- A locally collected `click_bell` Clean dataset is preserved in raw HDF5 at
+  `playground/Datasets/RoboTwinGenerated_raw/click_bell/starvla_click_bell_clean1000`
+  (1,000 episodes, seeds 20000--20999). Its LeRobot conversion is
+  `playground/Datasets/RoboTwinClickBellClean1000/click_bell`: 1,000 episodes,
+  78,055 frames, three views, 14-D state/action, and one effective canonical
+  training string (`click bell`) via `task_language_mode=dataset_name`.
+- Targeted fine-tuning from the canonical 200k checkpoint was launched
+  detached on GPU 0 on 2026-08-12 at
+  `playground/Checkpoints/lewm_oft_robotwin_dinov3b_clean50_canonical_click_bell_clean1000_ft20k`.
+  It uses only the new 1,000-episode mixture, trains all modules for 20k steps,
+  uses micro-batch 4 / accumulation 8 (global batch 32), warmup 500, base and
+  action LR `1e-5`, encoder LR `1e-7`, and saves every 5k. The pretrained
+  weights loaded successfully and initial optimization was stable. A detached
+  watcher evaluates 5k/10k/15k/20k on the same Clean seed-0 100-rollout
+  protocol after each checkpoint appears; re-check live processes and logs.
+
 
 ## Long-running training process policy
 
@@ -595,6 +616,78 @@ instead of trusting an old snapshot.
   were 0.554449 / 0.221625 / 0.332824, respectively, and GPU usage was about
   5.4 GiB. Re-check the live process, log, metrics, and GPU state because these
   facts are volatile.
+- Training reached 200k and saved
+  `checkpoints/steps_200000_pytorch_model.pt` at 2026-08-07 18:19
+  Asia/Shanghai. The final log reports normal completion and the former
+  training process is no longer running. A structural load check found 381
+  state-dict entries and confirmed the trained action path remains
+  `384 -> 1536` (`visual_action_head.kv_proj`), followed by the checkpoint's
+  `1536 -> 3072 -> 7` action MLP.
+- The 160k checkpoint evaluation baseline was 0.94 LIBERO-Spatial, 0.94
+  LIBERO-Object, 0.86 LIBERO-Goal, and 0.80 LIBERO-10: 354/400 = 0.885 overall.
+- The corresponding 200k evaluation was launched detached at 2026-08-07 18:30
+  Asia/Shanghai with supervisor PID `3574993`, GPUs `1,2,3,5`, ports
+  `29970-29973`, seed 7, 10 trials for each of 10 tasks in all four suites,
+  model-default execute horizon 8, and progress disabled. It uses Xvfb plus
+  Mesa software GL while policy inference remains on GPU. Track it via
+  `eval_steps_200000.status`, `eval_steps_200000.log`, and
+  `eval_steps_200000_child_pids.txt` in the run directory. All four policy
+  servers connected and entered their first episode before handoff; re-check
+  these volatile facts before relying on them.
+- That 200k evaluation completed at 2026-08-07 20:11 Asia/Shanghai. Success
+  rates were 0.95 LIBERO-Spatial, 0.94 LIBERO-Object, 0.85 LIBERO-Goal, and
+  0.78 LIBERO-10: 352/400 = 0.88 overall. The final summary is
+  `libero_success_rates_steps_200000.txt` in the run directory.
+
+## Smooth global state-conditioned train-encoder evaluation
+
+- The `smooth_global384` ablation with normalized 8-D proprio conditioning
+  and jointly finetuned DINOv3-B completed at 200k on 2026-08-10 06:05
+  Asia/Shanghai. Its run directory and final checkpoint are:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_smooth_global384_statecond_trainenc_200k
+  playground/Checkpoints/lewm_oft_libero_dinov3b_smooth_global384_statecond_trainenc_200k/checkpoints/steps_200000_pytorch_model.pt
+  ```
+
+- A strict current-source construction check loaded all checkpoint weights and
+  confirmed `smooth_action_enabled=true`, `use_state_cond=true`,
+  `expects_normalized_state=true`, `train_encoder=true`, and action horizon 8.
+  All 387 state-dict tensors were finite. The action path is still
+  `384 -> 1536 -> 3072 -> 7`; the state encoder is present and the deployment
+  wrapper normalizes each LIBERO 8-D state using the saved training statistics.
+  The statecond mixture uses the same 1,803 episodes, 40 semantic tasks, and 40
+  canonical strings as the prior smooth-global run; only its proprio schema and
+  normalization differ.
+- Its four-suite closed-loop evaluation was launched detached at 2026-08-10
+  10:32 Asia/Shanghai with supervisor PID `1322540`, GPUs `1,2,3,6`, ports
+  `29980-29983`, seed 7, 10 trials for each of 10 tasks per suite, model-default
+  execute horizon 8, progress disabled, and Xvfb/Mesa software GL. Track it via
+  `eval_steps_200000.status`, `eval_steps_200000.log`, and
+  `eval_steps_200000_child_pids.txt` in that run directory. All four policy
+  servers connected, advertised the expected 8-D state schema, and entered
+  their first episode without OOM, traceback, or missing-state errors before
+  handoff; re-check these volatile facts before relying on them.
+- A further 100k-step continuation is queued in a separate run directory so
+  the original 200k artifacts and evaluation are not overwritten:
+
+  ```text
+  playground/Checkpoints/lewm_oft_libero_dinov3b_smooth_global384_statecond_trainenc_continue200k_to300k
+  ```
+
+  Its detached queue/training supervisor PID is `1481610`. It waits for the
+  ongoing 200k LIBERO evaluation supervisor `1322540` to exit (GPU 6 is still
+  running LIBERO-10), then automatically launches on physical GPUs `0,4,5,6`.
+  The target is external step 300k, using four processes, per-GPU batch 8,
+  accumulation 1, and global batch 32. Training state cannot be restored
+  exactly because the installed DeepSpeed 0.16.9 does not repartition a
+  one-GPU ZeRO-2 optimizer checkpoint to a four-GPU DP world size. The run
+  therefore preserves the 200k model weights and step numbering but rebuilds
+  AdamW, advancing the newly constructed 300k cosine schedule to step 200k
+  (base/encoder LR approximately `2.605e-5` / `2.605e-7`). Track it through
+  `train.status`, `train.log`, and `train.pid` in the continuation run. The
+  launcher is
+  `examples/LIBERO/train_files/run_smooth_global_latent_action_joint_libero_statecond_trainenc_continue_100k.sh`.
 
 ## Worktree safety
 
