@@ -2404,6 +2404,13 @@ class LeRobotMixtureDataset(Dataset):
         self.set_epoch(0)
 
         self.update_metadata(metadata_config)
+        normalization_statistics_path = (
+            self.data_cfg.get("normalization_statistics_path", None)
+            if self.data_cfg is not None
+            else None
+        )
+        if normalization_statistics_path:
+            self.apply_normalization_statistics(normalization_statistics_path)
 
     @property
     def dataset_lengths(self) -> np.ndarray:
@@ -2793,6 +2800,117 @@ class LeRobotMixtureDataset(Dataset):
             )
         for dataset in self.datasets:
             dataset.set_transforms_metadata(self.merged_metadata[dataset.tag])
+
+    @staticmethod
+    def _split_flat_modality_statistics(
+        flat_statistics: dict,
+        modality_metadata: dict,
+        ordered_keys: list[str],
+        *,
+        modality: str,
+        source_path: Path,
+    ) -> dict:
+        """Split deployment-format statistics back into per-key training metadata."""
+        required_statistics = ("mean", "std", "max", "min", "q01", "q99")
+        missing_statistics = [
+            statistic for statistic in required_statistics if statistic not in flat_statistics
+        ]
+        if missing_statistics:
+            raise ValueError(
+                f"Normalization statistics {source_path} are missing {modality} fields: "
+                f"{missing_statistics}"
+            )
+
+        unknown_keys = [key for key in ordered_keys if key not in modality_metadata]
+        if unknown_keys:
+            raise ValueError(
+                f"Current {modality} metadata are missing configured keys: {unknown_keys}"
+            )
+
+        key_dimensions = {
+            key: int(np.prod(modality_metadata[key].shape)) for key in ordered_keys
+        }
+        expected_dimension = sum(key_dimensions.values())
+        for statistic in required_statistics:
+            values = np.asarray(flat_statistics[statistic])
+            if values.ndim != 1 or len(values) != expected_dimension:
+                raise ValueError(
+                    f"Normalization statistics {source_path} have {modality}.{statistic} "
+                    f"shape {tuple(values.shape)}, expected ({expected_dimension},) for "
+                    f"ordered keys {ordered_keys}"
+                )
+
+        split_statistics = {key: {} for key in ordered_keys}
+        start = 0
+        for key in ordered_keys:
+            end = start + key_dimensions[key]
+            for statistic in required_statistics:
+                split_statistics[key][statistic] = flat_statistics[statistic][start:end]
+            start = end
+        return split_statistics
+
+    def apply_normalization_statistics(self, source_path: Path | str) -> None:
+        """Strictly override train-time normalization with saved run statistics.
+
+        Training runs save flattened state/action statistics for deployment.  Warm-start
+        fine-tuning must split those arrays back into the current modality keys before
+        installing them on ``StateActionTransform``.  This path deliberately fails on
+        any schema mismatch instead of silently recomputing statistics from new data.
+        """
+        source_path = Path(source_path).expanduser()
+        source_statistics = self.load_merged_statistics(source_path)
+        source_tags = {key for key in source_statistics if key != "metadata"}
+        current_tags = set(self.merged_metadata)
+        if source_tags != current_tags:
+            raise ValueError(
+                f"Normalization statistics {source_path} contain embodiment tags "
+                f"{sorted(source_tags)}, expected {sorted(current_tags)}"
+            )
+
+        overridden_metadata = {}
+        for tag, current_metadata in self.merged_metadata.items():
+            tag_statistics = source_statistics[tag]
+            metadata_dict = current_metadata.model_dump(mode="json")
+
+            tag_datasets = [dataset for dataset in self.datasets if dataset.tag == tag]
+            if not tag_datasets:
+                raise ValueError(f"No current dataset found for embodiment tag {tag!r}")
+
+            reference_key_order = None
+            for dataset in tag_datasets:
+                action_keys, state_keys = get_used_modality_keys(dataset.modality_keys)
+                dataset_key_order = {"action": action_keys, "state": state_keys}
+                if reference_key_order is None:
+                    reference_key_order = dataset_key_order
+                elif dataset_key_order != reference_key_order:
+                    raise ValueError(
+                        "Normalization-statistics override requires identical state/action "
+                        f"key order within embodiment {tag!r}; got {reference_key_order} and "
+                        f"{dataset_key_order}"
+                    )
+
+            for modality in ("action", "state"):
+                if modality not in tag_statistics:
+                    raise ValueError(
+                        f"Normalization statistics {source_path} have no {tag}.{modality}"
+                    )
+                ordered_keys = reference_key_order[modality]
+                modality_metadata = getattr(current_metadata.modalities, modality)
+                metadata_dict["statistics"][modality] = self._split_flat_modality_statistics(
+                    tag_statistics[modality],
+                    modality_metadata,
+                    ordered_keys,
+                    modality=modality,
+                    source_path=source_path,
+                )
+
+            overridden_metadata[tag] = DatasetMetadata.model_validate(metadata_dict)
+
+        self.merged_metadata = overridden_metadata
+        for dataset in self.datasets:
+            dataset.set_transforms_metadata(self.merged_metadata[dataset.tag])
+
+        print(f"Applied normalization statistics override from: {source_path}")
 
     def save_dataset_statistics(self, save_path: Path | str, format: str = "json") -> None:
         """

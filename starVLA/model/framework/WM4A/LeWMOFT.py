@@ -35,6 +35,9 @@ IGNORE_INDEX = -100
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import merge_framework_config
+from starVLA.model.modules.action_model.ACT_ActionHeader import (
+    TurboStyleACTActionHead,
+)
 from starVLA.model.modules.action_model.MLP_ActionHeader import get_action_model
 from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
@@ -482,9 +485,17 @@ class LeWMOFTDefaultConfig:
     # === Action shape config ===
     action_model: dict = field(
         default_factory=lambda: {
+            # ``MLP`` preserves legacy checkpoints. New recipes should use
+            # ``ACT`` for the TurboVLA-style multi-layer action decoder.
             "action_model_type": "MLP",
             "action_dim": 7,
             "action_hidden_dim": 384,
+            "act_num_heads": 8,
+            "act_num_layers": 3,
+            "act_dim_feedforward": 2048,
+            "act_mlp_hidden_dim": 512,
+            "act_dropout": 0.1,
+            "act_num_state_tokens": 2,
             "future_action_window_size": 8,
             "past_action_window_size": 0,
             # Optional auxiliary objective for policies deployed with shorter
@@ -577,7 +588,27 @@ class LeWM_OFT(baseframework):
         )
         self.action_hidden_dim = int(configured_action_hidden or wm_hidden)
         self.config.framework.action_model.action_hidden_dim = self.action_hidden_dim
-        self.action_model = get_action_model(config=self.config)
+        action_model_type = str(
+            self.config.framework.action_model.get("action_model_type", "MLP")
+        ).strip().upper()
+        action_model_aliases = {
+            "MLP": "MLP",
+            "ACT": "ACT",
+            "TURBO_ACT": "ACT",
+            "TURBOVLA_ACT": "ACT",
+        }
+        if action_model_type not in action_model_aliases:
+            raise ValueError(
+                "LeWMOFT action_model_type must be MLP or ACT, got "
+                f"{action_model_type!r}"
+            )
+        self.action_model_type = action_model_aliases[action_model_type]
+        # ACT needs the final visual-token layout, so it is constructed below.
+        self.action_model = (
+            get_action_model(config=self.config)
+            if self.action_model_type == "MLP"
+            else None
+        )
 
         self.l1_loss = nn.L1Loss()
 
@@ -826,17 +857,45 @@ class LeWM_OFT(baseframework):
             if self.smooth_action_enabled
             else self.num_visual_tokens
         )
-        self.visual_action_head = VisualActionCrossAttn(
-            token_dim=action_visual_token_dim,
-            action_hidden_dim=self.action_hidden_dim,
-            chunk_len=self.chunk_len,
-            num_frames=self.wm_ctx_len + self.n_future,
-            num_tokens=action_visual_num_tokens,
-            num_heads=int(wm_cfg.get("visual_action_heads", 8)),
-            state_dim=int(wm_cfg.get("state_cond_dim", 8)) if self.use_state_cond else 0,
-            state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
-            state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
-        )
+        action_cfg = self.config.framework.action_model
+        if self.action_model_type == "ACT":
+            self.visual_action_head = None
+            self.action_model = TurboStyleACTActionHead(
+                token_dim=action_visual_token_dim,
+                hidden_dim=self.action_hidden_dim,
+                action_dim=int(action_cfg.action_dim),
+                horizon=self.chunk_len,
+                num_frames=self.wm_ctx_len + self.n_future,
+                num_visual_tokens=action_visual_num_tokens,
+                num_heads=int(action_cfg.get("act_num_heads", 8)),
+                num_layers=int(action_cfg.get("act_num_layers", 3)),
+                dim_feedforward=int(action_cfg.get("act_dim_feedforward", 2048)),
+                mlp_hidden_dim=int(action_cfg.get("act_mlp_hidden_dim", 512)),
+                dropout=float(action_cfg.get("act_dropout", 0.1)),
+                state_dim=(
+                    int(wm_cfg.get("state_cond_dim", 8))
+                    if self.use_state_cond
+                    else 0
+                ),
+                state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
+                num_state_tokens=int(action_cfg.get("act_num_state_tokens", 2)),
+            )
+        else:
+            self.visual_action_head = VisualActionCrossAttn(
+                token_dim=action_visual_token_dim,
+                action_hidden_dim=self.action_hidden_dim,
+                chunk_len=self.chunk_len,
+                num_frames=self.wm_ctx_len + self.n_future,
+                num_tokens=action_visual_num_tokens,
+                num_heads=int(wm_cfg.get("visual_action_heads", 8)),
+                state_dim=(
+                    int(wm_cfg.get("state_cond_dim", 8))
+                    if self.use_state_cond
+                    else 0
+                ),
+                state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
+                state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
+            )
         self.use_progress_checker = bool(wm_cfg.get("use_progress_checker", False))
         self.progress_goal_predictor = None
         self.progress_checker = None
@@ -965,7 +1024,10 @@ class LeWM_OFT(baseframework):
 
         if self.use_state_cond and bool(wm_cfg.get("state_cond_only", False)):
             self.requires_grad_(False)
-            self.visual_action_head.state_encoder.requires_grad_(True)
+            if self.action_model_type == "ACT":
+                self.action_model.state_projection.requires_grad_(True)
+            else:
+                self.visual_action_head.state_encoder.requires_grad_(True)
 
         # Stage isolation is enforced here rather than relying on a long and
         # error-prone freeze_modules string in launch scripts.
@@ -1056,7 +1118,8 @@ class LeWM_OFT(baseframework):
             self.requires_grad_(False)
             self.smooth_world_model.requires_grad_(True)
             self.task_embedding.requires_grad_(True)
-            self.visual_action_head.requires_grad_(True)
+            if self.visual_action_head is not None:
+                self.visual_action_head.requires_grad_(True)
             self.action_model.requires_grad_(True)
             if bool(wm_cfg.get("train_encoder", False)):
                 self.backbone.requires_grad_(True)
@@ -1237,8 +1300,15 @@ class LeWM_OFT(baseframework):
         state: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # visual_tokens: (B, T, K, C) == [current latent, WM-predicted future latents].
-        # chunk_len action queries cross-attend all T*K tokens so the OFT head
-        # reads the world model's prediction with full token/temporal structure.
+        # chunk_len action queries cross-attend all T*K tokens so the action
+        # head reads the world model's prediction with full token/temporal
+        # structure. ACT additionally appends projected state memory tokens and
+        # refines the queries through a multi-layer Transformer decoder.
+        if self.action_model_type == "ACT":
+            return self.action_model.decode_action_queries(
+                visual_tokens,
+                state=state,
+            )
         return self.visual_action_head(visual_tokens, state=state)
 
     def _current_state_tensor(self, examples: List[dict], device: torch.device) -> torch.Tensor:

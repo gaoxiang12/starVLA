@@ -689,6 +689,34 @@ instead of trusting an old snapshot.
   launcher is
   `examples/LIBERO/train_files/run_smooth_global_latent_action_joint_libero_statecond_trainenc_continue_100k.sh`.
 
+## RoboTwin click_bell normalization-statistics ablation
+
+- The first 20k click_bell fine-tune recomputed normalization statistics on the
+  single-task 1,000-episode dataset. This changed the coordinate system relative
+  to the Clean-50 200k warm-start checkpoint and was a major train/eval risk.
+- `datasets.vla_data.normalization_statistics_path` is now an opt-in, strict
+  training override. It reads a prior run's flattened `dataset_statistics.json`,
+  validates embodiment tags, modality key order, and dimensions, splits the
+  arrays back into per-key training metadata, installs them on the transforms,
+  and saves the same statistics for deployment-time denormalization. Invalid
+  files fail instead of silently falling back to statistics from new data.
+- The click_bell launcher now defaults to the Clean-50 base run's statistics and
+  resolved `config.full.yaml` (to lock the 1536-D action head and legacy language
+  head as well as loading the weights), and uses a non-overwriting run ID:
+
+  ```text
+  playground/Checkpoints/lewm_oft_robotwin_dinov3b_clean50_canonical_click_bell_clean1000_basestats_ft20k
+  ```
+
+- A real-data smoke test on 78,055 frames / 1,000 trajectories verified that all
+  saved action/state statistics and the action mask match the Clean-50 base file
+  exactly. Unit coverage is in `tests/test_normalization_statistics_override.py`.
+- The initial GPU-5 queue was cancelled at the user's request. The
+  fixed-statistics 20k ablation was switched to immediate execution on physical
+  GPU 1 on 2026-08-13 with supervisor PID `1935919`. Track `train.pid`,
+  `train.log`, and `STATUS.running` in the new run directory. Re-check the PID
+  and GPU state because they are volatile.
+
 ## Worktree safety
 
 - Preserve unrelated user-owned untracked files and directories, especially

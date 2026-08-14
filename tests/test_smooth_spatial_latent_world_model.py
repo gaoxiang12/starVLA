@@ -353,6 +353,52 @@ class LiberoSmoothLatentDataConfigTest(unittest.TestCase):
         )
 
 
+class RobotwinSmoothLatentDataConfigTest(unittest.TestCase):
+    def test_temporal_schema_mixtures_and_training_recipe(self):
+        config_path = (
+            REPO_ROOT / "examples/Robotwin/train_files/data_registry/data_config.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "robotwin_smooth_latent_data_config", config_path
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        config = module.ROBOT_TYPE_CONFIG_MAP["robotwin_smooth_latent_wm"]
+        modalities = config.modality_config()
+        self.assertEqual(list(modalities["video"].delta_indices), [0, 1, 2, 8])
+        self.assertEqual(list(modalities["state"].delta_indices), [0])
+        for mixture_name in (
+            "robotwin_all_smooth_latent_wm",
+            "robotwin_clean_smooth_latent_wm",
+        ):
+            mixture = module.DATASET_NAMED_MIXTURES[mixture_name]
+            self.assertGreater(len(mixture), 0)
+            self.assertTrue(
+                all(
+                    robot_type == "robotwin_smooth_latent_wm"
+                    for _, _, robot_type in mixture
+                )
+            )
+
+        recipe = OmegaConf.load(
+            REPO_ROOT
+            / "examples/Robotwin/train_files/"
+            "starvla_lewm_oft_dinov2b_robotwin.yaml"
+        )
+        wm = recipe.framework.world_model
+        self.assertTrue(wm.smooth_latent_enabled)
+        self.assertTrue(wm.smooth_action_enabled)
+        self.assertEqual(float(wm.loss_latent_weight), 0.0)
+        self.assertEqual(recipe.framework.action_model.action_model_type, "ACT")
+        self.assertEqual(
+            recipe.datasets.vla_data.data_mix,
+            "robotwin_all_smooth_latent_wm",
+        )
+        self.assertTrue(recipe.datasets.vla_data.future_obs_valid_mask)
+
+
 class SmoothSpatialTokenActionIntegrationTest(unittest.TestCase):
     def test_removed_branch_options_fail_fast(self):
         from starVLA.model.framework.WM4A.LeWMOFT import LeWM_OFT

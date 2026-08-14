@@ -8,9 +8,14 @@ STARVLA_DIR="${STARVLA_DIR:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
 
 export DATA_ROOT="${DATA_ROOT:-playground/Datasets/RoboTwinClickBellClean1000}"
 export DATA_MIX="${DATA_MIX:-robotwin_click_bell_clean1000_wm}"
-export RUN_ID="${RUN_ID:-lewm_oft_robotwin_dinov3b_clean50_canonical_click_bell_clean1000_ft20k}"
+export RUN_ID="${RUN_ID:-lewm_oft_robotwin_dinov3b_clean50_canonical_click_bell_clean1000_basestats_ft20k}"
 export BASE_WM="${BASE_WM:-dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth}"
 export PRETRAINED_CKPT="${PRETRAINED_CKPT:-${STARVLA_DIR}/playground/Checkpoints/lewm_oft_robotwin_dinov3b_clean50_canonical_tasktext_fromscratch_200k/checkpoints/steps_200000_pytorch_model.pt}"
+export NORMALIZATION_STATISTICS_PATH="${NORMALIZATION_STATISTICS_PATH:-${STARVLA_DIR}/playground/Checkpoints/lewm_oft_robotwin_dinov3b_clean50_canonical_tasktext_fromscratch_200k/dataset_statistics.json}"
+# Reuse the warm-start run's resolved architecture as well as its weights.  The
+# current generic YAML has since changed the action/language heads, which would
+# otherwise make this more than a normalization-statistics-only ablation.
+export CONFIG="${CONFIG:-${STARVLA_DIR}/playground/Checkpoints/lewm_oft_robotwin_dinov3b_clean50_canonical_tasktext_fromscratch_200k/config.full.yaml}"
 
 export CUDA_DEVS="${CUDA_DEVS:-0}"
 export NUM_PROCESSES="${NUM_PROCESSES:-1}"

@@ -1,6 +1,11 @@
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
+import torch.nn as nn
+from omegaconf import OmegaConf
 
 from starVLA.model.framework.WM4A.LeWMOFT import (
     CompositionalTextEncoder,
@@ -8,6 +13,9 @@ from starVLA.model.framework.WM4A.LeWMOFT import (
     VisualActionCrossAttn,
     VisualTokenPooler,
     prefix_l1_loss,
+)
+from starVLA.model.modules.action_model.ACT_ActionHeader import (
+    TurboStyleACTActionHead,
 )
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
@@ -19,6 +27,96 @@ from starVLA.model.modules.world_model.wala_transition_auxiliary import (
 
 
 class VisualTokenComponentsTest(unittest.TestCase):
+    def test_lewm_selects_turbo_style_act_from_config(self):
+        class FakeEncoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(hidden_size=32)
+                self.anchor = nn.Parameter(torch.zeros(()))
+
+        repo_root = Path(__file__).resolve().parents[1]
+        config = OmegaConf.load(
+            repo_root
+            / "examples/LIBERO/train_files/starvla_lewm_oft_libero.yaml"
+        )
+        wm = config.framework.world_model
+        wm.base_wm = "fake_dinov3.pth"
+        wm.visual_token_dim = 24
+        wm.visual_tokens_per_view = 4
+        wm.num_visual_tokens = 4
+        wm.residual_predictor_dim = 24
+        wm.residual_predictor_depth = 1
+        wm.residual_predictor_heads = 4
+        wm.residual_predictor_ffn = 48
+        wm.visual_diagnostics = False
+        config.framework.lang_cond.num_buckets = 32
+        config.framework.lang_cond.embed_dim = 16
+        action = config.framework.action_model
+        action.action_hidden_dim = 32
+        action.act_num_heads = 4
+        action.act_num_layers = 2
+        action.act_dim_feedforward = 64
+        action.act_mlp_hidden_dim = 48
+
+        with patch(
+            "starVLA.model.modules.world_model.dinov3_loader.load_dinov3",
+            return_value=(FakeEncoder(), None, 0),
+        ):
+            model = LeWM_OFT(config=config)
+
+        visual = torch.randn(2, 3, 8, 24, requires_grad=True)
+        state = torch.randn(2, 8, requires_grad=True)
+        hidden = model._pool_visual_tokens_to_action_queries(visual, state=state)
+        actions = model.action_model.predict_action(hidden)
+
+        self.assertEqual(model.action_model_type, "ACT")
+        self.assertIsNone(model.visual_action_head)
+        self.assertEqual(len(model.action_model.decoder.layers), 2)
+        self.assertEqual(hidden.shape, (2, 8, 32))
+        self.assertEqual(actions.shape, (2, 8, 7))
+
+        actions.square().mean().backward()
+        self.assertTrue(torch.isfinite(visual.grad).all())
+        self.assertTrue(torch.isfinite(state.grad).all())
+
+    def test_turbo_style_act_decodes_visual_and_state_memory(self):
+        head = TurboStyleACTActionHead(
+            token_dim=24,
+            hidden_dim=32,
+            action_dim=7,
+            horizon=8,
+            num_frames=3,
+            num_visual_tokens=32,
+            num_heads=4,
+            num_layers=3,
+            dim_feedforward=64,
+            mlp_hidden_dim=48,
+            dropout=0.0,
+            state_dim=8,
+            state_hidden_dim=16,
+            num_state_tokens=2,
+        )
+        visual = torch.randn(2, 3, 32, 24, requires_grad=True)
+        state = torch.randn(2, 8, requires_grad=True)
+
+        memory = head.build_memory(visual, state=state)
+        hidden = head.decode_action_queries(visual, state=state)
+        actions = head(visual, state=state)
+
+        self.assertEqual(memory.shape, (2, 3 * 32 + 2, 32))
+        self.assertEqual(hidden.shape, (2, 8, 32))
+        self.assertEqual(actions.shape, (2, 8, 7))
+        self.assertEqual(len(head.decoder.layers), 3)
+        self.assertTrue(torch.all(actions <= 1.0))
+        self.assertTrue(torch.all(actions >= -1.0))
+
+        actions.square().mean().backward()
+        self.assertTrue(torch.isfinite(visual.grad).all())
+        self.assertTrue(torch.isfinite(state.grad).all())
+
+        with self.assertRaisesRegex(ValueError, "requires current state"):
+            head(visual.detach())
+
     def test_compositional_text_encoder_is_collision_free_and_trainable(self):
         encoder = CompositionalTextEncoder(
             output_dim=24,

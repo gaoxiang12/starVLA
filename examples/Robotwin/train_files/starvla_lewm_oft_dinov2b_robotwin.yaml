@@ -1,4 +1,4 @@
-run_id: lewm_oft_robotwin_dinov3b_textcond_action384
+run_id: lewm_oft_robotwin_dinov3b_act_smooth_spatial48x384
 run_root_dir: playground/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
@@ -16,11 +16,35 @@ framework:
     num_views: 3
     n_future: 2
     ctx_len: 1
-    loss_latent_weight: 1.0
-    residual_predictor_dim: 384
-    residual_predictor_depth: 4
-    residual_predictor_heads: 6
-    residual_predictor_ffn: 1024
+
+    # Match the LIBERO smooth-spatial objective: predict absolute future
+    # content tokens rather than a delta_scale-normalized residual. With
+    # three views the 4x4 grid contains 48 tokens per temporal frame.
+    smooth_latent_enabled: true
+    smooth_action_enabled: true
+    smooth_action_loss_weight: 1.0
+    smooth_world_model_loss_weight: 1.0
+    smooth_latent_grid_size: 4
+    smooth_spatial_token_dim: 384
+    smooth_latent_dim: 384
+    smooth_predictor_dim: 384
+    smooth_predictor_depth: 4
+    smooth_predictor_heads: 6
+    smooth_predictor_ffn: 1024
+    smooth_prediction_weight: 1.0
+    smooth_sigreg_weight: 0.02
+    smooth_slow_weight: 0.05
+    smooth_acceleration_weight: 0.10
+    smooth_temporal_order_weight: 0.05
+    smooth_temporal_order_margin: 0.10
+    smooth_sigreg_knots: 17
+    smooth_sigreg_num_proj: 1024
+    rollout_steps: 1
+
+    # Disable the legacy normalized-residual objective. The main loss is now
+    # action L1 + smooth_world_model_loss, as in the LIBERO recipe.
+    loss_latent_weight: 0.0
+    latent_cosine_weight: 0.0
     residual_predictor_sigreg_weight: 0.0
     visual_tokens_per_view: 16
     visual_token_dim: 384
@@ -28,20 +52,26 @@ framework:
     visual_token_variance_weight: 0.02
     visual_token_min_std: 0.1
     latent_stats_momentum: 0.99
-    visual_diagnostics: true
+    visual_diagnostics: false
     use_state_probe: false
     use_state_cond: true
     state_cond_dim: 14
     state_cond_hidden_dim: 256
     state_cond_dropout: 0.1
   action_model:
-    action_model_type: MLP
+    action_model_type: ACT
     action_dim: 14
     state_dim: 14
     action_horizon: 16
     future_action_window_size: 15
     past_action_window_size: 0
     action_hidden_dim: 384
+    act_num_heads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_mlp_hidden_dim: 512
+    act_dropout: 0.1
+    act_num_state_tokens: 2
     random_execution_horizons: [1, 2, 4, 8, 16]
     random_prefix_loss_weight: 0.0
   lang_cond:
@@ -59,11 +89,12 @@ datasets:
     dataset_py: lerobot_datasets
     include_state: true
     data_root_dir: playground/Datasets/RoboTwin
-    data_mix: robotwin_all_wm
+    data_mix: robotwin_all_smooth_latent_wm
     # Canonical task text keeps training/evaluation wording aligned; the text
     # encoder composes the words/bytes rather than mapping the full string to ID.
     task_language_mode: dataset_name
     future_obs_frames: true
+    future_obs_valid_mask: true
     action_type: abs_qpos
     action_mode: abs
     sequential_step_sampling: false

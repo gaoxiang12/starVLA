@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Train spatial-token DINOv3-B LeWM-OFT on RoboTwin clean + randomized data.
+# Train smooth-spatial DINOv3-B LeWM-OFT on RoboTwin clean + randomized data.
 set -euo pipefail
 
 STARVLA_DIR="${STARVLA_DIR:-$(cd "$(dirname "$0")/../../.." && pwd)}"
@@ -8,9 +8,9 @@ export PATH="${STARVLA_DIR}/.venv/bin:${PATH}"
 
 CONFIG="${CONFIG:-examples/Robotwin/train_files/starvla_lewm_oft_dinov2b_robotwin.yaml}"
 DATA_ROOT="${DATA_ROOT:-playground/Datasets/RoboTwin}"
-DATA_MIX="${DATA_MIX:-robotwin_all_wm}"
+DATA_MIX="${DATA_MIX:-robotwin_all_smooth_latent_wm}"
 RUN_ROOT="${RUN_ROOT:-playground/Checkpoints}"
-RUN_ID="${RUN_ID:-lewm_oft_robotwin_dinov3b_textcond_action384_spatial4x4_200k}"
+RUN_ID="${RUN_ID:-lewm_oft_robotwin_dinov3b_textcond_act_smooth_spatial48x384_200k}"
 BASE_WM="${BASE_WM:-dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth}"
 CUDA_DEVS="${CUDA_DEVS:-0,1,2,3}"
 NUM_PROCESSES="${NUM_PROCESSES:-$(tr ',' '\n' <<<"${CUDA_DEVS}" | wc -l)}"
@@ -24,6 +24,7 @@ ACTION_LR="${ACTION_LR:-1e-4}"
 ENCODER_LR="${ENCODER_LR:-1e-6}"
 MAIN_PORT="${MAIN_PORT:-29630}"
 PRETRAINED_CKPT="${PRETRAINED_CKPT:-}"
+NORMALIZATION_STATISTICS_PATH="${NORMALIZATION_STATISTICS_PATH:-}"
 ACCELERATE_BIN="${ACCELERATE_BIN:-accelerate}"
 
 if [[ ! -d "${DATA_ROOT}" ]]; then
@@ -52,6 +53,17 @@ if [[ -n "${PRETRAINED_CKPT}" ]]; then
   pretrained_args+=(--trainer.pretrained_checkpoint "${PRETRAINED_CKPT}")
 fi
 
+normalization_statistics_args=()
+if [[ -n "${NORMALIZATION_STATISTICS_PATH}" ]]; then
+  if [[ ! -f "${NORMALIZATION_STATISTICS_PATH}" ]]; then
+    echo "Normalization statistics not found: ${NORMALIZATION_STATISTICS_PATH}" >&2
+    exit 1
+  fi
+  normalization_statistics_args+=(
+    --datasets.vla_data.normalization_statistics_path "${NORMALIZATION_STATISTICS_PATH}"
+  )
+fi
+
 "${ACCELERATE_BIN}" launch \
   --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
   --num_processes "${NUM_PROCESSES}" \
@@ -67,6 +79,7 @@ fi
   --datasets.vla_data.future_obs_frames true \
   --datasets.vla_data.include_state true \
   --datasets.vla_data.per_device_batch_size "${BATCH}" \
+  "${normalization_statistics_args[@]}" \
   "${pretrained_args[@]}" \
   --trainer.gradient_accumulation_steps "${GRAD_ACCUM}" \
   --trainer.is_resume "${IS_RESUME:-false}" \

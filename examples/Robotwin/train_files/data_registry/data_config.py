@@ -70,6 +70,26 @@ class AgilexWMDataConfig(AgilexDataConfig):
         return config
 
 
+class AgilexSmoothLatentWMDataConfig(AgilexDataConfig):
+    """RoboTwin sampling aligned with LIBERO's smooth latent objective.
+
+    The first three frames are the current observation and two consecutive
+    prediction targets. The final frame is used only by the temporal-order
+    regularizer. Out-of-range frames are masked by the dataset packer when
+    ``future_obs_valid_mask`` is enabled.
+    """
+
+    video_indices = [0, 1, 2, 8]
+
+    def modality_config(self):
+        config = super().modality_config()
+        config["video"] = ModalityConfig(
+            delta_indices=self.video_indices,
+            modality_keys=self.video_keys,
+        )
+        return config
+
+
 # ---------------------------------------------------------------------------
 # DataConfig — Agilex 50 (action_indices=50)
 # ---------------------------------------------------------------------------
@@ -143,6 +163,7 @@ class ArxX5DataConfig:
 ROBOT_TYPE_CONFIG_MAP = {
     "robotwin": AgilexDataConfig(),
     "robotwin_wm": AgilexWMDataConfig(),
+    "robotwin_smooth_latent_wm": AgilexSmoothLatentWMDataConfig(),
     "robotwin50": AgilexData50Config(),
     "arx_x5": ArxX5DataConfig(),
 }
@@ -338,6 +359,17 @@ DATASET_NAMED_MIXTURES["robotwin_all_wm"] = [
 DATASET_NAMED_MIXTURES["robotwin_all_50_wm"] = DATASET_NAMED_MIXTURES["robotwin_all_50"]
 DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
     (dataset, weight, "robotwin_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
+]
+
+# Smooth-latent runs intentionally use a separate robot type so archived
+# residual-WM configs and checkpoints keep their original [0, 8, 16] schema.
+DATASET_NAMED_MIXTURES["robotwin_all_smooth_latent_wm"] = [
+    (dataset, weight, "robotwin_smooth_latent_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_all"]
+]
+DATASET_NAMED_MIXTURES["robotwin_clean_smooth_latent_wm"] = [
+    (dataset, weight, "robotwin_smooth_latent_wm")
     for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
 ]
 
