@@ -468,7 +468,7 @@ class VisualTokenLatentWorldModel(nn.Module):
         """Supervise steps 2..K of a rollout that re-anchors on predictions.
 
         Step 1 is left to the ordinary teacher-forced objective so the headline
-        ``latent_loss`` stays comparable with every single-shot checkpoint.
+        ``latent_loss`` keeps the direct future-latent MSE definition.
         """
         current = latent[:, ctx_len - 1 : ctx_len]
         window = latent[:, :ctx_len]
@@ -485,12 +485,12 @@ class VisualTokenLatentWorldModel(nn.Module):
             start = ctx_len + step * self.n_future
             true_future = latent[:, start : start + self.n_future]
             if step > 0:
-                # Ground the residual on the *predicted* anchor: this is exactly
-                # the quantity the network must emit when it is run on its own
-                # output at deployment.
-                target_delta = (true_future - anchor).detach() / scale
+                # Match the smooth-latent branch: supervise the unnormalized
+                # future latent directly.  ``delta_scale`` remains an internal
+                # predictor parameterization and checkpoint-compatible running
+                # statistic, but it no longer changes the loss units.
                 step_loss = (
-                    predicted_delta.float() - target_delta.float()
+                    predicted_future.float() - true_future.detach().float()
                 ).square().mean()
                 total = total + step_loss
                 losses[f"rollout_latent_loss_step_{step + 1}"] = step_loss
@@ -549,7 +549,6 @@ class VisualTokenLatentWorldModel(nn.Module):
             self._update_delta_scale(residual)
 
         scale = self.delta_scale.clamp_min(self._stats_eps)
-        target_delta = residual / scale
         base_predicted_delta = self.residual_predictor(
             latent[:, :ctx_len], goal=goal, state=state
         )
@@ -562,11 +561,17 @@ class VisualTokenLatentWorldModel(nn.Module):
             predicted_delta = base_predicted_delta + correction
         predicted_residual = predicted_delta * scale
         predicted_future = anchor + predicted_residual
-        squared_error = (predicted_delta.float() - target_delta.float()).square()
+        # Use the same objective as the smooth LIBERO world model: direct,
+        # unnormalized MSE in future-latent coordinates.  The former objective
+        # divided this error by ``delta_scale ** 2``, making its reported value
+        # use a different unit even though the predicted future was identical.
+        squared_error = (
+            predicted_future.float() - future.detach().float()
+        ).square()
         latent_loss = squared_error.mean()
         latent_cosine_loss = 1.0 - F.cosine_similarity(
-            predicted_delta.float().flatten(2),
-            target_delta.float().flatten(2),
+            predicted_residual.float().flatten(2),
+            residual.float().flatten(2),
             dim=-1,
             eps=1e-8,
         ).mean()
@@ -577,8 +582,9 @@ class VisualTokenLatentWorldModel(nn.Module):
         }
         if correction is not None:
             with torch.no_grad():
+                base_predicted_future = anchor + base_predicted_delta * scale
                 output["latent_base_loss"] = (
-                    base_predicted_delta.float() - target_delta.float()
+                    base_predicted_future.float() - future.detach().float()
                 ).square().mean()
                 output["context_correction_rms"] = correction.float().square().mean().sqrt()
                 output["context_correction_to_base_ratio"] = (
