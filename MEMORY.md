@@ -205,6 +205,13 @@ instead of trusting an old snapshot.
   SIGReg ablation.
 - Keep direct supervised latent/residual prediction enabled by default with
   weight `1.0`, unless an experiment explicitly studies its removal.
+- Current source defines the headline `latent_loss` consistently as direct,
+  unnormalized future-latent MSE for both the residual and smooth-latent world
+  models. The residual predictor still uses `delta_scale` internally for
+  checkpoint-compatible parameterization, but the scale no longer changes the
+  loss units. Historical residual-WM runs logged normalized-residual MSE and
+  must not be compared directly by absolute `latent_loss`; use their saved
+  prediction-to-copy ratios for cross-run comparisons.
 
 ## DINOv3 LIBERO baseline
 

@@ -3,9 +3,10 @@
 # Motivation: the 220k objective only ever supervises one re-anchoring step, so
 # the predictor is never asked to stay stable when fed its own output.  This run
 # adds ``rollout_steps=4`` (covering +4 .. +32 frames at the 4-frame cadence)
-# and supervises steps 2..4 against the *predicted* anchor.  Step 1 keeps the
-# original teacher-forced loss untouched so ``latent_loss`` stays directly
-# comparable with every single-shot checkpoint.
+# and supervises steps 2..4 against the true future latent. Step 1 and rollout
+# steps use the same direct, unnormalized future-latent MSE. Values are not
+# directly comparable with checkpoints trained before this loss-definition
+# change.
 #
 # The action head still consumes only the first ``n_future`` predictions, so the
 # deployed token layout and every checkpoint shape are unchanged.

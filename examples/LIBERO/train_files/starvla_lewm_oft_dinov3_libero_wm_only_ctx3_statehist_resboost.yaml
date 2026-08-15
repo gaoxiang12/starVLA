@@ -40,7 +40,7 @@ framework:
 
     visual_tokens_per_view: 16
     visual_token_dim: 384
-    # Optimize exactly the reported raw normalized latent MSE in this ablation.
+    # Optimize the reported direct, unnormalized future-latent MSE.
     visual_token_diversity_weight: 0.0
     visual_token_variance_weight: 0.0
     visual_token_min_std: 0.1

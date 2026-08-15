@@ -344,6 +344,55 @@ class VisualTokenLatentWorldModelTest(unittest.TestCase):
 
         self.assertEqual(float(model.delta_scale), 3.0)
 
+    def test_latent_loss_is_direct_unnormalized_future_mse(self):
+        model = VisualTokenLatentWorldModel(
+            latent_dim=2,
+            goal_dim=None,
+            n_future=2,
+            num_tokens=1,
+            dim=4,
+            depth=1,
+            num_heads=1,
+            ffn_dim=8,
+        )
+        model.delta_scale.fill_(3.0)
+        model._delta_scale_ready.fill_(1.0)
+        # The residual predictor is zero-initialized, so the model copies the
+        # current latent. Direct future-latent MSE is mean([1^2, 2^2]) = 2.5;
+        # the removed normalized-residual objective would instead be 2.5 / 9.
+        latent = torch.tensor(
+            [
+                [
+                    [[0.0, 0.0]],
+                    [[1.0, 1.0]],
+                    [[2.0, 2.0]],
+                    [[3.0, 3.0]],
+                    [[4.0, 4.0]],
+                ]
+            ]
+        )
+
+        output = model(
+            latent, ctx_len=1, update_stats=False, rollout_steps=2
+        )
+
+        torch.testing.assert_close(output["latent_loss"], torch.tensor(2.5))
+        torch.testing.assert_close(output["delta_pred_mse"], output["latent_loss"])
+        torch.testing.assert_close(
+            output["latent_loss_horizon_1"], torch.tensor(1.0)
+        )
+        torch.testing.assert_close(
+            output["latent_loss_horizon_2"], torch.tensor(4.0)
+        )
+        # The second rollout step still predicts a copy of zero, so its direct
+        # MSE against future values [3, 4] is mean([3^2, 4^2]) = 12.5.
+        torch.testing.assert_close(
+            output["rollout_latent_loss_step_2"], torch.tensor(12.5)
+        )
+        torch.testing.assert_close(
+            output["rollout_latent_loss"], torch.tensor(12.5)
+        )
+
     def test_delta_scale_keeps_exact_fp32_value_under_bfloat16_cast(self):
         model = VisualTokenLatentWorldModel(
             latent_dim=8,
