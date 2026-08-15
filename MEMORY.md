@@ -719,6 +719,17 @@ instead of trusting an old snapshot.
 
 ## Worktree safety
 
+## Training hardware and batch-size preference
+
+- This host has 8 GPUs with 40 GiB VRAM per GPU. For future training launches,
+  micro-batch size may be increased conservatively to improve sample throughput,
+  while retaining enough headroom for activation spikes and validating the first
+  logged steps for OOM/NaN failures.
+- The currently running DINOv3-B LIBERO job
+  `playground/Checkpoints/lewm_oft_act_dinov3b_libero_200k_bs16` uses per-GPU
+  batch 16 (global batch 128). Per the user's 2026-08-14 instruction, do not
+  change, restart, or otherwise disturb this run solely to tune batch size.
+
 - Preserve unrelated user-owned untracked files and directories, especially
   `thirdparty/`, `BEHAVIOR-1K/`, and DINO weights.
 - Tracked changes from the earlier `dino-compact-latent-wm` work were saved as:
