@@ -14,6 +14,14 @@ The data root is `/home/gaoxiang/data/gaoxiang`. LIBERO's two real views are
 padded to the shared three-view layout and accompanied by `view_valid_mask`;
 Bridge uses images 0/1/2 and RoboTwin uses its three native cameras.
 
+The Bridge LeRobot v2.0 export does not include GR00T modality metadata. Copy
+the unified three-view declaration into the dataset before training:
+
+```bash
+cp examples/UnifiedPretrain/train_files/bridge_modality.json \
+  /home/gaoxiang/data/gaoxiang/datasets/IPEC-COMMUNITY/bridge_orig_lerobot_git/meta/modality.json
+```
+
 Run a short smoke job first:
 
 ```bash

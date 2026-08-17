@@ -356,6 +356,36 @@ class TrainerUtils:
         :return: prepared distributed components (in the same order as input)
         """
 
+        # A DataLoader created with ``batch_sampler=...`` intentionally exposes
+        # ``batch_size=None`` even though the batch sampler has a concrete
+        # batch size. Accelerate cannot resolve DeepSpeed's ``auto`` micro
+        # batch size in that case, so mirror its inference using the sampler.
+        deepspeed_plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+        if deepspeed_plugin is not None and deepspeed_plugin.is_auto(
+            "train_micro_batch_size_per_gpu"
+        ):
+            dataloaders = [
+                component
+                for component in components
+                if isinstance(component, torch.utils.data.DataLoader)
+            ]
+            batch_sizes = []
+            for dataloader in dataloaders:
+                batch_size = dataloader.batch_size
+                if batch_size is None:
+                    batch_size = getattr(dataloader.batch_sampler, "batch_size", None)
+                if batch_size is None:
+                    break
+                if accelerator.split_batches:
+                    batch_size //= accelerator.num_processes
+                batch_sizes.append(int(batch_size))
+
+            if dataloaders and len(batch_sizes) == len(dataloaders):
+                reducer = min if deepspeed_plugin.is_train_batch_min else max
+                deepspeed_plugin.deepspeed_config[
+                    "train_micro_batch_size_per_gpu"
+                ] = reducer(batch_sizes)
+
         # use accelerator.prepare method to wrap components
         prepared_components = accelerator.prepare(*components)
         return prepared_components
