@@ -23,6 +23,7 @@ framework config to keep the joint fine-tuning interface open.
 """
 
 import os
+from pathlib import Path
 from typing import List, Optional
 
 import torch
@@ -47,6 +48,12 @@ class _LeWM_Interface(nn.Module):
                 "facebook/dinov2-base or a DINOv3 .pth); the legacy "
                 "qwenvl.base_vlm / vit-tiny fallback was removed"
             )
+        model_path = Path(model_name).expanduser()
+        if not model_path.is_absolute() and not model_path.exists():
+            repo_relative = Path(__file__).resolve().parents[4] / model_path
+            if repo_relative.exists():
+                model_path = repo_relative
+        model_name = os.fspath(model_path)
         self.config = config
         self.train_encoder = bool(wm_cfg.get("train_encoder", False))
 
@@ -197,12 +204,77 @@ class _LeWM_Interface(nn.Module):
         device = next(self.encoder.parameters()).device
         pixel_values = self._to_pixel_values(flat, device).to(device)
 
+        return self._encode_patch_pixel_values(
+            pixel_values,
+            batch_size=len(frames_per_example),
+            time_steps=T,
+            num_views=V,
+        )
+
+    def encode_patch_image_tensor(self, images: torch.Tensor) -> torch.Tensor:
+        """Encode a batch of raw image tensors into per-view patch tokens.
+
+        This is the replay-friendly counterpart of :meth:`encode_patch_frames`.
+        It avoids converting rollout images back to PIL during RL updates while
+        preserving the exact HuggingFace DINOv3 image processor used at
+        inference time.
+
+        Args:
+            images: Raw images shaped ``[B, T, V, H, W, C]`` or
+                ``[B, T, V, C, H, W]``. ``uint8`` and floating tensors are
+                accepted by the DINOv3 fast image processor.
+
+        Returns:
+            Patch tokens shaped ``[B, T, V, N, D]``.
+        """
+        if not isinstance(images, torch.Tensor) or images.ndim != 6:
+            raise ValueError(
+                "images must be a rank-6 tensor [B,T,V,H,W,C] or "
+                f"[B,T,V,C,H,W], got {type(images).__name__} "
+                f"with shape {getattr(images, 'shape', None)}"
+            )
+
+        batch_size, time_steps, num_views = images.shape[:3]
+        if images.shape[-1] in (1, 3, 4):
+            flat = images.reshape(-1, *images.shape[-3:])
+        elif images.shape[3] in (1, 3, 4):
+            flat = images.reshape(-1, *images.shape[-3:])
+        else:
+            raise ValueError(
+                "Cannot infer image channel axis from shape "
+                f"{tuple(images.shape)}; expected C in {{1,3,4}}."
+            )
+
+        device = next(self.encoder.parameters()).device
+        pixel_values = self._to_pixel_values(flat, device).to(device)
+        return self._encode_patch_pixel_values(
+            pixel_values,
+            batch_size=batch_size,
+            time_steps=time_steps,
+            num_views=num_views,
+        )
+
+    def _encode_patch_pixel_values(
+        self,
+        pixel_values: torch.Tensor,
+        *,
+        batch_size: int,
+        time_steps: int,
+        num_views: int,
+    ) -> torch.Tensor:
+        """Run DINOv3 on already preprocessed pixels and restore B/T/V axes."""
+
         with torch.set_grad_enabled(self.train_encoder):
             out = self.encoder(pixel_values=pixel_values)
             patches = out.last_hidden_state[:, self.num_prefix_tokens:]  # (B*T*V, N, D)
 
-        B = len(frames_per_example)
-        return patches.view(B, T, V, patches.shape[-2], patches.shape[-1])
+        return patches.view(
+            batch_size,
+            time_steps,
+            num_views,
+            patches.shape[-2],
+            patches.shape[-1],
+        )
 
     def forward(self, **kwargs):
         """Encode views; return hidden states (B, V, 2*hidden) for the action head."""

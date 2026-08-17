@@ -60,7 +60,10 @@ class ModelClient:
         self.prev_action = None  # last absolute action for delta mode
 
         self.task_description = None
-        self.image_history = deque(maxlen=self.horizon)
+        # Visual context length arrives at the handshake below; until then keep
+        # a single-frame deque. ctx_len=1 checkpoints are unaffected.
+        self.visual_context_length = 1
+        self.image_history = deque(maxlen=1)
         if self.action_ensemble:
             self.action_ensembler = AdaptiveEnsembler(self.action_ensemble_horizon, self.adaptive_ensemble_alpha)
         else:
@@ -74,6 +77,8 @@ class ModelClient:
         server_meta = self.client.get_server_metadata()
         self.action_chunk_size = server_meta["action_chunk_size"]
         self.task_language_mode = server_meta.get("task_language_mode", "metadata")
+        self.visual_context_length = int(server_meta.get("visual_context_length", 1))
+        self.image_history = deque(maxlen=self.visual_context_length)
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_mode: {action_mode}, normalization_mode: {normalization_mode}, "
@@ -117,6 +122,18 @@ class ModelClient:
         images = [self._resize_image(image) for image in images]
         example["image"] = images
         example_copy = example.copy()
+        # Track the visual history so ctx_len>1 checkpoints receive real past
+        # frames, and flag the first step so progress conditioning resets its
+        # episode-local caches (same contract as the LIBERO client).
+        self.image_history.append(images)
+        self.num_image_history = min(self.num_image_history + 1, self.visual_context_length)
+        context_frames = list(self.image_history)
+        if len(context_frames) < self.visual_context_length:
+            context_frames = [context_frames[0]] * (
+                self.visual_context_length - len(context_frames)
+            ) + context_frames
+        example_copy["image_history"] = context_frames
+        example_copy["episode_start"] = step == 0
         vla_input = {
             "examples": [example_copy],
             "do_sample": False,
