@@ -147,6 +147,7 @@ def make_LeRobotSingleDataset(
     
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "torchvision_av"
     task_language_mode = configured_task_language_mode(data_cfg, embodiment_tag)
+    episode_blacklist_path = getattr(data_config, "episode_blacklist_path", None)
 
     # Opt-in factory hook: a DataConfig may define ``make_dataset(dataset_name=..., **ds_kwargs)``
     # to swap in a custom dataset class (e.g. with per-task filtering / chunk stride).
@@ -162,6 +163,7 @@ def make_LeRobotSingleDataset(
             data_cfg=data_cfg,
             dataset_name=data_name,
             task_language_mode=task_language_mode,
+            episode_blacklist_path=episode_blacklist_path,
         )
 
     else:
@@ -174,6 +176,7 @@ def make_LeRobotSingleDataset(
             delete_pause_frame=delete_pause_frame,
             data_cfg=data_cfg,
             task_language_mode=task_language_mode,
+            episode_blacklist_path=episode_blacklist_path,
         )
 
     # Keep routing/schema information next to each concrete dataset.  This is

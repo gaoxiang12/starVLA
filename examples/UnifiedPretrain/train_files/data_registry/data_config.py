@@ -31,6 +31,7 @@ class UnifiedRoboTwinWMDataConfig(AgilexWMDataConfig):
 
 
 class UnifiedBridgeWMDataConfig(OxeBridgeDataConfig):
+    episode_blacklist_path = "meta/video_health/bad_episodes.jsonl"
     action_spec_id = "bridge_eef_delta_7"
     state_spec_id = "bridge_state_8"
     control_hz = 5

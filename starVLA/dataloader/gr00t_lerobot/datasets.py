@@ -579,6 +579,7 @@ class LeRobotSingleDataset(Dataset):
         delete_pause_frame: bool = False,
         data_cfg = None,
         task_language_mode: str | None = None,
+        episode_blacklist_path: Path | str | None = None,
         **kwargs,
     ):
         """
@@ -616,6 +617,8 @@ class LeRobotSingleDataset(Dataset):
 
         self._dataset_path = Path(dataset_path)
         self._dataset_name = self._dataset_path.name
+        self.episode_blacklist_path = episode_blacklist_path
+        self._episode_blacklist = self._load_episode_blacklist()
         if isinstance(embodiment_tag, EmbodimentTag):
             self.tag = embodiment_tag.value
         else:
@@ -910,6 +913,8 @@ class LeRobotSingleDataset(Dataset):
             trajectory_ids = []
             trajectory_lengths = []
             for episode in episode_metadata:
+                if int(episode["episode_index"]) in self._episode_blacklist:
+                    continue
                 trajectory_ids.append(episode["episode_index"])
                 trajectory_lengths.append(episode["length"])
             return np.array(trajectory_ids), np.array(trajectory_lengths)
@@ -992,7 +997,7 @@ class LeRobotSingleDataset(Dataset):
             try:
                 with open(steps_path, "rb") as f:
                     cached_data = pickle.load(f)
-                return cached_data["steps"]
+                return self._filter_blacklisted_steps(cached_data["steps"])
             except Exception as e:
                 # include EOFError / PickleError / KeyError
                 print(
@@ -1030,7 +1035,42 @@ class LeRobotSingleDataset(Dataset):
         with open(steps_path, "rb") as f:
             cached_data = pickle.load(f)
     
-        return cached_data["steps"]
+        return self._filter_blacklisted_steps(cached_data["steps"])
+
+    def _load_episode_blacklist(self) -> set[int]:
+        """Load an optional JSONL episode blacklist without mutating metadata."""
+        if not self.episode_blacklist_path:
+            return set()
+        path = Path(self.episode_blacklist_path)
+        if not path.is_absolute():
+            path = self.dataset_path / path
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Configured episode blacklist does not exist: {path}"
+            )
+
+        episode_ids: set[int] = set()
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    episode_ids.add(int(record["episode_index"]))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"Invalid episode blacklist row at {path}:{line_number}"
+                    ) from error
+        if int(os.environ.get("RANK", "0")) == 0:
+            print(f"Loaded {len(episode_ids)} blacklisted episodes from {path}")
+        return episode_ids
+
+    def _filter_blacklisted_steps(
+        self, steps: list[tuple[int, int]]
+    ) -> list[tuple[int, int]]:
+        if not self._episode_blacklist:
+            return steps
+        return [step for step in steps if int(step[0]) not in self._episode_blacklist]
 
     def _get_steps_config_key(self) -> str:
         """Generate a configuration key for steps caching."""

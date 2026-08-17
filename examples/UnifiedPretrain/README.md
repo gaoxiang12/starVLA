@@ -33,6 +33,17 @@ reviewable Bridge sidecar audit with:
   /home/gaoxiang/data/gaoxiang/datasets/IPEC-COMMUNITY/bridge_orig_lerobot_git
 ```
 
+Bridge training also requires three real MP4 camera files per episode. Scan
+containers and generate the configured non-destructive episode blacklist with:
+
+```bash
+.venv/bin/python examples/UnifiedPretrain/data_tools/scan_bridge_videos.py \
+  /home/gaoxiang/data/gaoxiang/datasets/IPEC-COMMUNITY/bridge_orig_lerobot_git
+```
+
+The loader reads `meta/video_health/bad_episodes.jsonl`; source videos and
+episode metadata are never deleted or rewritten.
+
 Run a short smoke job first:
 
 ```bash
