@@ -1,4 +1,5 @@
 import unittest
+from collections import deque
 
 import numpy as np
 
@@ -74,6 +75,9 @@ class RobotwinInterfaceTest(unittest.TestCase):
         model.action_mode = "abs"
         model.initial_state = None
         model.prev_action = None
+        model.visual_context_length = 1
+        model.image_history = deque(maxlen=1)
+        model.num_image_history = 0
 
         state = np.arange(14, dtype=np.float32)
         image = np.zeros((8, 8, 3), dtype=np.uint8)

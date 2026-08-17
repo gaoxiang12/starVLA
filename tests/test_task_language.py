@@ -4,7 +4,14 @@ import unittest
 from pathlib import Path
 
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset
-from starVLA.task_language import canonical_task_text, resolve_task_language
+from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
+from starVLA.task_language import (
+    canonical_bridge_task,
+    canonical_metadata_text,
+    canonical_task_text,
+    configured_task_language_mode,
+    resolve_task_language,
+)
 
 
 class TaskLanguageTest(unittest.TestCase):
@@ -39,6 +46,49 @@ class TaskLanguageTest(unittest.TestCase):
             resolve_task_language("Keep This Wording", "click_bell", "metadata"),
             "Keep This Wording",
         )
+
+    def test_per_embodiment_mode_overrides_global_fallback(self):
+        config = {
+            "task_language_mode": "metadata",
+            "task_language_modes": {
+                "aloha": "dataset_name",
+                "oxe_bridge": "bridge_canonical",
+            },
+        }
+        self.assertEqual(
+            configured_task_language_mode(config, "aloha"), "dataset_name"
+        )
+        self.assertEqual(
+            configured_task_language_mode(config, "oxe_bridge"), "bridge_canonical"
+        )
+        self.assertEqual(configured_task_language_mode(config, "franka"), "metadata")
+        self.assertEqual(
+            configured_task_language_mode(config, EmbodimentTag.ALOHA), "dataset_name"
+        )
+
+    def test_bridge_surface_aliases_share_one_task_label(self):
+        aliases = (
+            "Put the red object into the pot.",
+            "place red object inside of pot",
+            "Moved a red object in the pot",
+        )
+        self.assertEqual(
+            {canonical_bridge_task(alias) for alias in aliases},
+            {"move red object in pot"},
+        )
+
+    def test_bridge_semantic_differences_are_not_merged(self):
+        self.assertNotEqual(
+            canonical_bridge_task("put cup in left drawer"),
+            canonical_bridge_task("put cup in right drawer"),
+        )
+        self.assertNotEqual(
+            canonical_bridge_task("open the top drawer"),
+            canonical_bridge_task("close the top drawer"),
+        )
+
+    def test_canonical_metadata_matches_text_encoder_normalization(self):
+        self.assertEqual(canonical_metadata_text("  PICK\u3000UP  Cup  "), "pick up cup")
 
 
 if __name__ == "__main__":

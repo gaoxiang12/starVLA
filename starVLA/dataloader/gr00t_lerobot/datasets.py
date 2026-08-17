@@ -51,7 +51,7 @@ from starVLA.dataloader.gr00t_lerobot.schema import (
 )
 from starVLA.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
 from starVLA.dataloader.gr00t_lerobot.transform.state_action import StateActionTransform
-from starVLA.task_language import resolve_task_language
+from starVLA.task_language import configured_task_language_mode, resolve_task_language
 
 from functools import partial
 from typing import Tuple, List
@@ -578,6 +578,7 @@ class LeRobotSingleDataset(Dataset):
         transforms: ComposedModalityTransform | None = None,
         delete_pause_frame: bool = False,
         data_cfg = None,
+        task_language_mode: str | None = None,
         **kwargs,
     ):
         """
@@ -594,6 +595,7 @@ class LeRobotSingleDataset(Dataset):
         """
         # first check if the path directory exists
         self.data_cfg = data_cfg
+        self.task_language_mode = task_language_mode
         if not Path(dataset_path).exists():
             raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
         # indict letobot version
@@ -1313,11 +1315,9 @@ class LeRobotSingleDataset(Dataset):
             with open(tasks_path, "r") as f:
                 tasks = [json.loads(line) for line in f]
             df = pd.DataFrame(tasks)
-            language_mode = (
-                self.data_cfg.get("task_language_mode", "metadata")
-                if self.data_cfg is not None
-                else "metadata"
-            )
+            language_mode = getattr(
+                self, "task_language_mode", None
+            ) or configured_task_language_mode(self.data_cfg, getattr(self, "tag", None))
             df["task"] = [
                 resolve_task_language(task, self.dataset_name, language_mode)
                 for task in df["task"]
@@ -1330,11 +1330,9 @@ class LeRobotSingleDataset(Dataset):
             df = df.reset_index()  # convert index to a column, typically named 'index'
             df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
             df = df[['task_index', 'task']]  # reorder columns
-            language_mode = (
-                self.data_cfg.get("task_language_mode", "metadata")
-                if self.data_cfg is not None
-                else "metadata"
-            )
+            language_mode = getattr(
+                self, "task_language_mode", None
+            ) or configured_task_language_mode(self.data_cfg, getattr(self, "tag", None))
             df["task"] = [
                 resolve_task_language(task, self.dataset_name, language_mode)
                 for task in df["task"]

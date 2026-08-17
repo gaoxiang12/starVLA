@@ -29,7 +29,12 @@ import torch
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import read_mode_config
-from starVLA.task_language import normalize_task_language_mode
+from starVLA.task_language import (
+    TASK_LANGUAGE_DATASET_NAME,
+    configured_task_language_mode,
+    normalize_task_language_mode,
+    resolve_task_language,
+)
 
 from deployment.model_server.policy_norm_processor import PolicyNormProcessor
 
@@ -78,6 +83,11 @@ class PolicyServerWrapper:
         self._task_language_mode = normalize_task_language_mode(
             vla_data_cfg.get("task_language_mode", "metadata")
         )
+        raw_task_language_modes = vla_data_cfg.get("task_language_modes", {}) or {}
+        self._task_language_modes = {
+            str(key): normalize_task_language_mode(mode)
+            for key, mode in raw_task_language_modes.items()
+        }
 
         # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
@@ -161,6 +171,7 @@ class PolicyServerWrapper:
             "fixed_progress": self._fixed_progress,
             "progress_ema": self._progress_ema,
             "task_language_mode": self._task_language_mode,
+            "task_language_modes": self._task_language_modes,
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
@@ -198,6 +209,14 @@ class PolicyServerWrapper:
                 )
         proc = self._get_processor(effective_key)
 
+        language_mode = configured_task_language_mode(
+            {
+                "task_language_mode": self._task_language_mode,
+                "task_language_modes": self._task_language_modes,
+            },
+            effective_key,
+        )
+
         # Multi-head frameworks route on the same embodiment key used to choose
         # normalization statistics. Preserve an explicit caller tag so the
         # framework can reject inconsistent requests instead of silently
@@ -212,6 +231,13 @@ class PolicyServerWrapper:
                 )
             routed = dict(example)
             routed.setdefault("robot_tag", effective_key)
+            # Text-only canonicalization is reproducible on the server and is
+            # idempotent. dataset_name needs the environment task identity, so
+            # that mode remains an explicit client responsibility.
+            if language_mode != TASK_LANGUAGE_DATASET_NAME:
+                routed["lang"] = resolve_task_language(
+                    routed.get("lang"), str(effective_key), language_mode
+                )
             routed_examples.append(routed)
         examples = routed_examples
 

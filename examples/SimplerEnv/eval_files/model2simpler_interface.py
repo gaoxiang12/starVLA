@@ -9,6 +9,7 @@ from transforms3d.euler import euler2axangle
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from starVLA.task_language import configured_task_language_mode, resolve_task_language
 
 
 class ModelClient:
@@ -83,6 +84,9 @@ class ModelClient:
         self.num_image_history = 0
 
         server_meta = self.client.get_server_metadata()
+        self.task_language_mode = configured_task_language_mode(
+            server_meta, unnorm_key
+        )
         print(f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, server_meta: {server_meta} ***")
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
@@ -127,7 +131,11 @@ class ModelClient:
         image = self._resize_image(image)
         example = {
             "image": [image],
-            "lang": self.task_description,
+            "lang": resolve_task_language(
+                self.task_description,
+                self.task_description or self.unnorm_key,
+                self.task_language_mode,
+            ),
         }
 
         # vla_input = {

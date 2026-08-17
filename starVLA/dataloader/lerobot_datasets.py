@@ -18,6 +18,7 @@ from starVLA.dataloader.gr00t_lerobot.registry import (
     DATASET_NAMED_MIXTURES,
     EmbodimentTag,
 )
+from starVLA.task_language import configured_task_language_mode
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,7 @@ def make_LeRobotSingleDataset(
         embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "torchvision_av"
+    task_language_mode = configured_task_language_mode(data_cfg, embodiment_tag)
 
     # Opt-in factory hook: a DataConfig may define ``make_dataset(dataset_name=..., **ds_kwargs)``
     # to swap in a custom dataset class (e.g. with per-task filtering / chunk stride).
@@ -159,6 +161,7 @@ def make_LeRobotSingleDataset(
             delete_pause_frame=delete_pause_frame,
             data_cfg=data_cfg,
             dataset_name=data_name,
+            task_language_mode=task_language_mode,
         )
 
     else:
@@ -170,6 +173,7 @@ def make_LeRobotSingleDataset(
             video_backend=video_backend, # decord is more efficiency | torchvision_av for video.av1
             delete_pause_frame=delete_pause_frame,
             data_cfg=data_cfg,
+            task_language_mode=task_language_mode,
         )
 
     # Keep routing/schema information next to each concrete dataset.  This is

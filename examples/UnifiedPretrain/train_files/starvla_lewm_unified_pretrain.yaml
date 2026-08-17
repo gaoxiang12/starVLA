@@ -82,6 +82,13 @@ datasets:
     dataset_py: lerobot_datasets
     data_root_dir: /home/gaoxiang/data/gaoxiang
     data_mix: unified_libero_robotwin_bridge_wm
+    # Language is a task ID for this non-VLM model.  Use the authoritative
+    # RoboTwin task directory, and deterministic lexical aliases for Bridge.
+    task_language_mode: metadata
+    task_language_modes:
+      franka: canonical_metadata
+      aloha: dataset_name
+      oxe_bridge: bridge_canonical
     future_obs_frames: true
     future_obs_valid_mask: true
     include_state: true

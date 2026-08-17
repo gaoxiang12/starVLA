@@ -5,7 +5,7 @@ import cv2 as cv
 import numpy as np
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
-from starVLA.task_language import resolve_task_language
+from starVLA.task_language import configured_task_language_mode, resolve_task_language
 
 try:
     from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
@@ -78,7 +78,9 @@ class ModelClient:
         self.action_chunk_size = server_meta.get("action_chunk_sizes", {}).get(
             unnorm_key, server_meta["action_chunk_size"]
         )
-        self.task_language_mode = server_meta.get("task_language_mode", "metadata")
+        self.task_language_mode = configured_task_language_mode(
+            server_meta, unnorm_key
+        )
         self.visual_context_length = int(server_meta.get("visual_context_length", 1))
         self.image_history = deque(maxlen=self.visual_context_length)
         print(

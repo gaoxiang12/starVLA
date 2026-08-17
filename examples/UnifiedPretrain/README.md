@@ -22,6 +22,17 @@ cp examples/UnifiedPretrain/train_files/bridge_modality.json \
   /home/gaoxiang/data/gaoxiang/datasets/IPEC-COMMUNITY/bridge_orig_lerobot_git/meta/modality.json
 ```
 
+Language conditioning is routed per embodiment: LIBERO metadata receives
+stable Unicode/case normalization, RoboTwin uses its 50 task directory names,
+and Bridge uses conservative lexical aliases (for example, `put`/`place`/`move`
+with the same objects and target). Raw metadata is never rewritten. Generate a
+reviewable Bridge sidecar audit with:
+
+```bash
+.venv/bin/python examples/UnifiedPretrain/data_tools/canonicalize_bridge_tasks.py \
+  /home/gaoxiang/data/gaoxiang/datasets/IPEC-COMMUNITY/bridge_orig_lerobot_git
+```
+
 Run a short smoke job first:
 
 ```bash

@@ -23,6 +23,7 @@ from PIL import Image
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 from examples.SimplerEnv.eval_files.adaptive_ensemble import ChunkedAdaptiveEnsembler
+from starVLA.task_language import configured_task_language_mode
 
 
 class ModelClient:
@@ -48,7 +49,7 @@ class ModelClient:
             per_embodiment_horizons.get(unnorm_key, meta["action_chunk_size"])
         )
         self.visual_context_length = int(meta.get("visual_context_length", 1))
-        self.task_language_mode = meta.get("task_language_mode", "metadata")
+        self.task_language_mode = configured_task_language_mode(meta, unnorm_key)
         self.execute_horizon = (
             self.action_chunk_size if execute_horizon is None else int(execute_horizon)
         )
