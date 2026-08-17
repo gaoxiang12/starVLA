@@ -10,6 +10,8 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 # DataConfig — Agilex (RobotWin, action_indices=16)
 # ---------------------------------------------------------------------------
 class AgilexDataConfig:
+    # Keep the legacy tag for archived RoboTwin checkpoints. Unified pretraining
+    # overrides this to ALOHA in its dedicated DataConfig.
     embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = ["state.left_joints", "state.right_joints", "state.left_gripper", "state.right_gripper"]

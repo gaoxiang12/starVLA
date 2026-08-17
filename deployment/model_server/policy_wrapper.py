@@ -81,6 +81,20 @@ class PolicyServerWrapper:
 
         # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
+        embodiment_heads = action_model_cfg.get("embodiment_heads", {}) or {}
+        self._action_chunk_sizes = {
+            str(tag): int(spec["action_horizon"])
+            for tag, spec in embodiment_heads.items()
+        }
+        self._action_specs = {
+            str(tag): {
+                "action_spec_id": spec.get("action_spec_id"),
+                "action_dim": int(spec["action_dim"]),
+                "action_horizon": int(spec["action_horizon"]),
+                "state_dim": int(spec.get("state_dim", 0)),
+            }
+            for tag, spec in embodiment_heads.items()
+        }
         world_model_cfg = model_cfg["framework"].get("world_model", {})
         self._visual_context_length = int(world_model_cfg.get("ctx_len", 1))
         
@@ -138,6 +152,8 @@ class PolicyServerWrapper:
             "env": "starvla_policy_server",
             "ckpt_path": self._ckpt_path,
             "action_chunk_size": self._action_chunk_size,
+            "action_chunk_sizes": self._action_chunk_sizes,
+            "action_specs": self._action_specs,
             "visual_context_length": self._visual_context_length,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
@@ -181,6 +197,23 @@ class PolicyServerWrapper:
                     f"Pass one of {self._available_unnorm_keys}."
                 )
         proc = self._get_processor(effective_key)
+
+        # Multi-head frameworks route on the same embodiment key used to choose
+        # normalization statistics. Preserve an explicit caller tag so the
+        # framework can reject inconsistent requests instead of silently
+        # selecting a different head.
+        routed_examples = []
+        for example in examples:
+            explicit_tag = example.get("robot_tag")
+            if explicit_tag is not None and str(explicit_tag) != str(effective_key):
+                raise ValueError(
+                    f"example robot_tag={explicit_tag!r} does not match "
+                    f"unnorm_key={effective_key!r}"
+                )
+            routed = dict(example)
+            routed.setdefault("robot_tag", effective_key)
+            routed_examples.append(routed)
+        examples = routed_examples
 
         if getattr(self._framework, "expects_normalized_state", False):
             normalized_examples = []

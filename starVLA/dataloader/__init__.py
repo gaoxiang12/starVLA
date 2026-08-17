@@ -36,7 +36,11 @@ def save_dataset_statistics(dataset_statistics, run_dir):
 def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here only is get dataset, we need mv dataloader to here
 
     if dataset_py == "lerobot_datasets":
-        from starVLA.dataloader.lerobot_datasets import get_vla_dataset, collate_fn
+        from starVLA.dataloader.lerobot_datasets import (
+            EmbodimentBatchSampler,
+            collate_fn,
+            get_vla_dataset,
+        )
         vla_dataset_cfg = cfg.datasets.vla_data
 
         vla_dataset = get_vla_dataset(
@@ -47,7 +51,6 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
 
         num_workers = int(vla_dataset_cfg.get("num_workers", 4))
         dataloader_kwargs = {
-            "batch_size": cfg.datasets.vla_data.per_device_batch_size,
             "collate_fn": collate_fn,
             "num_workers": num_workers,
             "pin_memory": bool(vla_dataset_cfg.get("pin_memory", True)),
@@ -56,6 +59,19 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
         if num_workers > 0:
             dataloader_kwargs["persistent_workers"] = bool(vla_dataset_cfg.get("persistent_workers", True))
             dataloader_kwargs["prefetch_factor"] = int(vla_dataset_cfg.get("prefetch_factor", 2))
+
+        if bool(vla_dataset_cfg.get("homogeneous_embodiment_batches", False)):
+            dataloader_kwargs["batch_sampler"] = EmbodimentBatchSampler(
+                vla_dataset,
+                batch_size=int(vla_dataset_cfg.per_device_batch_size),
+                embodiment_weights=vla_dataset_cfg.get(
+                    "embodiment_sampling_weights", None
+                ),
+                drop_last=bool(vla_dataset_cfg.get("drop_last", True)),
+                seed=int(cfg.get("seed", 42)),
+            )
+        else:
+            dataloader_kwargs["batch_size"] = cfg.datasets.vla_data.per_device_batch_size
 
         vla_train_dataloader = DataLoader(
             vla_dataset,

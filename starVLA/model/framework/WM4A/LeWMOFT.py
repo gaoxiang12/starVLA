@@ -25,6 +25,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from PIL import Image
 
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.training.trainer_utils import initialize_overwatch
@@ -140,11 +141,37 @@ class VisualTokenPooler(nn.Module):
         )
         return position.reshape(self.num_tokens, self.token_dim)
 
-    def remove_position(self, tokens: torch.Tensor) -> torch.Tensor:
-        position = self.position_tokens().to(dtype=tokens.dtype)
-        return tokens - position.view(1, 1, self.num_tokens, self.token_dim)
+    def _token_mask(
+        self, view_valid_mask: torch.Tensor, *, dtype: torch.dtype
+    ) -> torch.Tensor:
+        if view_valid_mask.ndim != 2 or view_valid_mask.shape[1] != self.num_views:
+            raise ValueError(
+                "view_valid_mask must have shape [B,V] with "
+                f"V={self.num_views}, got {tuple(view_valid_mask.shape)}"
+            )
+        return view_valid_mask.to(dtype=dtype).repeat_interleave(
+            self.tokens_per_view, dim=1
+        )[:, None, :, None]
 
-    def forward(self, patches: torch.Tensor, return_content: bool = False):
+    def remove_position(
+        self,
+        tokens: torch.Tensor,
+        view_valid_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        position = self.position_tokens().to(dtype=tokens.dtype)
+        content = tokens - position.view(1, 1, self.num_tokens, self.token_dim)
+        if view_valid_mask is not None:
+            content = content * self._token_mask(
+                view_valid_mask.to(device=tokens.device), dtype=tokens.dtype
+            )
+        return content
+
+    def forward(
+        self,
+        patches: torch.Tensor,
+        return_content: bool = False,
+        view_valid_mask: Optional[torch.Tensor] = None,
+    ):
         # patches: (B, T, V, N, D_patch)
         B, T, V, N, D = patches.shape
         if V != self.num_views:
@@ -167,6 +194,12 @@ class VisualTokenPooler(nn.Module):
         )
         position = self.position_tokens().to(dtype=content.dtype)
         tokens = content + position.view(1, 1, self.num_tokens, self.token_dim)
+        if view_valid_mask is not None:
+            token_mask = self._token_mask(
+                view_valid_mask.to(device=tokens.device), dtype=tokens.dtype
+            )
+            tokens = tokens * token_mask
+            content = content * token_mask
         if return_content:
             return tokens, content
         return tokens
@@ -374,6 +407,7 @@ class LeWMOFTDefaultConfig:
             "num_views": 2,          # camera views per frame (e.g. primary + wrist)
             "n_future": 2,            # number of future latents to predict
             "ctx_len": 1,             # clean context frames (current frame only)
+            "future_time_offsets_s": None,
             "world_model_only": False,
             "freeze_latent_stats": False,
             # Predictable per-cell 4x4 spatial tokens with direct future-token
@@ -503,6 +537,10 @@ class LeWMOFTDefaultConfig:
             # original full-chunk L1 objective exactly.
             "random_execution_horizons": [1, 2, 4, 8],
             "random_prefix_loss_weight": 0.0,
+            # Optional embodiment-tag -> native ACT shape map.  When set, a
+            # homogeneous batch is routed to one independent ACT head while
+            # the visual/language/world-model trunk remains shared.
+            "embodiment_heads": {},
         }
     )
 
@@ -612,6 +650,18 @@ class LeWM_OFT(baseframework):
                 f"{action_model_type!r}"
             )
         self.action_model_type = action_model_aliases[action_model_type]
+        raw_embodiment_heads = self.config.framework.action_model.get(
+            "embodiment_heads", {}
+        ) or {}
+        self.embodiment_head_specs = {
+            str(tag): {str(key): value for key, value in spec.items()}
+            for tag, spec in raw_embodiment_heads.items()
+        }
+        self.multi_embodiment_actions = bool(self.embodiment_head_specs)
+        if self.multi_embodiment_actions and self.action_model_type != "ACT":
+            raise ValueError(
+                "action_model.embodiment_heads currently requires action_model_type=ACT"
+            )
         # ACT needs the final visual-token layout, so it is constructed below.
         self.action_model = (
             get_action_model(config=self.config)
@@ -649,9 +699,33 @@ class LeWM_OFT(baseframework):
                 max_length=int(lang_cfg.get("text_max_length", 128)),
                 dropout=float(lang_cfg.get("text_dropout", 0.1)),
             )
+        self.embodiment_tags = tuple(sorted(self.embodiment_head_specs))
+        self.embodiment_tag_to_index = {
+            tag: index for index, tag in enumerate(self.embodiment_tags)
+        }
+        self.embodiment_embedding = (
+            nn.Embedding(len(self.embodiment_tags), self.task_emb_dim)
+            if self.multi_embodiment_actions
+            else None
+        )
+        if self.embodiment_embedding is not None:
+            nn.init.normal_(self.embodiment_embedding.weight, std=0.02)
 
         self.n_future = int(wm_cfg.get("n_future", 2))
         self.wm_ctx_len = int(wm_cfg.get("ctx_len", 1))
+        configured_time_offsets = wm_cfg.get("future_time_offsets_s", None)
+        self.future_time_offsets_s = (
+            tuple(float(value) for value in configured_time_offsets)
+            if configured_time_offsets is not None
+            else None
+        )
+        if self.future_time_offsets_s is not None and len(
+            self.future_time_offsets_s
+        ) != 1 + self.n_future:
+            raise ValueError(
+                "world_model.future_time_offsets_s must contain current plus "
+                f"n_future={self.n_future} offsets"
+            )
         self.world_model_only = bool(wm_cfg.get("world_model_only", False))
         self.smooth_latent_enabled = bool(
             wm_cfg.get("smooth_latent_enabled", False)
@@ -867,7 +941,28 @@ class LeWM_OFT(baseframework):
             else self.num_visual_tokens
         )
         action_cfg = self.config.framework.action_model
-        if self.action_model_type == "ACT":
+        self.action_models = nn.ModuleDict()
+        if self.multi_embodiment_actions:
+            self.visual_action_head = None
+            self.action_model = None
+            for tag, spec in self.embodiment_head_specs.items():
+                self.action_models[tag] = TurboStyleACTActionHead(
+                    token_dim=action_visual_token_dim,
+                    hidden_dim=self.action_hidden_dim,
+                    action_dim=int(spec["action_dim"]),
+                    horizon=int(spec["action_horizon"]),
+                    num_frames=self.wm_ctx_len + self.n_future,
+                    num_visual_tokens=action_visual_num_tokens,
+                    num_heads=int(action_cfg.get("act_num_heads", 8)),
+                    num_layers=int(action_cfg.get("act_num_layers", 3)),
+                    dim_feedforward=int(action_cfg.get("act_dim_feedforward", 2048)),
+                    mlp_hidden_dim=int(action_cfg.get("act_mlp_hidden_dim", 512)),
+                    dropout=float(action_cfg.get("act_dropout", 0.1)),
+                    state_dim=(int(spec.get("state_dim", 0)) if self.use_state_cond else 0),
+                    state_hidden_dim=int(wm_cfg.get("state_cond_hidden_dim", 256)),
+                    num_state_tokens=int(action_cfg.get("act_num_state_tokens", 2)),
+                )
+        elif self.action_model_type == "ACT":
             self.visual_action_head = None
             self.action_model = TurboStyleACTActionHead(
                 token_dim=action_visual_token_dim,
@@ -906,6 +1001,10 @@ class LeWM_OFT(baseframework):
                 state_dropout=float(wm_cfg.get("state_cond_dropout", 0.1)),
             )
         self.use_progress_checker = bool(wm_cfg.get("use_progress_checker", False))
+        if self.multi_embodiment_actions and self.use_progress_checker:
+            raise ValueError(
+                "multi-embodiment ACT heads do not yet support use_progress_checker"
+            )
         self.progress_goal_predictor = None
         self.progress_checker = None
         self.progress_action_conditioner = None
@@ -967,6 +1066,10 @@ class LeWM_OFT(baseframework):
         self.transition_mode = (
             "off" if transition_mode is False else str(transition_mode).lower()
         )
+        if self.multi_embodiment_actions and self.transition_mode != "off":
+            raise ValueError(
+                "multi-embodiment ACT heads require transition_mode=off"
+            )
         if self.transition_mode not in {
             "off",
             "teacher",
@@ -1021,6 +1124,11 @@ class LeWM_OFT(baseframework):
             )
 
         self.use_state_probe = bool(wm_cfg.get("use_state_probe", False))
+        if self.multi_embodiment_actions and self.use_state_probe:
+            raise ValueError(
+                "multi-embodiment pretraining requires use_state_probe=false; "
+                "state dimensions differ by embodiment"
+            )
         if self.use_state_probe:
             self.state_probe_dim = int(wm_cfg.get("state_dim", 8))
             self.loss_state_weight = float(wm_cfg.get("loss_state_weight", 0.5))
@@ -1033,7 +1141,10 @@ class LeWM_OFT(baseframework):
 
         if self.use_state_cond and bool(wm_cfg.get("state_cond_only", False)):
             self.requires_grad_(False)
-            if self.action_model_type == "ACT":
+            if self.multi_embodiment_actions:
+                for action_model in self.action_models.values():
+                    action_model.state_projection.requires_grad_(True)
+            elif self.action_model_type == "ACT":
                 self.action_model.state_projection.requires_grad_(True)
             else:
                 self.visual_action_head.state_encoder.requires_grad_(True)
@@ -1105,6 +1216,8 @@ class LeWM_OFT(baseframework):
             else:
                 self.world_model.requires_grad_(True)
                 self.task_embedding.requires_grad_(True)
+            if self.embodiment_embedding is not None:
+                self.embodiment_embedding.requires_grad_(True)
             if self.context_correction_freeze_base:
                 if self.world_model.context_correction is None:
                     raise ValueError(
@@ -1129,7 +1242,11 @@ class LeWM_OFT(baseframework):
             self.task_embedding.requires_grad_(True)
             if self.visual_action_head is not None:
                 self.visual_action_head.requires_grad_(True)
-            self.action_model.requires_grad_(True)
+            if self.multi_embodiment_actions:
+                self.action_models.requires_grad_(True)
+                self.embodiment_embedding.requires_grad_(True)
+            else:
+                self.action_model.requires_grad_(True)
             if bool(wm_cfg.get("train_encoder", False)):
                 self.backbone.requires_grad_(True)
 
@@ -1307,26 +1424,175 @@ class LeWM_OFT(baseframework):
         self,
         visual_tokens: torch.Tensor,
         state: Optional[torch.Tensor] = None,
+        action_model: Optional[nn.Module] = None,
     ) -> torch.Tensor:
         # visual_tokens: (B, T, K, C) == [current latent, WM-predicted future latents].
         # chunk_len action queries cross-attend all T*K tokens so the action
         # head reads the world model's prediction with full token/temporal
         # structure. ACT additionally appends projected state memory tokens and
         # refines the queries through a multi-layer Transformer decoder.
+        selected_action_model = action_model or self.action_model
         if self.action_model_type == "ACT":
-            return self.action_model.decode_action_queries(
+            if selected_action_model is None:
+                raise RuntimeError("an ACT action model must be selected")
+            return selected_action_model.decode_action_queries(
                 visual_tokens,
                 state=state,
             )
         return self.visual_action_head(visual_tokens, state=state)
 
-    def _current_state_tensor(self, examples: List[dict], device: torch.device) -> torch.Tensor:
-        """Stack only the current normalized proprio state from each example."""
+    def _resolve_batch_embodiment(
+        self,
+        examples: Optional[List[dict]] = None,
+        robot_tag: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self.multi_embodiment_actions:
+            return None
+        tags = set()
+        if robot_tag is not None:
+            tags.add(str(robot_tag))
+        if examples is not None:
+            tags.update(str(example.get("robot_tag", "")) for example in examples)
+        tags.discard("")
+        if len(tags) != 1:
+            raise ValueError(
+                "multi-embodiment LeWMOFT requires a homogeneous batch with one "
+                f"robot_tag, got {sorted(tags) if tags else 'none'}"
+            )
+        tag = next(iter(tags))
+        if tag not in self.action_models:
+            raise KeyError(
+                f"robot_tag={tag!r} has no configured ACT head; "
+                f"available={list(self.action_models.keys())}"
+            )
+        action_specs = {
+            str(example["action_spec_id"])
+            for example in (examples or [])
+            if example.get("action_spec_id") is not None
+        }
+        expected_action_spec = self.embodiment_head_specs[tag].get("action_spec_id")
+        if len(action_specs) > 1 or (
+            action_specs
+            and expected_action_spec is not None
+            and action_specs != {str(expected_action_spec)}
+        ):
+            raise ValueError(
+                f"robot_tag={tag!r} expects action_spec_id={expected_action_spec!r}, "
+                f"got {sorted(action_specs)}"
+            )
+        return tag
+
+    def _action_runtime(
+        self, robot_tag: Optional[str]
+    ) -> tuple[nn.Module, int, int, tuple[int, ...]]:
+        if self.multi_embodiment_actions:
+            if robot_tag is None:
+                raise ValueError("robot_tag is required for multi-embodiment actions")
+            spec = self.embodiment_head_specs[robot_tag]
+            horizons = tuple(
+                int(value)
+                for value in spec.get(
+                    "random_execution_horizons",
+                    range(1, int(spec["action_horizon"]) + 1),
+                )
+            )
+            return (
+                self.action_models[robot_tag],
+                int(spec["action_horizon"]),
+                int(spec.get("state_dim", 0)),
+                horizons,
+            )
         state_dim = (
-            self.predictor_state_dim
-            if self.predictor_state_dim > 0
-            else int(self.config.framework.world_model.get("state_cond_dim", 8))
+            int(self.config.framework.world_model.get("state_cond_dim", 8))
+            if self.use_state_cond
+            else 0
         )
+        return (
+            self.action_model,
+            self.action_horizon,
+            state_dim,
+            self.random_execution_horizons,
+        )
+
+    def _condition_task_on_embodiment(
+        self, task_embedding: torch.Tensor, robot_tag: Optional[str]
+    ) -> torch.Tensor:
+        if not self.multi_embodiment_actions:
+            return task_embedding
+        if robot_tag is None or self.embodiment_embedding is None:
+            raise ValueError("robot_tag is required for embodiment conditioning")
+        index = torch.tensor(
+            self.embodiment_tag_to_index[robot_tag],
+            device=task_embedding.device,
+            dtype=torch.long,
+        )
+        return task_embedding + self.embodiment_embedding(index).to(
+            dtype=task_embedding.dtype
+        ).unsqueeze(0)
+
+    def _view_valid_mask_tensor(
+        self, examples: List[dict], device: torch.device
+    ) -> Optional[torch.Tensor]:
+        masks = [example.get("view_valid_mask") for example in examples]
+        if all(mask is None for mask in masks):
+            return None
+        if any(mask is None for mask in masks):
+            raise ValueError("view_valid_mask must be present for every example or none")
+        mask = torch.as_tensor(masks, device=device, dtype=torch.bool)
+        expected = (len(examples), self.num_views)
+        if tuple(mask.shape) != expected:
+            raise ValueError(
+                f"view_valid_mask must have shape {expected}, got {tuple(mask.shape)}"
+            )
+        return mask
+
+    def _validate_future_time_offsets(self, examples: List[dict]) -> None:
+        if self.future_time_offsets_s is None:
+            return
+        expected = np.asarray(self.future_time_offsets_s, dtype=np.float32)
+        for example in examples:
+            actual = example.get("future_time_offsets_s")
+            actual_array = (
+                np.asarray(actual, dtype=np.float32) if actual is not None else None
+            )
+            if (
+                actual_array is None
+                or actual_array.shape != expected.shape
+                or not np.allclose(actual_array, expected)
+            ):
+                raise ValueError(
+                    f"robot_tag={example.get('robot_tag')!r} must use shared "
+                    f"future_time_offsets_s={list(self.future_time_offsets_s)}, "
+                    f"got {actual}"
+                )
+
+    def _pad_inference_views(self, frame) -> tuple[list, list[bool]]:
+        views = list(frame) if isinstance(frame, (list, tuple)) else [frame]
+        views = [to_pil_preserve(view) for view in views]
+        if len(views) > self.num_views:
+            raise ValueError(
+                f"inference provides {len(views)} views, model expects {self.num_views}"
+            )
+        mask = [True] * len(views) + [False] * (self.num_views - len(views))
+        if not views:
+            raise ValueError("inference requires at least one camera view")
+        blank = Image.new("RGB", views[0].size)
+        views.extend(blank.copy() for _ in range(self.num_views - len(views)))
+        return views, mask
+
+    def _current_state_tensor(
+        self,
+        examples: List[dict],
+        device: torch.device,
+        state_dim: Optional[int] = None,
+    ) -> torch.Tensor:
+        """Stack only the current normalized proprio state from each example."""
+        if state_dim is None:
+            state_dim = (
+                self.predictor_state_dim
+                if self.predictor_state_dim > 0
+                else int(self.config.framework.world_model.get("state_cond_dim", 8))
+            )
         current_states = []
         for example in examples:
             raw_state = example.get("state")
@@ -1594,12 +1860,33 @@ class LeWM_OFT(baseframework):
 
     def forward(self, examples: List[dict] = None, **kwargs) -> Tuple:
         instructions = [example["lang"] for example in examples]
+        self._validate_future_time_offsets(examples)
         device = next(self.parameters()).device
+        robot_tag = self._resolve_batch_embodiment(examples)
+        action_model, action_horizon, action_state_dim, execution_horizons = (
+            self._action_runtime(robot_tag)
+        )
         actions_target = None
         if not self.world_model_only:
             actions = [example["action"] for example in examples]
             actions = torch.tensor(np.array(actions), device=device, dtype=torch.float32)
-            actions_target = actions[:, -self.action_horizon :, :]
+            if self.multi_embodiment_actions and actions.shape[1] != action_horizon:
+                raise ValueError(
+                    f"robot_tag={robot_tag!r} expects action horizon {action_horizon}, "
+                    f"got {actions.shape[1]}"
+                )
+            if actions.shape[1] < action_horizon:
+                raise ValueError(
+                    f"action target has {actions.shape[1]} steps, fewer than "
+                    f"action_horizon={action_horizon}"
+                )
+            expected_action_dim = int(action_model.action_dim)
+            if actions.shape[2] != expected_action_dim:
+                raise ValueError(
+                    f"robot_tag={robot_tag!r} expects action dim {expected_action_dim}, "
+                    f"got {actions.shape[2]}"
+                )
+            actions_target = actions[:, -action_horizon:, :]
 
         # === Encode the current frame + future frames into a latent sequence ===
         # frames_per_example[b] = [current_views, future_views_1, ..., future_views_Tf]
@@ -1647,6 +1934,7 @@ class LeWM_OFT(baseframework):
                 task_emb = self._embed_task(
                     instructions, device=patch_tokens.device
                 )
+                task_emb = self._condition_task_on_embodiment(task_emb, robot_tag)
                 valid_mask = self._smooth_future_valid_mask_tensor(
                     examples,
                     patch_tokens.device,
@@ -1670,14 +1958,18 @@ class LeWM_OFT(baseframework):
                         dim=1,
                     )
                     current_state = (
-                        self._current_state_tensor(examples, patch_tokens.device)
+                        self._current_state_tensor(
+                            examples, patch_tokens.device, state_dim=action_state_dim
+                        )
                         if self.use_state_cond
                         else None
                     )
                     action_queries = self._pool_visual_tokens_to_action_queries(
-                        action_latents, state=current_state
+                        action_latents,
+                        state=current_state,
+                        action_model=action_model,
                     )
-                    pred_actions = self.action_model.predict_action(action_queries)
+                    pred_actions = action_model.predict_action(action_queries)
                     full_l1_action_loss = self.l1_loss(
                         pred_actions, actions_target
                     )
@@ -1717,10 +2009,14 @@ class LeWM_OFT(baseframework):
             return output
 
         with torch.autocast("cuda", dtype=torch.float32):
+            view_valid_mask = self._view_valid_mask_tensor(examples, patch_tokens.device)
             latent, content_latent = self.visual_token_pooler(
-                patch_tokens.float(), return_content=True
+                patch_tokens.float(),
+                return_content=True,
+                view_valid_mask=view_valid_mask,
             )
             task_emb = self._embed_task(instructions, device=latent.device)
+            task_emb = self._condition_task_on_embodiment(task_emb, robot_tag)
             progress_start_latent = None
             progress_goal_latent = None
             if self.use_progress_checker:
@@ -1740,7 +2036,9 @@ class LeWM_OFT(baseframework):
             latent = latent[:, :required_frames]
             content_latent = content_latent[:, :required_frames]
             current_state = (
-                self._current_state_tensor(examples, latent.device)
+                self._current_state_tensor(
+                    examples, latent.device, state_dim=action_state_dim
+                )
                 if self.use_state_cond
                 else None
             )
@@ -1768,7 +2066,9 @@ class LeWM_OFT(baseframework):
             # State-probe input: [current real latent, predicted future latents].
             head_tokens = torch.cat([latent[:, : self.wm_ctx_len], pred_future_latent], dim=1)
 
-            pred_content = self.visual_token_pooler.remove_position(pred_future_latent)
+            pred_content = self.visual_token_pooler.remove_position(
+                pred_future_latent, view_valid_mask=view_valid_mask
+            )
             source_div, source_var, source_cos = self._visual_token_regularization(
                 content_latent
             )
@@ -1791,7 +2091,7 @@ class LeWM_OFT(baseframework):
                 l1_action_loss = full_l1_action_loss
             else:
                 action_queries = self._pool_visual_tokens_to_action_queries(
-                    head_tokens, state=current_state
+                    head_tokens, state=current_state, action_model=action_model
                 )
                 if self.use_progress_checker:
                     progress_target = torch.as_tensor(
@@ -1819,11 +2119,11 @@ class LeWM_OFT(baseframework):
                     if self.transition_mode != "off"
                     else None
                 )
-                pred_actions = self.action_model.predict_action(action_queries)
+                pred_actions = action_model.predict_action(action_queries)
                 full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
-                if self.random_prefix_loss_weight > 0 and self.random_execution_horizons:
+                if self.random_prefix_loss_weight > 0 and execution_horizons:
                     choices = torch.tensor(
-                        self.random_execution_horizons,
+                        execution_horizons,
                         device=pred_actions.device,
                         dtype=torch.long,
                     )
@@ -1857,12 +2157,13 @@ class LeWM_OFT(baseframework):
                             state=current_state[:1]
                             if current_state is not None
                             else None,
+                            action_model=action_model,
                         )
                         if progress_output is not None:
                             ablated_queries = self._condition_action_queries_on_progress(
                                 ablated_queries, progress_output["progress"][:1]
                             )
-                        ablated_actions = self.action_model.predict_action(ablated_queries)
+                        ablated_actions = action_model.predict_action(ablated_queries)
                         future_action_sensitivity = (
                             pred_actions[:1].detach() - ablated_actions
                         ).abs().mean()
@@ -2012,6 +2313,7 @@ class LeWM_OFT(baseframework):
         images: Optional[torch.Tensor] = None,
         state: Optional[torch.Tensor] = None,
         task_bucket_ids: Optional[torch.Tensor] = None,
+        robot_tag: Optional[str] = None,
     ) -> dict[str, torch.Tensor]:
         """Run the deployed smooth LeWM action path without disabling gradients.
 
@@ -2037,6 +2339,10 @@ class LeWM_OFT(baseframework):
             raise ValueError("Pass either examples or tensor images, not both.")
         if examples is None and images is None:
             raise ValueError("forward_policy_tensor requires examples or images.")
+        resolved_robot_tag = self._resolve_batch_embodiment(examples, robot_tag)
+        action_model, _, action_state_dim, _ = self._action_runtime(
+            resolved_robot_tag
+        )
 
         instructions: Optional[List[str]] = None
         if examples is not None:
@@ -2048,7 +2354,7 @@ class LeWM_OFT(baseframework):
             )
             frames_per_example = []
             for example in examples:
-                current = to_pil_preserve(example["image"])
+                current, _ = self._pad_inference_views(example["image"])
                 if train_obs_image_size:
                     current = resize_images(
                         current, target_size=train_obs_image_size
@@ -2093,6 +2399,9 @@ class LeWM_OFT(baseframework):
                 task_emb = self._embed_task(
                     instructions, device=current_latent.device
                 )
+            task_emb = self._condition_task_on_embodiment(
+                task_emb, resolved_robot_tag
+            )
 
             predicted_delta = self.smooth_world_model.predictor(
                 current_latent, goal=task_emb, state=None
@@ -2111,9 +2420,7 @@ class LeWM_OFT(baseframework):
                     )
                     if current_state.ndim == 3 and current_state.shape[1] == 1:
                         current_state = current_state[:, 0]
-                    expected_dim = int(
-                        self.config.framework.world_model.get("state_cond_dim", 8)
-                    )
+                    expected_dim = action_state_dim
                     if (
                         current_state.ndim != 2
                         or current_state.shape[-1] != expected_dim
@@ -2124,7 +2431,9 @@ class LeWM_OFT(baseframework):
                         )
                 elif examples is not None:
                     current_state = self._current_state_tensor(
-                        examples, current_latent.device
+                        examples,
+                        current_latent.device,
+                        state_dim=action_state_dim,
                     )
                 else:
                     raise ValueError(
@@ -2132,9 +2441,9 @@ class LeWM_OFT(baseframework):
                     )
 
             action_queries = self._pool_visual_tokens_to_action_queries(
-                action_latents, state=current_state
+                action_latents, state=current_state, action_model=action_model
             )
-            action_mean = self.action_model.predict_action(action_queries)
+            action_mean = action_model.predict_action(action_queries)
 
         return {
             "action_mean": action_mean,
@@ -2145,6 +2454,10 @@ class LeWM_OFT(baseframework):
     def predict_action(self, examples: List[dict], **kwargs) -> np.ndarray:
         if type(examples) is not list:
             examples = [examples]
+        robot_tag = self._resolve_batch_embodiment(
+            examples, kwargs.get("robot_tag")
+        )
+        action_model, _, action_state_dim, _ = self._action_runtime(robot_tag)
         if self.smooth_latent_enabled and not self.smooth_action_enabled:
             raise RuntimeError(
                 "the smooth spatial latent branch is world-model-only and is "
@@ -2163,16 +2476,23 @@ class LeWM_OFT(baseframework):
 
         inference_history_len = self.wm_ctx_len
         frames_per_example = []
+        inference_view_masks = []
         for example in examples:
             history = example.get("image_history") or [example["image"]]
-            frames = [
-                to_pil_preserve(frame) for frame in history[-inference_history_len:]
-            ]
+            frames = []
+            inferred_masks = []
+            for frame in history[-inference_history_len:]:
+                padded_frame, inferred_mask = self._pad_inference_views(frame)
+                frames.append(padded_frame)
+                inferred_masks.append(inferred_mask)
             if len(frames) < inference_history_len:
                 frames = [frames[0]] * (inference_history_len - len(frames)) + frames
             if train_obs_image_size:
                 frames = resize_images(frames, target_size=train_obs_image_size)
             frames_per_example.append(frames)
+            inference_view_masks.append(
+                example.get("view_valid_mask", inferred_masks[-1])
+            )
 
         with torch.autocast("cuda", dtype=torch.bfloat16):
             patch_tokens = self.backbone.encode_patch_frames(
@@ -2180,11 +2500,21 @@ class LeWM_OFT(baseframework):
             )  # (B, ctx, V, N, D)
 
         with torch.autocast("cuda", dtype=torch.float32):
-            latent_history = self.visual_token_pooler(patch_tokens.float())
+            view_valid_mask = torch.as_tensor(
+                inference_view_masks,
+                device=patch_tokens.device,
+                dtype=torch.bool,
+            )
+            latent_history = self.visual_token_pooler(
+                patch_tokens.float(), view_valid_mask=view_valid_mask
+            )
             latent = latent_history[:, -self.wm_ctx_len :]
             task_emb = self._embed_task(instructions, device=latent.device)
+            task_emb = self._condition_task_on_embodiment(task_emb, robot_tag)
             current_state = (
-                self._current_state_tensor(examples, latent.device)
+                self._current_state_tensor(
+                    examples, latent.device, state_dim=action_state_dim
+                )
                 if self.use_state_cond
                 else None
             )
@@ -2203,7 +2533,7 @@ class LeWM_OFT(baseframework):
                 [latent[:, : self.wm_ctx_len], pred_future_latent], dim=1
             )
             action_queries = self._pool_visual_tokens_to_action_queries(
-                head_tokens, state=current_state
+                head_tokens, state=current_state, action_model=action_model
             )
             progress_output = None
             conditioning_progress = None
@@ -2221,7 +2551,7 @@ class LeWM_OFT(baseframework):
                     action_queries = self._condition_action_queries_on_progress(
                         action_queries, conditioning_progress
                     )
-            pred_actions = self.action_model.predict_action(action_queries)
+            pred_actions = action_model.predict_action(action_queries)
 
         normalized_actions = pred_actions.detach().cpu().numpy()
         output = {"normalized_actions": normalized_actions}

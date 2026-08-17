@@ -75,7 +75,9 @@ class ModelClient:
         self.raw_actions = None
 
         server_meta = self.client.get_server_metadata()
-        self.action_chunk_size = server_meta["action_chunk_size"]
+        self.action_chunk_size = server_meta.get("action_chunk_sizes", {}).get(
+            unnorm_key, server_meta["action_chunk_size"]
+        )
         self.task_language_mode = server_meta.get("task_language_mode", "metadata")
         self.visual_context_length = int(server_meta.get("visual_context_length", 1))
         self.image_history = deque(maxlen=self.visual_context_length)

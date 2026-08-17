@@ -27,6 +27,82 @@ from starVLA.model.modules.world_model.wala_transition_auxiliary import (
 
 
 class VisualTokenComponentsTest(unittest.TestCase):
+    def test_multi_embodiment_act_heads_route_native_shapes(self):
+        class FakeEncoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.config = SimpleNamespace(hidden_size=32)
+                self.anchor = nn.Parameter(torch.zeros(()))
+
+        repo_root = Path(__file__).resolve().parents[1]
+        config = OmegaConf.load(
+            repo_root
+            / "examples/UnifiedPretrain/train_files/"
+            "starvla_lewm_unified_pretrain.yaml"
+        )
+        wm = config.framework.world_model
+        wm.base_wm = "fake_dinov3.pth"
+        wm.train_encoder = False
+        wm.visual_token_dim = 24
+        wm.visual_tokens_per_view = 4
+        wm.residual_predictor_dim = 24
+        wm.residual_predictor_depth = 1
+        wm.residual_predictor_heads = 4
+        wm.residual_predictor_ffn = 48
+        action = config.framework.action_model
+        action.action_hidden_dim = 32
+        action.act_num_heads = 4
+        action.act_num_layers = 1
+        action.act_dim_feedforward = 64
+        action.act_mlp_hidden_dim = 48
+        config.framework.lang_cond.embed_dim = 16
+        config.framework.lang_cond.text_hidden_dim = 16
+        config.framework.lang_cond.text_heads = 4
+        config.framework.lang_cond.text_ffn_dim = 32
+
+        with patch(
+            "starVLA.model.modules.world_model.dinov3_loader.load_dinov3",
+            return_value=(FakeEncoder(), None, 0),
+        ):
+            model = LeWM_OFT(config=config)
+
+        self.assertEqual(set(model.action_models), {"franka", "oxe_bridge", "aloha"})
+        visual = torch.randn(2, 3, 12, 24)
+        expected = {
+            "franka": (8, 7, 8),
+            "oxe_bridge": (3, 7, 8),
+            "aloha": (16, 14, 14),
+        }
+        for tag, (horizon, action_dim, state_dim) in expected.items():
+            selected_tag = model._resolve_batch_embodiment(
+                [{"robot_tag": tag}, {"robot_tag": tag}]
+            )
+            head, selected_horizon, selected_state_dim, _ = model._action_runtime(
+                selected_tag
+            )
+            hidden = model._pool_visual_tokens_to_action_queries(
+                visual,
+                state=torch.randn(2, state_dim),
+                action_model=head,
+            )
+            self.assertEqual(selected_horizon, horizon)
+            self.assertEqual(selected_state_dim, state_dim)
+            self.assertEqual(head.predict_action(hidden).shape, (2, horizon, action_dim))
+
+        with self.assertRaisesRegex(ValueError, "homogeneous batch"):
+            model._resolve_batch_embodiment(
+                [{"robot_tag": "franka"}, {"robot_tag": "aloha"}]
+            )
+        with self.assertRaisesRegex(ValueError, "action_spec_id"):
+            model._resolve_batch_embodiment(
+                [
+                    {
+                        "robot_tag": "franka",
+                        "action_spec_id": "bridge_eef_delta_7",
+                    }
+                ]
+            )
+
     def test_lewm_selects_turbo_style_act_from_config(self):
         class FakeEncoder(nn.Module):
             def __init__(self):
@@ -202,6 +278,23 @@ class VisualTokenComponentsTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(patches.grad).all())
         self.assertTrue(torch.isfinite(mean_cosine))
         self.assertGreater(float(diagnostics["effective_rank"]), 1.0)
+
+    def test_spatial_pooling_masks_padded_views(self):
+        pooler = VisualTokenPooler(
+            patch_dim=8,
+            token_dim=8,
+            num_views=3,
+            tokens_per_view=4,
+        )
+        patches = torch.randn(2, 3, 3, 16, 8)
+        view_mask = torch.tensor([[True, True, False], [True, True, True]])
+        tokens, content = pooler(
+            patches, return_content=True, view_valid_mask=view_mask
+        )
+        self.assertTrue(torch.equal(tokens[0, :, 8:], torch.zeros_like(tokens[0, :, 8:])))
+        self.assertTrue(torch.equal(content[0, :, 8:], torch.zeros_like(content[0, :, 8:])))
+        recovered = pooler.remove_position(tokens, view_valid_mask=view_mask)
+        torch.testing.assert_close(recovered, content)
 
     def test_dense_grid_preserves_every_patch_without_pooling(self):
         pooler = VisualTokenPooler(

@@ -43,7 +43,10 @@ class ModelClient:
         # Connect & receive handshake metadata (action_chunk_size, etc.)
         self.client = WebsocketClientPolicy(host, port)
         meta = self.client.get_server_metadata()
-        self.action_chunk_size = int(meta["action_chunk_size"])
+        per_embodiment_horizons = meta.get("action_chunk_sizes", {})
+        self.action_chunk_size = int(
+            per_embodiment_horizons.get(unnorm_key, meta["action_chunk_size"])
+        )
         self.visual_context_length = int(meta.get("visual_context_length", 1))
         self.task_language_mode = meta.get("task_language_mode", "metadata")
         self.execute_horizon = (

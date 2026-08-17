@@ -1407,6 +1407,25 @@ class LeRobotSingleDataset(Dataset):
             image = Image.fromarray(image).resize((224, 224))
             step_images.append(image)
 
+        target_num_views = (
+            int(self.data_cfg.get("target_num_views", len(step_images)))
+            if self.data_cfg is not None
+            else len(step_images)
+        )
+        if len(step_images) > target_num_views:
+            raise ValueError(
+                f"dataset {self.dataset_name} provides {len(step_images)} views, "
+                f"more than target_num_views={target_num_views}"
+            )
+        view_valid_mask = [True] * len(step_images) + [False] * (
+            target_num_views - len(step_images)
+        )
+        if step_images:
+            blank_view = Image.new("RGB", step_images[0].size)
+            step_images.extend(
+                blank_view.copy() for _ in range(target_num_views - len(step_images))
+            )
+
         language = data[self.modality_keys["language"][0]][0]
         action = []
         for action_key in self.modality_keys["action"]:
@@ -1417,8 +1436,16 @@ class LeRobotSingleDataset(Dataset):
             "action": action,
             "image": step_images,
             "lang": language,
-            "robot_tag": self.tag
+            "robot_tag": self.tag,
+            "robot_type": getattr(self, "robot_type", self.tag),
+            "action_spec_id": getattr(self, "action_spec_id", self.tag),
+            "state_spec_id": getattr(self, "state_spec_id", self.tag),
+            "view_valid_mask": view_valid_mask,
         }
+        if getattr(self, "control_hz", None) is not None:
+            sample["control_hz"] = float(self.control_hz)
+        if getattr(self, "future_time_offsets_s", None) is not None:
+            sample["future_time_offsets_s"] = list(self.future_time_offsets_s)
 
         # Optional future-frame packing (for latent world-model training). When
         # the video modality loads multiple frames (delta_indices = [0, k, ...])
@@ -1437,10 +1464,17 @@ class LeRobotSingleDataset(Dataset):
                 future_per_view.append(fut)
             n_future = len(future_per_view[0]) if future_per_view else 0
             if n_future > 0:
-                sample["future_images"] = [
+                future_images = [
                     [future_per_view[v][t] for v in range(len(future_per_view))]
                     for t in range(n_future)
                 ]
+                for frames in future_images:
+                    blank_view = Image.new("RGB", frames[0].size)
+                    frames.extend(
+                        blank_view.copy()
+                        for _ in range(target_num_views - len(frames))
+                    )
+                sample["future_images"] = future_images
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []
@@ -2451,7 +2485,9 @@ class LeRobotMixtureDataset(Dataset):
         self.epoch = epoch
         # self.sampled_steps = self.sample_epoch()
 
-    def sample_step(self, index: int) -> tuple[LeRobotSingleDataset, int, int]:
+    def sample_step(
+        self, index: int, dataset_index: int | None = None
+    ) -> tuple[LeRobotSingleDataset, int, int]:
         """Sample a single step from the dataset."""
         # return self.sampled_steps[index]
 
@@ -2460,7 +2496,12 @@ class LeRobotMixtureDataset(Dataset):
         rng = np.random.default_rng(seed)
 
         # Sample dataset
-        dataset_index = rng.choice(len(self.datasets), p=self.dataset_sampling_weights)
+        if dataset_index is None:
+            dataset_index = int(
+                rng.choice(len(self.datasets), p=self.dataset_sampling_weights)
+            )
+        elif dataset_index < 0 or dataset_index >= len(self.datasets):
+            raise IndexError(f"dataset index out of range: {dataset_index}")
         dataset = self.datasets[dataset_index]
 
         # Sample trajectory
@@ -2484,6 +2525,14 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             dict: The data for the trajectory and start index.
         """
+        forced_dataset_index = None
+        if isinstance(index, tuple):
+            if len(index) != 2:
+                raise ValueError(
+                    "mixture tuple indices must be (dataset_index, sample_index)"
+                )
+            forced_dataset_index, index = (int(index[0]), int(index[1]))
+
         self._getitem_count += 1
         if self._getitem_count % 1000 == 0:
             gc.collect()
@@ -2503,7 +2552,9 @@ class LeRobotMixtureDataset(Dataset):
                             f"dataset={self.datasets[0].dataset_name if len(self.datasets)>0 else 'unknown'}"
                         )
 
-                    dataset, trajectory_id, step = self.sample_step(index)
+                    dataset, trajectory_id, step = self.sample_step(
+                        index, dataset_index=forced_dataset_index
+                    )
                     # If dataset has no physical videos (e.g., image frames in parquet
                     # for VLA-Arena), do not gate sampling on mp4 existence.
                     total_videos = int(dataset.lerobot_info_meta.get("total_videos", 0))
@@ -2787,15 +2838,18 @@ class LeRobotMixtureDataset(Dataset):
         self.tag = EmbodimentTag.NEW_EMBODIMENT.value
         self.merged_metadata: dict[str, DatasetMetadata] = {}
         # Group metadata by tag
-        all_metadatas: dict[str, list[DatasetMetadata]] = {}
-        for dataset in self.datasets:
-            if dataset.tag not in all_metadatas:
-                all_metadatas[dataset.tag] = []
-            all_metadatas[dataset.tag].append(dataset.metadata)
-        for tag, metadatas in all_metadatas.items():
+        grouped: dict[str, list[tuple[DatasetMetadata, float]]] = {}
+        for dataset, weight in zip(self.datasets, self.dataset_sampling_weights):
+            grouped.setdefault(dataset.tag, []).append((dataset.metadata, float(weight)))
+        for tag, metadata_and_weights in grouped.items():
+            metadatas = [item[0] for item in metadata_and_weights]
+            weights = np.asarray(
+                [item[1] for item in metadata_and_weights], dtype=np.float64
+            )
+            weights /= weights.sum()
             self.merged_metadata[tag] = self.merge_metadata(
                 metadatas=metadatas,
-                dataset_sampling_weights=self.dataset_sampling_weights.tolist(),
+                dataset_sampling_weights=weights.tolist(),
                 percentile_mixing_method=metadata_config["percentile_mixing_method"],
             )
         for dataset in self.datasets:

@@ -94,6 +94,38 @@ class NormalizationStatisticsOverrideTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "expected \\(3,\\)"):
                 self._mixture().apply_normalization_statistics(path)
 
+    def test_metadata_weights_are_renormalized_within_each_embodiment(self):
+        class TaggedDataset:
+            def __init__(self, tag, metadata):
+                self.tag = tag
+                self.metadata = metadata
+                self.applied_metadata = None
+
+            def set_transforms_metadata(self, metadata):
+                self.applied_metadata = metadata
+
+        mixture = LeRobotMixtureDataset.__new__(LeRobotMixtureDataset)
+        mixture.datasets = [
+            TaggedDataset("franka", "f1"),
+            TaggedDataset("franka", "f2"),
+            TaggedDataset("aloha", "a1"),
+        ]
+        mixture._dataset_sampling_weights = __import__("numpy").asarray(
+            [0.2, 0.3, 0.5]
+        )
+        calls = []
+
+        def merge_metadata(*, metadatas, dataset_sampling_weights, **_):
+            calls.append((metadatas, dataset_sampling_weights))
+            return tuple(metadatas)
+
+        mixture.merge_metadata = merge_metadata
+        mixture.update_metadata({"percentile_mixing_method": "min_max"})
+
+        self.assertEqual(calls[0][0], ["f1", "f2"])
+        self.assertEqual(calls[0][1], [0.4, 0.6])
+        self.assertEqual(calls[1], (["a1"], [1.0]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -550,6 +550,21 @@ class VLATrainer(TrainerUtils):
                     or k.startswith("smooth_")
                 ) and torch.is_tensor(v):
                     step_log[k] = v.item()
+        robot_tags = {
+            str(example.get("robot_tag"))
+            for example in batch_vla
+            if example.get("robot_tag") is not None
+        }
+        if len(robot_tags) == 1:
+            robot_tag = next(iter(robot_tags))
+            for metric_name in (
+                "action_dit_loss",
+                "l1_action_loss",
+                "latent_loss",
+                "latent_cosine_loss",
+            ):
+                if metric_name in step_log:
+                    step_log[f"{metric_name}/{robot_tag}"] = step_log[metric_name]
         return step_log
 
     def _finalize_training(self):
