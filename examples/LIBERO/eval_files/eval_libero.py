@@ -30,6 +30,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from examples.LIBERO.eval_files.model2libero_interface import ModelClient
+from starVLA.task_language import resolve_task_language
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -144,13 +145,21 @@ def eval_libero(args: Args) -> None:
         # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
+        # Match the training-time language resolution (e.g. dataset_name mode
+        # maps every episode to the canonical task string).
+        task_language = resolve_task_language(
+            task_description,
+            getattr(task, "name", task_description),
+            getattr(client_model, "task_language_mode", "metadata"),
+        )
+
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
-            client_model.reset(task_description=task_description)  # Reset the client connection
+            client_model.reset(task_description=task_language)  # Reset the client connection
             env.reset()
 
             # Set initial states
@@ -201,7 +210,7 @@ def eval_libero(args: Args) -> None:
                 # align key with model API --> two images provided here --> check training
                 example_dict = {
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
-                    "lang": observation["instruction"][0],
+                    "lang": task_language,
                     "state": observation["observation.state"][0],
                 }
 

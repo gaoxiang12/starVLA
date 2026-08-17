@@ -45,6 +45,7 @@ class ModelClient:
         meta = self.client.get_server_metadata()
         self.action_chunk_size = int(meta["action_chunk_size"])
         self.visual_context_length = int(meta.get("visual_context_length", 1))
+        self.task_language_mode = meta.get("task_language_mode", "metadata")
         self.execute_horizon = (
             self.action_chunk_size if execute_horizon is None else int(execute_horizon)
         )

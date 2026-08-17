@@ -557,7 +557,16 @@ class LeWM_OFT(baseframework):
         self.num_views = int(wm_cfg.get("num_views", 2))
 
         self.use_state_cond = bool(wm_cfg.get("use_state_cond", False))
-        self.expects_normalized_state = self.use_state_cond
+        # The deployment wrapper normalizes state only when this flag is set.
+        # Cover every state consumer: the action head (use_state_cond) and the
+        # world-model state paths (predictor_state_dim /
+        # context_correction_state_dim). Predictor state history is read below
+        # via wm_cfg, so the raw dict values are sufficient here.
+        self.expects_normalized_state = (
+            self.use_state_cond
+            or int(wm_cfg.get("predictor_state_dim", 0)) > 0
+            or int(wm_cfg.get("context_correction_state_dim", 0)) > 0
+        )
         visual_token_dim_cfg = wm_cfg.get("visual_token_dim", None)
         self.visual_token_dim = int(visual_token_dim_cfg) if visual_token_dim_cfg else wm_hidden
 
@@ -1996,6 +2005,142 @@ class LeWM_OFT(baseframework):
                 out[name] = progress_output[name].detach()
         return out
 
+    def forward_policy_tensor(
+        self,
+        examples: Optional[List[dict]] = None,
+        *,
+        images: Optional[torch.Tensor] = None,
+        state: Optional[torch.Tensor] = None,
+        task_bucket_ids: Optional[torch.Tensor] = None,
+    ) -> dict[str, torch.Tensor]:
+        """Run the deployed smooth LeWM action path without disabling gradients.
+
+        RL trainers should call this method instead of :meth:`predict_action` so
+        action log-probabilities can backpropagate into the LeWM action path.
+        Callers may either provide ordinary StarVLA ``examples`` or tensor-only
+        replay inputs. Tensor images are expected as raw ``[B,V,H,W,C]`` (or
+        channels-first) data; states must already use the checkpoint's training
+        normalization.
+
+        Returns:
+            A dictionary containing ``action_mean`` with shape ``[B,H,D]`` and
+            ``policy_features`` with shape ``[B,H,C]``.
+        """
+        if not self.smooth_action_enabled:
+            raise NotImplementedError(
+                "forward_policy_tensor currently supports the deployed smooth "
+                "LeWM action branch only."
+            )
+        if self.smooth_world_model is None:
+            raise RuntimeError("smooth action inference requires smooth_world_model")
+        if examples is not None and images is not None:
+            raise ValueError("Pass either examples or tensor images, not both.")
+        if examples is None and images is None:
+            raise ValueError("forward_policy_tensor requires examples or images.")
+
+        instructions: Optional[List[str]] = None
+        if examples is not None:
+            if type(examples) is not list:
+                examples = [examples]
+            instructions = [example["lang"] for example in examples]
+            train_obs_image_size = getattr(
+                self.config.datasets.vla_data, "obs_image_size", None
+            )
+            frames_per_example = []
+            for example in examples:
+                current = to_pil_preserve(example["image"])
+                if train_obs_image_size:
+                    current = resize_images(
+                        current, target_size=train_obs_image_size
+                    )
+                frames_per_example.append([current])
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                patch_tokens = self.backbone.encode_patch_frames(frames_per_example)
+        else:
+            if not isinstance(images, torch.Tensor) or images.ndim != 5:
+                raise ValueError(
+                    "tensor images must have shape [B,V,H,W,C] or [B,V,C,H,W], "
+                    f"got {getattr(images, 'shape', None)}"
+                )
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                patch_tokens = self.backbone.encode_patch_image_tensor(
+                    images.unsqueeze(1)
+                )
+
+        with torch.autocast("cuda", dtype=torch.float32):
+            current_latent, current_content = self.smooth_world_model.projector(
+                patch_tokens.float(), return_content=True
+            )
+            if task_bucket_ids is not None:
+                if self.lang_cond_type != "hash":
+                    raise ValueError(
+                        "task_bucket_ids are only valid for hash language conditioning"
+                    )
+                task_ids = task_bucket_ids.to(
+                    device=current_latent.device, dtype=torch.long
+                ).reshape(-1)
+                if task_ids.shape[0] != current_latent.shape[0]:
+                    raise ValueError(
+                        "task_bucket_ids batch size does not match images: "
+                        f"{task_ids.shape[0]} != {current_latent.shape[0]}"
+                    )
+                task_emb = self.task_embedding(task_ids)
+            else:
+                if instructions is None:
+                    raise ValueError(
+                        "Tensor replay requires task_bucket_ids for task conditioning."
+                    )
+                task_emb = self._embed_task(
+                    instructions, device=current_latent.device
+                )
+
+            predicted_delta = self.smooth_world_model.predictor(
+                current_latent, goal=task_emb, state=None
+            )
+            predicted_future_content = current_content + predicted_delta
+            predicted_future = self.smooth_world_model.projector.add_position(
+                predicted_future_content
+            )
+            action_latents = torch.cat([current_latent, predicted_future], dim=1)
+
+            current_state = None
+            if self.use_state_cond:
+                if state is not None:
+                    current_state = state.to(
+                        device=current_latent.device, dtype=torch.float32
+                    )
+                    if current_state.ndim == 3 and current_state.shape[1] == 1:
+                        current_state = current_state[:, 0]
+                    expected_dim = int(
+                        self.config.framework.world_model.get("state_cond_dim", 8)
+                    )
+                    if (
+                        current_state.ndim != 2
+                        or current_state.shape[-1] != expected_dim
+                    ):
+                        raise ValueError(
+                            "normalized state must have shape "
+                            f"[B,{expected_dim}], got {tuple(current_state.shape)}"
+                        )
+                elif examples is not None:
+                    current_state = self._current_state_tensor(
+                        examples, current_latent.device
+                    )
+                else:
+                    raise ValueError(
+                        "Tensor replay for a state-conditioned LeWM requires state."
+                    )
+
+            action_queries = self._pool_visual_tokens_to_action_queries(
+                action_latents, state=current_state
+            )
+            action_mean = self.action_model.predict_action(action_queries)
+
+        return {
+            "action_mean": action_mean,
+            "policy_features": action_queries,
+        }
+
     @torch.inference_mode()
     def predict_action(self, examples: List[dict], **kwargs) -> np.ndarray:
         if type(examples) is not list:
@@ -2005,54 +2150,16 @@ class LeWM_OFT(baseframework):
                 "the smooth spatial latent branch is world-model-only and is "
                 "not connected to the action head"
             )
-        instructions = [example["lang"] for example in examples]
-
-        train_obs_image_size = getattr(self.config.datasets.vla_data, "obs_image_size", None)
         if self.smooth_action_enabled:
-            frames_per_example = []
-            for example in examples:
-                current = to_pil_preserve(example["image"])
-                if train_obs_image_size:
-                    current = resize_images(
-                        current, target_size=train_obs_image_size
-                    )
-                frames_per_example.append([current])
-
-            with torch.autocast("cuda", dtype=torch.bfloat16):
-                patch_tokens = self.backbone.encode_patch_frames(
-                    frames_per_example
-                )
-            with torch.autocast("cuda", dtype=torch.float32):
-                current_latent, current_content = (
-                    self.smooth_world_model.projector(
-                        patch_tokens.float(), return_content=True
-                    )
-                )
-                task_emb = self._embed_task(
-                    instructions, device=current_latent.device
-                )
-                predicted_delta = self.smooth_world_model.predictor(
-                    current_latent, goal=task_emb, state=None
-                )
-                predicted_future_content = current_content + predicted_delta
-                predicted_future = self.smooth_world_model.projector.add_position(
-                    predicted_future_content
-                )
-                action_latents = torch.cat(
-                    [current_latent, predicted_future], dim=1
-                )
-                current_state = (
-                    self._current_state_tensor(examples, current_latent.device)
-                    if self.use_state_cond
-                    else None
-                )
-                action_queries = self._pool_visual_tokens_to_action_queries(
-                    action_latents, state=current_state
-                )
-                pred_actions = self.action_model.predict_action(action_queries)
+            policy_output = self.forward_policy_tensor(examples=examples)
             return {
-                "normalized_actions": pred_actions.detach().cpu().numpy()
+                "normalized_actions": policy_output["action_mean"].detach().cpu().numpy()
             }
+
+        instructions = [example["lang"] for example in examples]
+        train_obs_image_size = getattr(
+            self.config.datasets.vla_data, "obs_image_size", None
+        )
 
         inference_history_len = self.wm_ctx_len
         frames_per_example = []
