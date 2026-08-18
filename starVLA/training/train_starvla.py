@@ -34,7 +34,7 @@ except ImportError:
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import set_seed
+from accelerate.utils import GradientAccumulationPlugin, set_seed
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -67,7 +67,13 @@ def build_accelerator(cfg) -> Accelerator:
     # process.
     return Accelerator(
         deepspeed_plugin=DeepSpeedPlugin(),
-        gradient_accumulation_steps=gradient_accumulation_steps,
+        gradient_accumulation_plugin=GradientAccumulationPlugin(
+            num_steps=gradient_accumulation_steps,
+            # DeepSpeed ZeRO-2 partitions gradients and rejects no_sync().
+            # It performs accumulation internally, so keep synchronization
+            # enabled for every micro-batch.
+            sync_each_batch=True,
+        ),
         step_scheduler_with_optimizer=False,
     )
 

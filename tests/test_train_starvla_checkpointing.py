@@ -53,11 +53,13 @@ class CheckpointingTest(unittest.TestCase):
         result = build_accelerator(cfg)
 
         self.assertIs(result, accelerator.return_value)
-        accelerator.assert_called_once_with(
-            deepspeed_plugin=deepspeed_plugin.return_value,
-            gradient_accumulation_steps=4,
-            step_scheduler_with_optimizer=False,
-        )
+        accelerator.assert_called_once()
+        call_kwargs = accelerator.call_args.kwargs
+        self.assertIs(call_kwargs["deepspeed_plugin"], deepspeed_plugin.return_value)
+        self.assertFalse(call_kwargs["step_scheduler_with_optimizer"])
+        plugin = call_kwargs["gradient_accumulation_plugin"]
+        self.assertEqual(plugin.num_steps, 4)
+        self.assertTrue(plugin.sync_each_batch)
 
     def test_accelerator_rejects_nonpositive_gradient_accumulation(self):
         cfg = SimpleNamespace(
