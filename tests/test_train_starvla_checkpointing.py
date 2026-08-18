@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
+from accelerate import PartialState
 
-from starVLA.training.train_starvla import VLATrainer
+from starVLA.training.train_starvla import VLATrainer, build_accelerator
 
 
 class FakeAccelerator:
@@ -34,6 +35,38 @@ class FakeAccelerator:
 
 
 class CheckpointingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # The production entry point initializes Accelerator before using its
+        # multi-process logger; these unit tests call trainer methods directly.
+        PartialState()
+
+    @patch("starVLA.training.train_starvla.Accelerator")
+    @patch("starVLA.training.train_starvla.DeepSpeedPlugin")
+    def test_accelerator_uses_configured_gradient_accumulation(
+        self, deepspeed_plugin, accelerator
+    ):
+        cfg = SimpleNamespace(
+            trainer=SimpleNamespace(gradient_accumulation_steps=4)
+        )
+
+        result = build_accelerator(cfg)
+
+        self.assertIs(result, accelerator.return_value)
+        accelerator.assert_called_once_with(
+            deepspeed_plugin=deepspeed_plugin.return_value,
+            gradient_accumulation_steps=4,
+            step_scheduler_with_optimizer=False,
+        )
+
+    def test_accelerator_rejects_nonpositive_gradient_accumulation(self):
+        cfg = SimpleNamespace(
+            trainer=SimpleNamespace(gradient_accumulation_steps=0)
+        )
+
+        with self.assertRaisesRegex(ValueError, "must be positive"):
+            build_accelerator(cfg)
+
     def make_trainer(self, output_dir, is_resume=True, is_main_process=True):
         trainer = VLATrainer.__new__(VLATrainer)
         trainer.config = SimpleNamespace(

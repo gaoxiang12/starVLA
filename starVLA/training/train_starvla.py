@@ -47,17 +47,29 @@ from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
-deepspeed_plugin = DeepSpeedPlugin()
-# The trainer owns scheduler stepping below. Disabling Accelerate's automatic
-# coupling prevents AcceleratedScheduler from stepping once per process.
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin, step_scheduler_with_optimizer=False)
-accelerator.print(accelerator.state)
-
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Initialize logger
 logger = get_logger(__name__)
+
+
+def build_accelerator(cfg) -> Accelerator:
+    """Construct Accelerate after loading the configured accumulation factor."""
+    gradient_accumulation_steps = int(
+        getattr(cfg.trainer, "gradient_accumulation_steps", 1)
+    )
+    if gradient_accumulation_steps < 1:
+        raise ValueError("trainer.gradient_accumulation_steps must be positive")
+
+    # The trainer owns scheduler stepping below. Disabling Accelerate's
+    # automatic coupling prevents AcceleratedScheduler from stepping once per
+    # process.
+    return Accelerator(
+        deepspeed_plugin=DeepSpeedPlugin(),
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        step_scheduler_with_optimizer=False,
+    )
 
 
 def load_fast_tokenizer():
@@ -594,6 +606,8 @@ class VLATrainer(TrainerUtils):
 
 
 def main(cfg) -> None:
+    accelerator = build_accelerator(cfg)
+    accelerator.print(accelerator.state)
     logger.info("VLA Training :: Warming Up")
 
     cfg = wrap_config(cfg)
