@@ -55,3 +55,25 @@ Then launch the full recipe by omitting `STEPS` and choosing the desired GPU
 set. `unnorm_key` must be one of `franka`, `oxe_bridge`, or `aloha` at serving
 time so the server selects both the correct normalization statistics and ACT
 head.
+
+## Follow-up world-model capacity ablation
+
+After the `starvla_lewm_unified_pretrain_200k_20260818` baseline completes,
+run a medium-capacity LEWM-OFT comparison with:
+
+```yaml
+framework:
+  world_model:
+    visual_tokens_per_view: 25
+    residual_predictor_dim: 512
+    residual_predictor_depth: 6
+    residual_predictor_heads: 8
+    residual_predictor_ffn: 2048
+```
+
+Keep the ACT heads and all data/training settings unchanged so the comparison
+isolates world-model capacity. If compute permits an extra ablation, first run
+`25` tokens per view with the baseline `384`-dimensional, 4-layer predictor to
+separate spatial-token gains from transformer-capacity gains. Review
+`delta_to_copy_ratio` and `delta_direction_cosine` at the baseline 10k
+checkpoint before scheduling the comparison.
