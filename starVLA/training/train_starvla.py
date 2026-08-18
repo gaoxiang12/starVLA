@@ -426,9 +426,14 @@ class VLATrainer(TrainerUtils):
             step_metrics = self._train_step(batch_vla)
             t_end_model = time.perf_counter()
 
-            if self.accelerator.sync_gradients:
-                progress_bar.update(1)
-                self.completed_steps += 1
+            # DeepSpeed receives every micro-batch, but optimizer-step
+            # counters, evaluation, metrics, and checkpoints must advance only
+            # at the configured accumulation boundary.
+            if not self.accelerator.sync_gradients:
+                continue
+
+            progress_bar.update(1)
+            self.completed_steps += 1
 
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(
