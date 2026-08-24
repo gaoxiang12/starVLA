@@ -21,6 +21,7 @@ PROGRESS_MODE="${PROGRESS_MODE:-learned}"
 FIXED_PROGRESS="${FIXED_PROGRESS:-0.5}"
 PROGRESS_EMA="${PROGRESS_EMA:-}"
 RUN_VARIANT="${RUN_VARIANT:-}"
+UNNORM_KEY="${UNNORM_KEY:-}"
 LIBERO_HOME="${LIBERO_HOME:-${STARVLA_DIR}/playground/LIBERO}"
 PYTHON="${STARVLA_PYTHON:-${STARVLA_DIR}/.venv/bin/python}"
 
@@ -79,7 +80,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "[eval] ckpt=${CKPT} gpu=${GPU_ID} port=${PORT} trials_per_task=${NUM_TRIALS_PER_TASK} seed=${SEED} execute_horizon=${EXECUTE_TAG} progress_mode=${PROGRESS_MODE} fixed_progress=${FIXED_PROGRESS} progress_ema=${PROGRESS_EMA:-checkpoint}"
+echo "[eval] ckpt=${CKPT} gpu=${GPU_ID} port=${PORT} trials_per_task=${NUM_TRIALS_PER_TASK} seed=${SEED} execute_horizon=${EXECUTE_TAG} progress_mode=${PROGRESS_MODE} fixed_progress=${FIXED_PROGRESS} progress_ema=${PROGRESS_EMA:-checkpoint} unnorm_key=${UNNORM_KEY:-auto}"
 SERVER_CMD=(
   "${PYTHON}" deployment/model_server/server_policy.py
   --ckpt_path "${CKPT}" \
@@ -110,6 +111,9 @@ EVAL_CMD=(
 )
 if [[ "${TEMPORAL_ACTION_ENSEMBLE}" == "true" ]]; then
   EVAL_CMD+=(--args.temporal-action-ensemble)
+fi
+if [[ -n "${UNNORM_KEY}" ]]; then
+  EVAL_CMD+=(--args.unnorm-key "${UNNORM_KEY}")
 fi
 if [[ -n "${EXECUTE_HORIZON}" ]]; then
   EVAL_CMD+=(--args.execute-horizon "${EXECUTE_HORIZON}")

@@ -189,6 +189,18 @@ def make_LeRobotSingleDataset(
     dataset.future_time_offsets_s = getattr(
         data_config, "future_time_offsets_s", None
     )
+    action_absolute_overrides = getattr(
+        data_config, "action_absolute_overrides", {}
+    )
+    for action_key, absolute in action_absolute_overrides.items():
+        subkey = str(action_key).removeprefix("action.")
+        if subkey not in dataset.metadata.modalities.action:
+            raise KeyError(
+                f"action absolute override {action_key!r} is not present in "
+                f"dataset {data_name!r}"
+            )
+        dataset.metadata.modalities.action[subkey].absolute = bool(absolute)
+        dataset.lerobot_modality_meta.action[subkey].absolute = bool(absolute)
     return dataset
 
 def get_vla_dataset(

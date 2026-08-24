@@ -1432,6 +1432,7 @@ class LeRobotSingleDataset(Dataset):
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
         sample = self._pack_sample(data)
+        sample = self._attach_action_validity(sample, trajectory_id, base_index)
         sample = self._attach_future_frame_validity(
             sample, trajectory_id, base_index
         )
@@ -1530,6 +1531,44 @@ class LeRobotSingleDataset(Dataset):
                 state = np.concatenate(state, axis=1).astype(np.float16)
                 sample["state"] = state
 
+        return sample
+
+    def _attach_action_validity(
+        self, sample: dict, trajectory_id: int, base_index: int
+    ) -> dict:
+        """Expose which requested action offsets are real rather than padding."""
+
+        enabled = (
+            self.data_cfg is not None
+            and self.data_cfg.get("action_valid_mask", False) not in ["False", False]
+        )
+        if not enabled:
+            return sample
+        action_keys = self.modality_keys.get("action", [])
+        if not action_keys:
+            raise ValueError("action_valid_mask requires an action modality")
+        offsets = np.asarray(self.delta_indices[action_keys[0]], dtype=np.int64)
+        for action_key in action_keys[1:]:
+            key_offsets = np.asarray(self.delta_indices[action_key], dtype=np.int64)
+            if not np.array_equal(key_offsets, offsets):
+                raise ValueError(
+                    "action_valid_mask requires identical offsets for every action key; "
+                    f"got {action_keys[0]}={offsets.tolist()} and "
+                    f"{action_key}={key_offsets.tolist()}"
+                )
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        trajectory_length = int(self.trajectory_lengths[trajectory_index])
+        absolute_steps = offsets + int(base_index)
+        valid_mask = np.logical_and(
+            absolute_steps >= 0, absolute_steps < trajectory_length
+        )
+        action_horizon = np.asarray(sample["action"]).shape[0]
+        if len(valid_mask) != action_horizon:
+            raise ValueError(
+                "action validity length does not match packed action horizon: "
+                f"{len(valid_mask)} vs {action_horizon}"
+            )
+        sample["action_valid_mask"] = valid_mask
         return sample
 
     def _attach_future_frame_validity(
@@ -2608,6 +2647,9 @@ class LeRobotMixtureDataset(Dataset):
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
+                sample = dataset._attach_action_validity(
+                    sample, trajectory_id, step
+                )
                 sample = dataset._attach_future_frame_validity(
                     sample, trajectory_id, step
                 )

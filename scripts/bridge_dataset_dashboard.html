@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BridgeData V2 任务内容可视化 · starVLA</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-soft: #161b22;
+    --card: #1c2333;
+    --card-2: #212a3d;
+    --border: #2d3748;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #79c0ff;
+    --green: #3fb950;
+    --yellow: #d29922;
+    --purple: #bc8cff;
+    --pink: #f778ba;
+    --orange: #f0883e;
+    --cyan: #39c5cf;
+    --red: #f85149;
+    --mono: 'SF Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    line-height: 1.6;
+    padding-bottom: 60px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- header ---------- */
+  header {
+    padding: 48px 0 28px;
+    border-bottom: 1px solid var(--border);
+    background:
+      radial-gradient(600px 220px at 20% -10%, rgba(88,166,255,.16), transparent 60%),
+      radial-gradient(500px 200px at 85% -10%, rgba(188,140,255,.14), transparent 60%);
+  }
+  .badge {
+    display: inline-block; font-size: 12px; letter-spacing: 1px;
+    color: var(--accent-2); background: rgba(88,166,255,.12);
+    border: 1px solid rgba(88,166,255,.35); border-radius: 999px;
+    padding: 3px 12px; margin-bottom: 14px;
+  }
+  h1 { font-size: 34px; font-weight: 700; letter-spacing: -.5px; }
+  h1 .hl { color: var(--accent); }
+  .sub { color: var(--text-dim); margin-top: 8px; font-size: 15px; max-width: 820px; }
+  .sub code {
+    font-family: var(--mono); font-size: 13px; color: var(--accent-2);
+    background: rgba(88,166,255,.1); padding: 1px 6px; border-radius: 5px;
+  }
+
+  /* ---------- stats ---------- */
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px; margin: 26px 0 6px;
+  }
+  .stat {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .stat .num { font-size: 26px; font-weight: 700; color: var(--accent-2); }
+  .stat .num small { font-size: 14px; color: var(--text-dim); font-weight: 400; }
+  .stat .lbl { font-size: 12.5px; color: var(--text-dim); margin-top: 2px; }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 44px; }
+  .sec-title { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .sec-title .no {
+    width: 26px; height: 26px; border-radius: 8px; flex: none;
+    display: grid; place-items: center; font-size: 13px; font-weight: 700;
+    color: #0d1117; background: linear-gradient(135deg, var(--accent), var(--purple));
+  }
+  .sec-title h2 { font-size: 20px; }
+  .sec-desc { color: var(--text-dim); font-size: 13.5px; margin: 0 0 16px 36px; }
+  .sec-desc code {
+    font-family: var(--mono); font-size: 12px; color: var(--accent-2);
+    background: rgba(88,166,255,.1); padding: 1px 5px; border-radius: 4px;
+  }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px;
+  }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 14px; font-size: 12.5px; color: var(--text-dim); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; }
+  .legend b { color: var(--text); font-weight: 600; }
+
+  /* ---------- bars ---------- */
+  .bar-row { margin-bottom: 14px; }
+  .bar-top { display: flex; justify-content: space-between; font-size: 13.5px; margin-bottom: 5px; }
+  .bar-top .name { font-weight: 600; }
+  .bar-top .val { color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; }
+  .bar-track { height: 14px; background: rgba(255,255,255,.06); border-radius: 7px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 7px; width: 0; transition: width 1s cubic-bezier(.2,.7,.3,1); }
+
+  /* ---------- chips ---------- */
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+  .chip {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 10px 14px; font-size: 13.5px; min-width: 210px; flex: 1 1 210px;
+  }
+  .chip .ico { font-size: 20px; }
+  .chip .t { font-weight: 600; }
+  .chip .d { color: var(--text-dim); font-size: 12px; }
+  .chip code {
+    font-family: var(--mono); font-size: 11px; color: var(--accent-2);
+    background: rgba(88,166,255,.1); padding: 0 5px; border-radius: 4px; margin-left: auto;
+  }
+
+  /* ---------- language cards ---------- */
+  .lang-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .lang-card {
+    background: var(--card-2); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px; border-left: 3px solid var(--accent);
+  }
+  .lang-card .q { color: var(--accent-2); font-family: var(--mono); font-size: 12px; }
+  .lang-card .ins { font-size: 14.5px; margin-top: 3px; font-weight: 600; }
+  .lang-card .tag { display: inline-block; font-size: 11px; color: var(--text-dim); margin-top: 6px; }
+  .lang-card .tag b { color: var(--green); font-weight: 600; }
+
+  /* ---------- schema ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  td code, .k { font-family: var(--mono); font-size: 12.5px; color: var(--accent-2); background: rgba(88,166,255,.1); padding: 1px 6px; border-radius: 5px; }
+  tr:hover td { background: rgba(88,166,255,.05); }
+
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .pill.g { background: rgba(63,185,80,.15); color: var(--green); }
+  .pill.y { background: rgba(210,153,34,.15); color: var(--yellow); }
+  .pill.p { background: rgba(188,140,255,.15); color: var(--purple); }
+  .pill.c { background: rgba(57,197,207,.15); color: var(--cyan); }
+  .pill.o { background: rgba(240,136,62,.15); color: var(--orange); }
+
+  /* ---------- eval tasks ---------- */
+  .eval-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  .eval-card {
+    background: linear-gradient(160deg, var(--card-2), var(--card)); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; position: relative; overflow: hidden;
+  }
+  .eval-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, var(--accent), var(--purple), var(--pink));
+  }
+  .eval-card .task { font-size: 15.5px; font-weight: 700; color: var(--accent-2); font-family: var(--mono); }
+  .eval-card .zh { font-size: 13px; color: var(--text); margin-top: 2px; }
+  .eval-card .meta { margin-top: 10px; font-size: 12px; color: var(--text-dim); }
+  .eval-card .meta code { font-family: var(--mono); font-size: 11.5px; color: var(--pink); }
+
+  .foot {
+    margin-top: 50px; padding-top: 18px; border-top: 1px solid var(--border);
+    color: var(--text-dim); font-size: 12.5px;
+  }
+  .foot a { color: var(--accent); text-decoration: none; }
+  .foot a:hover { text-decoration: underline; }
+
+  .note {
+    background: rgba(210,153,34,.08); border: 1px solid rgba(210,153,34,.3);
+    border-radius: 10px; padding: 12px 16px; font-size: 13px; color: var(--yellow); margin-top: 14px;
+  }
+  .note code { font-family: var(--mono); font-size: 12px; }
+
+  /* donut */
+  .donut-wrap { display: flex; align-items: center; gap: 28px; flex-wrap: wrap; }
+  .donut-legend { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+  .donut-legend .row { display: flex; align-items: center; gap: 8px; }
+  .donut-legend .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .donut-legend .cnt { font-family: var(--mono); font-size: 12px; color: var(--text-dim); }
+  .donut-legend .pct { font-family: var(--mono); font-size: 12px; color: var(--accent-2); margin-left: auto; }
+
+  /* ---------- videos ---------- */
+  .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .video-card { background: var(--card-2); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; transition: border-color .2s; }
+  .video-card:hover { border-color: var(--accent); }
+  .video-card video { width: 100%; display: block; background: #000; aspect-ratio: 4/3; }
+  .video-card .v-meta { padding: 10px 14px; }
+  .video-card .v-en { font-size: 13px; font-weight: 600; }
+  .video-card .v-zh { font-size: 12px; color: var(--text-dim); margin-top: 1px; }
+  .video-card .v-zh b { color: var(--green); font-weight: 600; }
+
+  .eval-video-block { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; margin-bottom: 16px; background: var(--card); }
+  .eval-video-block .ev-head { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .eval-video-block .ev-title { font-size: 14px; font-weight: 700; font-family: var(--mono); color: var(--accent-2); }
+  .eval-video-block .ev-zh { font-size: 12.5px; color: var(--text-dim); }
+  .eval-video-block .ev-zh .sep { margin: 0 6px; color: var(--border); }
+  .ev-methods { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .ev-method {
+    font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); color: var(--text-dim); background: transparent;
+    font-family: var(--mono); transition: all .15s;
+  }
+  .ev-method:hover { border-color: var(--accent); color: var(--accent-2); }
+  .ev-method.active { background: rgba(88,166,255,.15); border-color: var(--accent); color: var(--accent-2); font-weight: 700; }
+  .ev-stage { padding: 14px 16px; }
+  .ev-stage video { width: 100%; max-height: 460px; background: #000; border-radius: 10px; }
+  .ev-stage .ev-caption { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+  .ev-stage .ev-caption code { font-family: var(--mono); font-size: 11.5px; color: var(--pink); }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  section { animation: fadeUp .5s ease both; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <span class="badge">DATASET OVERVIEW · starVLA</span>
+    <h1>BridgeData V2 <span class="hl">任务内容</span>可视化</h1>
+    <p class="sub">
+      BridgeData V2 是 starVLA 训练使用的核心真实操作数据集之一（数据源
+      <code>bridge_orig_1.0.0_lerobot</code>，机器人类型 <code>oxe_bridge</code>）。
+      以下基于官方 <a href="https://rail-berkeley.github.io/bridgedata/" style="color:var(--accent)">rail-berkeley/bridgedata</a>
+      元数据展示其任务构成。
+    </p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ================= stats ================= -->
+  <div class="stats">
+    <div class="stat"><div class="num">60,096<small> 条</small></div><div class="lbl">轨迹总量</div></div>
+    <div class="stat"><div class="num">50,365</div><div class="lbl">遥操作演示 (VR)</div></div>
+    <div class="stat"><div class="num">9,731</div><div class="lbl">脚本化 pick-and-place</div></div>
+    <div class="stat"><div class="num">24<small> 个</small></div><div class="lbl">环境 / 4 大类</div></div>
+    <div class="stat"><div class="num">13<small> 种</small></div><div class="lbl">技能类型</div></div>
+    <div class="stat"><div class="num">2<small> 台</small></div><div class="lbl">WidowX 250 机械臂</div></div>
+  </div>
+
+  <!-- ================= 1. task distribution ================= -->
+  <section id="tasks">
+    <div class="sec-title"><span class="no">1</span><h2>任务 / 技能分布（按轨迹数）</h2></div>
+    <p class="sec-desc">官方 tasks.svg 统计：基础物体操作占比最高，另有环境操作、布料、积木堆叠与颗粒清扫等。</p>
+    <div class="card">
+      <div class="grid2">
+        <div id="barChart"></div>
+        <div class="donut-wrap">
+          <div id="donut"></div>
+          <div class="donut-legend" id="donutLegend"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 2. skills chips ================= -->
+  <section id="skills">
+    <div class="sec-title"><span class="no">2</span><h2>任务技能类型一览</h2></div>
+    <p class="sec-desc">数据集覆盖从基础抓放到复杂操作的多种技能；语言指令标注在每条轨迹上。</p>
+    <div class="chips">
+      <div class="chip"><span class="ico">🤏</span><div><div class="t">Pick &amp; Place 抓放</div><div class="d">put X on/in Y —— 最大占比</div></div><code>34.5k</code></div>
+      <div class="chip"><span class="ico">🏠</span><div><div class="t">环境操作</div><div class="d">开门 / 关抽屉等</div></div><code>3.3k</code></div>
+      <div class="chip"><span class="ico">🧹</span><div><div class="t">颗粒清扫</div><div class="d">sweep granular media</div></div><code>1.1k</code></div>
+      <div class="chip"><span class="ico">🧺</span><div><div class="t">布料操作</div><div class="d">折布 / 移布</div></div><code>3.0k</code></div>
+      <div class="chip"><span class="ico">🧱</span><div><div class="t">积木堆叠</div><div class="d">stack blocks</div></div><code>2.8k</code></div>
+      <div class="chip"><span class="ico">🔄</span><div><div class="t">混合操作</div><div class="d">物体 + 环境 / 布料混合</div></div><code>5.2k</code></div>
+    </div>
+  </section>
+
+  <!-- ================= 3. language examples ================= -->
+  <section id="lang">
+    <div class="sec-title"><span class="no">3</span><h2>语言指令示例</h2></div>
+    <p class="sec-desc">每条轨迹带一条自然语言标注，来自官方示例与评测任务。</p>
+    <div class="lang-grid" id="langGrid"></div>
+  </section>
+
+  <!-- ================= 4. environments ================= -->
+  <section id="env">
+    <div class="sec-title"><span class="no">4</span><h2>环境构成</h2></div>
+    <p class="sec-desc">24 个环境分为 4 大类，其中 <b style="color:var(--green)">7 个玩具厨房</b>贡献了绝大部分数据。</p>
+    <div class="grid2">
+      <div class="card">
+        <table>
+          <tr><th>环境大类</th><th>说明</th><th>规模</th></tr>
+          <tr><td><span class="pill g">Toy Kitchen</span></td><td>玩具厨房：水槽 / 灶台 / 微波炉</td><td class="k">7 个</td></tr>
+          <tr><td><span class="pill y">Tabletop</span></td><td>各种桌面场景</td><td class="k">多类</td></tr>
+          <tr><td><span class="pill p">Standalone Sink</span></td><td>独立玩具水槽</td><td class="k">若干</td></tr>
+          <tr><td><span class="pill c">其他</span></td><td>玩具洗衣机等</td><td class="k">若干</td></tr>
+        </table>
+      </div>
+      <div class="card">
+        <table>
+          <tr><th>相机视角</th><th>说明</th></tr>
+          <tr><td><span class="k">over-the-shoulder</span></td><td>固定主相机 (RGBD, 640×480)</td></tr>
+          <tr><td><span class="k">randomized ×2</span></td><td>每 50 条轨迹随机化位姿的 RGB</td></tr>
+          <tr><td><span class="k">wrist</span></td><td>腕部广角 RGB（后期加入）</td></tr>
+          <tr><td><span class="k">depth</span></td><td>与主相机同视角（部分数据）</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="note">💡 大部分早期数据只有主相机视角，后期才陆续加入腕部 / 随机化视角 —— 这也解释了 starVLA 默认只用 <code>video.image_0</code>。</div>
+  </section>
+
+  <!-- ================= 5. starVLA schema ================= -->
+  <section id="schema">
+    <div class="sec-title"><span class="no">5</span><h2>starVLA 中的数据格式</h2></div>
+    <p class="sec-desc">来自 <code>starVLA/dataloader/gr00t_lerobot/data_config.py</code> 的 <code>OxeBridgeDataConfig</code>。</p>
+    <div class="card">
+      <table>
+        <tr><th>模态</th><th>字段</th><th>维度 / 说明</th></tr>
+        <tr><td>📹 视频</td><td><span class="k">video.image_0</span></td><td>主相机观测（UnifiedPretrain 用 image_0/1/2 三路）</td></tr>
+        <tr><td>📐 状态</td><td><span class="k">state.x/y/z/roll/pitch/yaw/pad/gripper</span></td><td>8 维 EEF 位姿 + 夹爪</td></tr>
+        <tr><td>🎯 动作</td><td><span class="k">action.x/y/z/roll/pitch/yaw/gripper</span></td><td>7 维增量动作，预测未来 16 步</td></tr>
+        <tr><td>💬 语言</td><td><span class="k">annotation.human.action.task_description</span></td><td>任务指令文本</td></tr>
+        <tr><td>🤖 本体</td><td><span class="k">oxe_bridge</span> (index 18)</td><td>WidowX，5 Hz 控制</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= 6. usage ================= -->
+  <section id="usage">
+    <div class="sec-title"><span class="no">6</span><h2>starVLA 中的训练与评测</h2></div>
+    <p class="sec-desc">数据混合与 SimplerEnv WidowX 评测任务。</p>
+    <div class="grid2">
+      <div class="card">
+        <h3 style="font-size:15px;margin-bottom:12px">📦 数据混合 (data_mix)</h3>
+        <div class="chips" style="flex-direction:column">
+          <div class="chip"><div><div class="t">bridge</div><div class="d">仅 Bridge 数据</div></div><code>bridge_orig_1.0.0_lerobot</code></div>
+          <div class="chip"><div><div class="t">bridge_rt_1</div><div class="d">Bridge + RT-1 Fractal 混合</div></div><code>+ fractal20220817_data</code></div>
+        </div>
+        <div class="note" style="margin-top:14px">🏆 多数 StarVLA 权重使用 <code>bridge_rt_1</code>：如 Qwen3VL-PI_v3（WidowX 成功率 <b style="color:var(--green)">69.8%</b>）。</div>
+      </div>
+      <div class="card">
+        <h3 style="font-size:15px;margin-bottom:12px">🧪 SimplerEnv WidowX 评测（4 任务）</h3>
+        <div class="eval-grid" id="evalGrid" style="grid-template-columns:1fr"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 7. videos ================= -->
+  <section id="videos">
+    <div class="sec-title"><span class="no">7</span><h2>任务视频</h2></div>
+    <p class="sec-desc">下方视频直接来自官方站点（2x 加速），点击播放即可查看任务内容。</p>
+
+    <h3 style="font-size:15px;margin:4px 0 12px 36px">🎬 真实数据演示（20 个 · 含 Bridge v1/v2、Flap、ICRA、RSS）</h3>
+    <div class="video-grid" id="teaserGrid"></div>
+
+    <h3 style="font-size:15px;margin:28px 0 12px 36px">🧪 评测视频（seen / unseen 任务 × 各方法 rollout）</h3>
+    <div id="evalVideoList"></div>
+  </section>
+
+  <div class="foot">
+    数据来源：<a href="https://rail-berkeley.github.io/bridgedata/">BridgeData V2 官方主页</a> ·
+    <a href="https://arxiv.org/abs/2308.12952">论文</a> ·
+    <a href="https://huggingface.co/datasets/IPEC-COMMUNITY/bridge_orig_lerobot">bridge_orig_lerobot (HF)</a> ·
+    starVLA 配置见 <span style="font-family:var(--mono)">starVLA/dataloader/gr00t_lerobot/</span>
+  </div>
+</div>
+
+<script>
+/* ============ 数据 ============ */
+const TASK_DATA = [
+  { name: 'Object Manipulation',        label: '物体操作',  value: 34509, color: '#58a6ff' },
+  { name: 'Environment Manipulation',   label: '环境操作',  value:  3343, color: '#3fb950' },
+  { name: 'Mixed Object & Environment', label: '物体+环境', value:  3119, color: '#d29922' },
+  { name: 'Cloth Manipulation',         label: '布料操作',  value:  2960, color: '#f778ba' },
+  { name: 'Block Stacking',             label: '积木堆叠',  value:  2769, color: '#bc8cff' },
+  { name: 'Mixed Object & Cloth',       label: '物体+布料', value:  2086, color: '#39c5cf' },
+  { name: 'Granular Sweeping',          label: '颗粒清扫',  value:  1136, color: '#f0883e' },
+  { name: 'Other',                      label: '其他',      value:   498, color: '#8b949e' },
+];
+const TOTAL = TASK_DATA.reduce((s, d) => s + d.value, 0);
+
+const LANGS = [
+  { ins: 'put the carrot on the plate',      cat: '物体操作' },
+  { ins: 'put the mushroom in the pot',       cat: '物体操作' },
+  { ins: 'put the cylinder on red cube',      cat: '堆叠' },
+  { ins: 'flip the pot upright',              cat: '翻转' },
+  { ins: 'move the cloth to the left',        cat: '布料操作' },
+  { ins: 'put the spoon on the tablecloth',   cat: '物体操作 · 评测' },
+  { ins: 'stack the green block on the yellow block', cat: '堆叠 · 评测' },
+  { ins: 'put the eggplant in the basket',    cat: '物体操作 · 评测' },
+];
+
+const EVAL_TASKS = [
+  { task: 'put_spoon_on_tablecloth',  zh: '把勺子放到桌布上',  scene: 'bridge_table_1_v1' },
+  { task: 'put_carrot_on_plate',      zh: '把胡萝卜放到盘子里', scene: 'bridge_table_1_v1' },
+  { task: 'stack_green_block_on_yellow_block', zh: '把绿色积木叠到黄色积木上', scene: 'bridge_table_1_v1' },
+  { task: 'put_eggplant_in_basket',   zh: '把茄子放进篮子',   scene: 'bridge_table_1_v2' },
+];
+
+/* ============ 渲染：横向条形图 ============ */
+const barChart = document.getElementById('barChart');
+const maxV = TASK_DATA[0].value;
+barChart.innerHTML = TASK_DATA.map((d, i) => `
+  <div class="bar-row">
+    <div class="bar-top">
+      <span class="name">${d.name}</span>
+      <span class="val">${d.value.toLocaleString()} · ${(d.value / TOTAL * 100).toFixed(1)}%</span>
+    </div>
+    <div class="bar-track">
+      <div class="bar-fill" data-w="${d.value / maxV * 100}" style="background:${d.color}"></div>
+    </div>
+  </div>
+`).join('');
+
+/* ============ 渲染：环形图 ============ */
+function drawDonut() {
+  const size = 210, cx = size / 2, cy = size / 2, r = 76, stroke = 26;
+  const circ = 2 * Math.PI * r;
+  let acc = 0;
+  const arcs = TASK_DATA.map((d, i) => {
+    const frac = d.value / TOTAL;
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    el.setAttribute('cx', cx); el.setAttribute('cy', cy); el.setAttribute('r', r);
+    el.setAttribute('fill', 'none'); el.setAttribute('stroke', d.color);
+    el.setAttribute('stroke-width', stroke);
+    el.setAttribute('stroke-dasharray', `${frac * circ} ${circ}`);
+    el.setAttribute('stroke-dashoffset', -acc * circ);
+    el.setAttribute('transform', `rotate(-90 ${cx} ${cy})`);
+    el.style.opacity = '0';
+    el.style.transition = `opacity .5s ease ${i * 0.06}s, stroke-dasharray 1s ease ${i * 0.06}s`;
+    acc += frac;
+    return el;
+  });
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('width', size); svg.setAttribute('height', size); svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+  arcs.forEach(a => svg.appendChild(a));
+  const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t.setAttribute('x', cx); t.setAttribute('y', cy - 4); t.setAttribute('text-anchor', 'middle');
+  t.setAttribute('fill', '#e6edf3'); t.setAttribute('font-size', '22'); t.setAttribute('font-weight', '700');
+  t.textContent = TOTAL.toLocaleString();
+  const t2 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  t2.setAttribute('x', cx); t2.setAttribute('y', cy + 18); t2.setAttribute('text-anchor', 'middle');
+  t2.setAttribute('fill', '#8b949e'); t2.setAttribute('font-size', '11');
+  t2.textContent = 'trajectories';
+  svg.appendChild(t); svg.appendChild(t2);
+  document.getElementById('donut').appendChild(svg);
+
+  document.getElementById('donutLegend').innerHTML = TASK_DATA.map(d => `
+    <div class="row">
+      <span class="sw" style="background:${d.color}"></span>
+      <span>${d.label}</span>
+      <span class="cnt">${d.value.toLocaleString()}</span>
+      <span class="pct">${(d.value / TOTAL * 100).toFixed(1)}%</span>
+    </div>
+  `).join('');
+
+  requestAnimationFrame(() => requestAnimationFrame(() => arcs.forEach(a => a.style.opacity = '1')));
+}
+
+/* ============ 语言指令 ============ */
+document.getElementById('langGrid').innerHTML = LANGS.map(l => `
+  <div class="lang-card">
+    <div class="q">“</div>
+    <div class="ins">${l.ins}</div>
+    <div class="tag"><b>#</b> ${l.cat}</div>
+  </div>
+`).join('');
+
+/* ============ 评测任务 ============ */
+document.getElementById('evalGrid').innerHTML = EVAL_TASKS.map(t => `
+  <div class="eval-card">
+    <div class="task">${t.task}</div>
+    <div class="zh">${t.zh}</div>
+    <div class="meta">场景 <code>${t.scene}</code></div>
+  </div>
+`).join('');
+
+/* ============ 动画 ============ */
+requestAnimationFrame(() => requestAnimationFrame(() => {
+  document.querySelectorAll('.bar-fill').forEach(b => { b.style.width = b.dataset.w + '%'; });
+}));
+drawDonut();
+
+/* ============ 视频 ============ */
+const V_BASE = 'https://rail-berkeley.github.io/bridgedata/';
+const TEASER_VIDEOS = [
+  { f: 'bridge_data_v2_deepthought_folding_table_stack_blocks_01',       en: 'stack blocks',                  zh: '堆叠积木', v: 'v2' },
+  { f: 'bridge_data_v2_datacol2_toykitchen7_drawer_pnp_01',              en: 'drawer pick-and-place',         zh: '抽屉抓放', v: 'v2' },
+  { f: 'bridge_data_v2_datacol2_toykitchen7_sweep_granular_00',          en: 'sweep granular',                zh: '清扫颗粒', v: 'v2' },
+  { f: 'bridge_data_v2_datacol2_folding_table_fold_cloth_pnp_01',        en: 'fold cloth',                    zh: '折布', v: 'v2' },
+  { f: 'bridge_data_v2_datacol2_tabletop_dark_wood_many_skills_00',      en: 'many skills on dark wood tabletop', zh: '深色桌面 · 多种技能', v: 'v2' },
+  { f: 'bridge_data_v1_berkeley_toykitchen1_put_banana_on_plate',        en: 'put banana on plate',          zh: '把香蕉放到盘子上', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toykitchen4_put_banana_in_pot_or_pan',   en: 'put banana in pot/pan',        zh: '把香蕉放进锅 / 平底锅', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toykitchen2_room8052_flip_salt_upright', en: 'flip salt upright',            zh: '把盐瓶扶正', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toykitchen6_put_beet_in_pot_sink',       en: 'put beet in pot (sink)',       zh: '把甜菜放进锅里', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toykitchen5_close_cabinet',              en: 'close cabinet',                zh: '关上橱柜', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toysink1_room8052_flip_pot_upright_which_is_in_sink', en: 'flip pot upright in sink', zh: '把水槽里的锅扶正', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toysink2_bww_put_knife_on_cutting_board',en: 'put knife on cutting board',   zh: '把刀放到砧板上', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_realkitchen1_counter_pick_up_sponge_and_wipe_plate', en: 'pick up sponge and wipe plate', zh: '拿起海绵擦盘子', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_realkitchen1_dishwasher_pick_up_any_cup',en: 'pick up any cup',              zh: '从洗碗机拿起杯子', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_laundry_machine_put_clothes_in_laundry_machine', en: 'put clothes in laundry machine', zh: '把衣服放进洗衣机', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_tool_chest_pick_up_closest_rainbow_Allen_key_set', en: 'pick up Allen key set', zh: '拿起内六角扳手套装', v: 'v1' },
+  { f: 'bridge_data_v1_berkeley_toykitchen2_room8052_turn_lever_vertical_to_front', en: 'turn lever to front', zh: '把旋钮转到前面', v: 'v1' },
+  { f: 'rss_toykitchen2_set_table_00',                                    en: 'set table',                     zh: '摆桌子', v: 'rss' },
+  { f: 'icra_toykitchen_fixed_cam_resetfree_push_sweep_toykitchen6_00',   en: 'push & sweep',                  zh: '推 + 扫', v: 'icra' },
+  { f: 'flap_toykitchen_sequential_tasks_toykitchen2_put_blueberry_on_plate_and_spoon_in_pot_or_pan_in_sink', en: 'sequential tasks', zh: '连续任务：蓝莓放盘 + 勺子入锅', v: 'flap' },
+];
+
+const METHOD_NAMES = { gcbc: 'GCBC', ddpm: 'D-GCBC', crl: 'CRL', act: 'ACT', lcbc: 'LCBC', rt1: 'RT-1' };
+const EVAL_VIDEOS = [
+  { key: 'beans',        title: 'beans',                     zh: '豆子',           seen: true,  goal: true,  files: { gcbc:'success', ddpm:'success', crl:'success', act:'success' } },
+  { key: 'pnp',          title: 'pick-and-place',            zh: '抓放',           seen: true,  goal: true,  files: { gcbc:'success', ddpm:'success', crl:'success', act:'success' } },
+  { key: 'drawer',       title: 'open drawer',               zh: '开抽屉',         seen: true,  goal: true,  files: { gcbc:'success', ddpm:'success', crl:'success', act:'success' } },
+  { key: 'rice',         title: 'rice',                      zh: '米粒',           seen: false, goal: true,  files: { gcbc:'success', ddpm:'success', crl:'success', act:'success' } },
+  { key: 'unseen_pnp',   title: 'unseen pick-and-place',     zh: '未见物体抓放',   seen: false, goal: true,  files: { gcbc:'success', ddpm:'fail',    crl:'success', act:'success' } },
+  { key: 'unseen_cloth', title: 'unseen cloth',              zh: '未见布料操作',   seen: false, goal: true,  files: { gcbc:'fail',    ddpm:'success', crl:'success', act:'success' } },
+  { key: 'carrot',       title: 'put the carrot on the plate', zh: '把胡萝卜放到盘子上', seen: true,  goal: false, files: { lcbc:'success', rt1:'success' } },
+  { key: 'flip_pot',     title: 'flip the pot upright',      zh: '把锅扶正',       seen: true,  goal: false, files: { lcbc:'fail',    rt1:'success' } },
+  { key: 'mushroom',     title: 'put the mushroom in the pot', zh: '把蘑菇放进锅里', seen: false, goal: false, files: { lcbc:'fail',    rt1:'success' } },
+  { key: 'wipe_cloth',   title: 'move the cloth to the left',  zh: '把布移到左边',  seen: false, goal: false, files: { lcbc:'success', rt1:'success' } },
+];
+
+/* 预告片网格 */
+document.getElementById('teaserGrid').innerHTML = TEASER_VIDEOS.map(t => `
+  <div class="video-card">
+    <video controls preload="none"
+      poster="${V_BASE}teaser_videos/${t.f}.jpg">
+      <source src="${V_BASE}teaser_videos/${t.f}.mp4" type="video/mp4">
+    </video>
+    <div class="v-meta">
+      <div class="v-en">${t.en}</div>
+      <div class="v-zh"><b>${t.v}</b> · ${t.zh}</div>
+    </div>
+  </div>
+`).join('');
+
+/* 评测视频：每个任务一个块，方法 tab 切换 */
+const evalList = document.getElementById('evalVideoList');
+EVAL_VIDEOS.forEach(ev => {
+  const block = document.createElement('div');
+  block.className = 'eval-video-block';
+  const methods = Object.keys(ev.files);
+  const poster = ev.goal ? `poster="${V_BASE}goals/${ev.key}.jpg"` : '';
+  const order = ev.goal ? ['gcbc','ddpm','crl','act'] : ['lcbc','rt1'];
+  block.innerHTML = `
+    <div class="ev-head">
+      <span class="ev-title">${ev.title}</span>
+      <span class="ev-zh"><span class="pill ${ev.seen ? 'g' : 'y'}">${ev.seen ? 'seen' : 'unseen'}</span><span class="sep"></span>${ev.zh}<span class="sep"></span>${ev.goal ? '目标条件' : '语言条件'}</span>
+      <div class="ev-methods">
+        ${order.map(m => `<button class="ev-method ${m === methods[0] ? 'active' : ''}" data-m="${m}">${METHOD_NAMES[m]}</button>`).join('')}
+      </div>
+    </div>
+    <div class="ev-stage">
+      <video controls preload="none" ${poster}></video>
+      <div class="ev-caption"></div>
+    </div>`;
+  const video = block.querySelector('video');
+  const cap = block.querySelector('.ev-caption');
+  const src0 = `${V_BASE}videos_2x/${ev.key}/${methods[0]}_${ev.files[methods[0]]}.mp4`;
+  video.src = src0;
+  cap.innerHTML = `当前：<code>${methods[0]}_${ev.files[methods[0]]}.mp4</code>（2x 加速）`;
+  block.querySelectorAll('.ev-method').forEach(btn => {
+    btn.addEventListener('click', () => {
+      block.querySelectorAll('.ev-method').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const m = btn.dataset.m;
+      video.src = `${V_BASE}videos_2x/${ev.key}/${m}_${ev.files[m]}.mp4`;
+      cap.innerHTML = `当前：<code>${m}_${ev.files[m]}.mp4</code>（2x 加速）`;
+      video.play().catch(() => {});
+    });
+  });
+  evalList.appendChild(block);
+});
+</script>
+</body>
+</html>

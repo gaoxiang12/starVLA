@@ -339,12 +339,18 @@ class VisualTokenLatentWorldModel(nn.Module):
         context_correction_ffn_dim: int = 1024,
         sigreg_weight: float = 0.0,
         stats_momentum: float = 0.99,
+        detach_input: bool = False,
     ) -> None:
         super().__init__()
         self.n_future = int(n_future)
         self.num_tokens = int(num_tokens)
         self.context_len = int(context_len)
         self.stats_momentum = float(stats_momentum)
+        # When true, the world-model objective sees a detached context/anchor:
+        # the latent loss then trains only the predictor instead of letting the
+        # encoder/pooler lower it by erasing temporal variation (representation
+        # collapse toward "current == future").
+        self.detach_input = bool(detach_input)
         self._stats_eps = 1e-4
         self.residual_predictor = TokenResidualPredictor(
             latent_dim=latent_dim,
@@ -398,8 +404,21 @@ class VisualTokenLatentWorldModel(nn.Module):
         return module
 
     @torch.no_grad()
-    def _update_delta_scale(self, residual: torch.Tensor) -> None:
-        rms = residual.float().square().mean().clamp_min(self._stats_eps).sqrt()
+    def _update_delta_scale(
+        self,
+        residual: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> None:
+        if mask is not None:
+            # Masked RMS: invalid (blank) view tokens have zero residuals and
+            # must not dilute the running normalizer.
+            weights = mask.to(device=residual.device, dtype=torch.float32)
+            denominator = (weights.sum() * residual.shape[-1]).clamp_min(1.0)
+            rms = (
+                (residual.float().square() * weights).sum() / denominator
+            ).clamp_min(self._stats_eps).sqrt()
+        else:
+            rms = residual.float().square().mean().clamp_min(self._stats_eps).sqrt()
         if float(self._delta_scale_ready) < 1.0:
             self.delta_scale.fill_(float(rms))
             self._delta_scale_ready.fill_(1.0)
@@ -464,6 +483,7 @@ class VisualTokenLatentWorldModel(nn.Module):
         scale: torch.Tensor,
         goal: Optional[torch.Tensor],
         state: Optional[torch.Tensor],
+        loss_mask: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
         """Supervise steps 2..K of a rollout that re-anchors on predictions.
 
@@ -472,6 +492,9 @@ class VisualTokenLatentWorldModel(nn.Module):
         """
         current = latent[:, ctx_len - 1 : ctx_len]
         window = latent[:, :ctx_len]
+        if self.detach_input:
+            current = current.detach()
+            window = window.detach()
         losses: dict[str, torch.Tensor] = {}
         total = latent.new_zeros(())
         for step in range(int(rollout_steps)):
@@ -484,26 +507,68 @@ class VisualTokenLatentWorldModel(nn.Module):
             predicted_future = anchor + predicted_delta * scale
             start = ctx_len + step * self.n_future
             true_future = latent[:, start : start + self.n_future]
+            step_mask = (
+                loss_mask[:, start : start + self.n_future].unsqueeze(-1)
+                if loss_mask is not None
+                else None
+            )
+            channels = predicted_future.shape[-1]
             if step > 0:
                 # Match the smooth-latent branch: supervise the unnormalized
                 # future latent directly.  ``delta_scale`` remains an internal
                 # predictor parameterization and checkpoint-compatible running
                 # statistic, but it no longer changes the loss units.
-                step_loss = (
-                    predicted_future.float() - true_future.detach().float()
-                ).square().mean()
+                if step_mask is not None:
+                    weights = step_mask.to(dtype=predicted_future.dtype)
+                    step_loss = (
+                        (predicted_future.float() - true_future.detach().float())
+                        .square()
+                        .mul(weights)
+                        .sum()
+                        / (weights.sum() * channels).clamp_min(1.0)
+                    )
+                else:
+                    step_loss = (
+                        predicted_future.float() - true_future.detach().float()
+                    ).square().mean()
                 total = total + step_loss
                 losses[f"rollout_latent_loss_step_{step + 1}"] = step_loss
             with torch.no_grad():
-                error = (predicted_future.float() - true_future.float()).square().mean()
-                copy = (current.float() - true_future.float()).square().mean()
+                if step_mask is not None:
+                    weights = step_mask.to(dtype=torch.float32)
+                    denominator = (weights.sum() * channels).clamp_min(1.0)
+                    error = (
+                        (predicted_future.float() - true_future.float())
+                        .square()
+                        .mul(weights)
+                        .sum()
+                        / denominator
+                    )
+                    copy = (
+                        (current.float() - true_future.float())
+                        .square()
+                        .mul(weights)
+                        .sum()
+                        / denominator
+                    )
+                    pred_shift = predicted_future.float().mul(weights)
+                    true_shift = true_future.float().mul(weights)
+                    cur_shift = current.float().mul(weights)
+                else:
+                    error = (
+                        predicted_future.float() - true_future.float()
+                    ).square().mean()
+                    copy = (current.float() - true_future.float()).square().mean()
+                    pred_shift = predicted_future.float()
+                    true_shift = true_future.float()
+                    cur_shift = current.float()
                 losses[f"rollout_to_copy_ratio_step_{step + 1}"] = error / copy.clamp_min(
                     1e-8
                 )
                 losses[f"rollout_direction_cosine_step_{step + 1}"] = (
                     F.cosine_similarity(
-                        (predicted_future - current).float().flatten(2),
-                        (true_future - current).float().flatten(2),
+                        (pred_shift - cur_shift).flatten(2),
+                        (true_shift - cur_shift).flatten(2),
                         dim=-1,
                         eps=1e-8,
                     ).mean()
@@ -523,6 +588,7 @@ class VisualTokenLatentWorldModel(nn.Module):
         state: Optional[torch.Tensor] = None,
         update_stats: bool = True,
         rollout_steps: int = 1,
+        loss_mask: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
         batch_size, total_frames, num_tokens = latent.shape[:3]
         if num_tokens != self.num_tokens:
@@ -542,21 +608,45 @@ class VisualTokenLatentWorldModel(nn.Module):
                 f"{self.n_future * rollout_steps} future frames, "
                 f"got {total_frames - ctx_len}"
             )
+        if loss_mask is not None:
+            if tuple(loss_mask.shape) != (batch_size, total_frames, num_tokens):
+                raise ValueError(
+                    "expected loss_mask shape "
+                    f"{(batch_size, total_frames, num_tokens)}, "
+                    f"got {tuple(loss_mask.shape)}"
+                )
+            if loss_mask.dtype != torch.bool and loss_mask.dtype != torch.float32:
+                raise ValueError(
+                    f"loss_mask must be bool or float32, got {loss_mask.dtype}"
+                )
+        context = latent[:, :ctx_len]
         anchor = latent[:, ctx_len - 1 : ctx_len]
+        if self.detach_input:
+            # The world-model objective must train the predictor, not reshape
+            # the encoder/pooler so that "current == future" becomes trivially
+            # true (representation collapse).
+            context = context.detach()
+            anchor = anchor.detach()
         future = latent[:, ctx_len : ctx_len + self.n_future]
         residual = (future - anchor).detach()
+        if loss_mask is not None:
+            residual_mask = loss_mask[
+                :, ctx_len : ctx_len + self.n_future
+            ].unsqueeze(-1)
+        else:
+            residual_mask = None
         if self.training and update_stats:
-            self._update_delta_scale(residual)
+            self._update_delta_scale(residual, mask=residual_mask)
 
         scale = self.delta_scale.clamp_min(self._stats_eps)
         base_predicted_delta = self.residual_predictor(
-            latent[:, :ctx_len], goal=goal, state=state
+            context, goal=goal, state=state
         )
         correction = None
         predicted_delta = base_predicted_delta
         if self.context_correction is not None:
             correction = self.context_correction(
-                latent[:, :ctx_len], base_predicted_delta, goal=goal, state=state
+                context, base_predicted_delta, goal=goal, state=state
             )
             predicted_delta = base_predicted_delta + correction
         predicted_residual = predicted_delta * scale
@@ -568,10 +658,28 @@ class VisualTokenLatentWorldModel(nn.Module):
         squared_error = (
             predicted_future.float() - future.detach().float()
         ).square()
-        latent_loss = squared_error.mean()
+        if residual_mask is not None:
+            # Masked mean: blank padded views have zero target residuals and
+            # must not bias the predictor toward "nothing moves".
+            weights = residual_mask.to(dtype=squared_error.dtype)
+            latent_loss = (squared_error * weights).sum() / (
+                weights.sum() * squared_error.shape[-1]
+            ).clamp_min(1.0)
+        else:
+            latent_loss = squared_error.mean()
+        if residual_mask is not None:
+            pred_cosine_input = predicted_residual.float() * residual_mask.to(
+                dtype=predicted_residual.dtype
+            )
+            true_cosine_input = residual.float() * residual_mask.to(
+                dtype=residual.dtype
+            )
+        else:
+            pred_cosine_input = predicted_residual.float()
+            true_cosine_input = residual.float()
         latent_cosine_loss = 1.0 - F.cosine_similarity(
-            predicted_residual.float().flatten(2),
-            residual.float().flatten(2),
+            pred_cosine_input.flatten(2),
+            true_cosine_input.flatten(2),
             dim=-1,
             eps=1e-8,
         ).mean()
@@ -591,26 +699,53 @@ class VisualTokenLatentWorldModel(nn.Module):
                     correction.float().square().mean().sqrt()
                     / base_predicted_delta.float().square().mean().sqrt().clamp_min(1e-8)
                 )
-        per_horizon_loss = squared_error.mean(dim=(0, 2, 3))
+        if residual_mask is not None:
+            weights = residual_mask.to(dtype=squared_error.dtype)
+            horizon_numerator = (squared_error * weights).sum(dim=(0, 2, 3))
+            horizon_denominator = weights.sum(dim=(0, 2, 3)).clamp_min(1.0)
+            per_horizon_loss = horizon_numerator / horizon_denominator
+        else:
+            per_horizon_loss = squared_error.mean(dim=(0, 2, 3))
         for horizon_index, horizon_loss in enumerate(per_horizon_loss, start=1):
             output[f"latent_loss_horizon_{horizon_index}"] = horizon_loss
 
         with torch.no_grad():
-            copy_mse = residual.float().square().mean()
-            pred_mse = (predicted_residual.float() - residual.float()).square().mean()
-            mean_residual = residual.float().mean(dim=0, keepdim=True)
-            mean_baseline_mse = (residual.float() - mean_residual).square().mean()
+            if residual_mask is not None:
+                weights = residual_mask.to(dtype=torch.float32)
+                denominator = (weights.sum() * residual.shape[-1]).clamp_min(1.0)
+
+                def masked_mse(values: torch.Tensor) -> torch.Tensor:
+                    return (values.float().square() * weights).sum() / denominator
+
+                copy_mse = masked_mse(residual)
+                pred_mse = masked_mse(predicted_residual - residual)
+                numerator = (residual.float() * weights).sum(dim=0, keepdim=True)
+                mean_residual = numerator / weights.sum(
+                    dim=0, keepdim=True
+                ).clamp_min(1.0)
+                mean_baseline_mse = masked_mse(residual - mean_residual)
+                target_rms = copy_mse.sqrt()
+                pred_rms = masked_mse(predicted_residual).sqrt()
+            else:
+                copy_mse = residual.float().square().mean()
+                pred_mse = (
+                    predicted_residual.float() - residual.float()
+                ).square().mean()
+                mean_residual = residual.float().mean(dim=0, keepdim=True)
+                mean_baseline_mse = (residual.float() - mean_residual).square().mean()
+                target_rms = residual.float().square().mean().sqrt()
+                pred_rms = predicted_residual.float().square().mean().sqrt()
             direction_cosine = F.cosine_similarity(
-                predicted_residual.float().flatten(2),
-                residual.float().flatten(2),
+                pred_cosine_input.flatten(2),
+                true_cosine_input.flatten(2),
                 dim=-1,
                 eps=1e-8,
             ).mean()
             output.update(
                 {
                     "delta_scale": scale.detach().mean(),
-                    "delta_target_rms": residual.float().square().mean().sqrt(),
-                    "delta_pred_rms": predicted_residual.float().square().mean().sqrt(),
+                    "delta_target_rms": target_rms,
+                    "delta_pred_rms": pred_rms,
                     "delta_copy_mse": copy_mse,
                     "delta_pred_mse": pred_mse,
                     "delta_mean_baseline_mse": mean_baseline_mse,
@@ -634,6 +769,7 @@ class VisualTokenLatentWorldModel(nn.Module):
                     scale=scale,
                     goal=goal,
                     state=state,
+                    loss_mask=loss_mask,
                 )
             )
         return output

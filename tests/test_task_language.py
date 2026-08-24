@@ -7,8 +7,10 @@ from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset
 from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 from starVLA.task_language import (
     canonical_bridge_task,
+    canonical_bridge_taxonomy_task,
     canonical_metadata_text,
     canonical_task_text,
+    classify_bridge_task,
     configured_task_language_mode,
     resolve_task_language,
 )
@@ -85,6 +87,44 @@ class TaskLanguageTest(unittest.TestCase):
         self.assertNotEqual(
             canonical_bridge_task("open the top drawer"),
             canonical_bridge_task("close the top drawer"),
+        )
+
+    def test_bridge_taxonomy_merges_role_preserving_aliases(self):
+        aliases = (
+            "Pick up the brush and place it on the left of the red fruit",
+            "put brush to the left side of red fruit",
+        )
+        self.assertEqual(
+            {canonical_bridge_taxonomy_task(alias) for alias in aliases},
+            {"place brush left of red fruit"},
+        )
+
+    def test_bridge_taxonomy_normalizes_ordered_directions(self):
+        self.assertEqual(
+            canonical_bridge_taxonomy_task("move pot to the right top burner"),
+            "place pot to top right burner",
+        )
+        self.assertNotEqual(
+            canonical_bridge_taxonomy_task("fold cloth from top left to bottom right"),
+            canonical_bridge_taxonomy_task("fold cloth from bottom right to top left"),
+        )
+
+    def test_bridge_taxonomy_exposes_unlabeled_tasks(self):
+        label = classify_bridge_task("")
+        self.assertEqual(label.status, "unlabeled")
+        self.assertEqual(label.canonical_text, "")
+        self.assertEqual(
+            resolve_task_language("", "bridge", "bridge_taxonomy"), ""
+        )
+
+    def test_bridge_taxonomy_groups_no_op_aliases(self):
+        self.assertEqual(
+            {
+                canonical_bridge_taxonomy_task("Nothing"),
+                canonical_bridge_taxonomy_task("the robot arm did nothing"),
+                canonical_bridge_taxonomy_task("no change in the image"),
+            },
+            {"no_op"},
         )
 
     def test_canonical_metadata_matches_text_encoder_normalization(self):

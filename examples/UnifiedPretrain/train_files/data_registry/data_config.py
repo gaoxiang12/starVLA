@@ -11,6 +11,43 @@ from examples.Robotwin.train_files.data_registry.data_config import (
 from starVLA.dataloader.gr00t_lerobot.data_config import OxeBridgeDataConfig
 from starVLA.dataloader.gr00t_lerobot.datasets import ModalityConfig
 from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
+from starVLA.dataloader.gr00t_lerobot.transform.base import (
+    ComposedModalityTransform,
+)
+from starVLA.dataloader.gr00t_lerobot.transform.state_action import (
+    StateActionToTensor,
+    StateActionTransform,
+)
+
+
+def _unified_state_action_transform(
+    config,
+    *,
+    state_mode: str,
+) -> ComposedModalityTransform:
+    """Use one robust action normalization contract across embodiments."""
+
+    action_modes = {key: "q99" for key in config.action_keys}
+    for key in config.gripper_action_keys:
+        action_modes[key] = "binary"
+    state_modes = {key: state_mode for key in config.state_keys}
+    for key in config.gripper_state_keys:
+        state_modes[key] = "binary"
+    return ComposedModalityTransform(
+        transforms=[
+            StateActionToTensor(apply_to=config.action_keys),
+            StateActionTransform(
+                apply_to=config.action_keys,
+                normalization_modes=action_modes,
+                q99_clip=1.0,
+            ),
+            StateActionToTensor(apply_to=config.state_keys),
+            StateActionTransform(
+                apply_to=config.state_keys,
+                normalization_modes=state_modes,
+            ),
+        ]
+    )
 
 
 class UnifiedLiberoWMDataConfig(Libero4in1WMDataConfig):
@@ -18,6 +55,14 @@ class UnifiedLiberoWMDataConfig(Libero4in1WMDataConfig):
     state_spec_id = "franka_state_8"
     control_hz = 20
     future_time_offsets_s = (0.0, 0.2, 0.4)
+    gripper_action_keys = ("action.gripper",)
+    gripper_state_keys = ()
+    action_absolute_overrides = {
+        key: key == "action.gripper" for key in Libero4in1WMDataConfig.action_keys
+    }
+
+    def transform(self):
+        return _unified_state_action_transform(self, state_mode="mean_std")
 
 
 class UnifiedRoboTwinWMDataConfig(AgilexWMDataConfig):
@@ -28,10 +73,18 @@ class UnifiedRoboTwinWMDataConfig(AgilexWMDataConfig):
     # Match the shared world's +0.2 s / +0.4 s prediction targets.
     video_indices = [0, 6, 12]
     future_time_offsets_s = (0.0, 0.2, 0.4)
+    gripper_action_keys = ("action.left_gripper", "action.right_gripper")
+    gripper_state_keys = ("state.left_gripper", "state.right_gripper")
+    action_absolute_overrides = {key: True for key in AgilexWMDataConfig.action_keys}
+
+    def transform(self):
+        return _unified_state_action_transform(self, state_mode="q99")
 
 
 class UnifiedBridgeWMDataConfig(OxeBridgeDataConfig):
-    episode_blacklist_path = "meta/video_health/bad_episodes.jsonl"
+    episode_blacklist_path = (
+        "meta/task_language/bridge_pretrain_excluded_episodes.jsonl"
+    )
     action_spec_id = "bridge_eef_delta_7"
     state_spec_id = "bridge_state_8"
     control_hz = 5
@@ -39,6 +92,11 @@ class UnifiedBridgeWMDataConfig(OxeBridgeDataConfig):
     video_indices = [0, 1, 2]
     action_indices = [0, 1, 2]
     future_time_offsets_s = (0.0, 0.2, 0.4)
+    gripper_action_keys = ("action.gripper",)
+    gripper_state_keys = ("state.gripper",)
+    action_absolute_overrides = {
+        key: key == "action.gripper" for key in OxeBridgeDataConfig.action_keys
+    }
 
     def modality_config(self):
         config = super().modality_config()
@@ -51,6 +109,9 @@ class UnifiedBridgeWMDataConfig(OxeBridgeDataConfig):
             modality_keys=self.action_keys,
         )
         return config
+
+    def transform(self):
+        return _unified_state_action_transform(self, state_mode="q99")
 
 
 ROBOT_TYPE_CONFIG_MAP = {

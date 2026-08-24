@@ -18,7 +18,14 @@ framework:
     ctx_len: 1
     future_time_offsets_s: [0.0, 0.2, 0.4]
     loss_latent_weight: 1.0
-    latent_cosine_weight: 0.0
+    # Supervise residual direction explicitly; the action-loss-dominated
+    # multi-embodiment gradient otherwise leaves direction cosine near zero.
+    latent_cosine_weight: 0.1
+    # Keep the latent loss on the predictor: prevent encoder/pooler collapse
+    # toward "current == future" (anchor/context are detached from the WM loss).
+    detach_wm_input: true
+    # Faster delta_scale tracking under multi-embodiment representation drift.
+    latent_stats_momentum: 0.9
     residual_predictor_dim: 384
     residual_predictor_depth: 4
     residual_predictor_heads: 6
@@ -54,18 +61,21 @@ framework:
         action_dim: 7
         action_horizon: 8
         state_dim: 8
+        gripper_indices: [6]
         random_execution_horizons: [1, 2, 4, 8]
       oxe_bridge:
         action_spec_id: bridge_eef_delta_7
         action_dim: 7
         action_horizon: 3
         state_dim: 8
+        gripper_indices: [6]
         random_execution_horizons: [1, 2, 3]
       aloha:
         action_spec_id: aloha_dual_joint_14
         action_dim: 14
         action_horizon: 16
         state_dim: 14
+        gripper_indices: [6, 13]
         random_execution_horizons: [1, 2, 4, 8, 16]
   lang_cond:
     type: text
@@ -91,6 +101,7 @@ datasets:
       oxe_bridge: bridge_canonical
     future_obs_frames: true
     future_obs_valid_mask: true
+    action_valid_mask: true
     include_state: true
     target_num_views: 3
     homogeneous_embodiment_batches: true

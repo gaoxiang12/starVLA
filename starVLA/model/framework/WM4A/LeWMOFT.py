@@ -39,6 +39,10 @@ from starVLA.model.framework.share_tools import merge_framework_config
 from starVLA.model.modules.action_model.ACT_ActionHeader import (
     TurboStyleACTActionHead,
 )
+from starVLA.model.modules.action_model.action_loss import (
+    action_l1_diagnostics,
+    masked_action_l1_loss,
+)
 from starVLA.model.modules.action_model.MLP_ActionHeader import get_action_model
 from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
@@ -66,6 +70,7 @@ def prefix_l1_loss(
     pred_actions: torch.Tensor,
     target_actions: torch.Tensor,
     prefix_lengths: torch.Tensor,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Average L1 loss over a per-sample action prefix."""
     if pred_actions.shape != target_actions.shape or pred_actions.ndim != 3:
@@ -83,8 +88,20 @@ def prefix_l1_loss(
 
     steps = torch.arange(horizon, device=pred_actions.device).view(1, horizon, 1)
     mask = steps < prefix_lengths.to(device=pred_actions.device).view(batch_size, 1, 1)
-    absolute_error = (pred_actions - target_actions).abs()
-    return (absolute_error * mask).sum() / (mask.sum() * action_dim)
+    if valid_mask is not None:
+        valid_mask = torch.as_tensor(valid_mask, device=pred_actions.device)
+        if valid_mask.shape == (batch_size, horizon):
+            valid_mask = valid_mask.unsqueeze(-1)
+        if valid_mask.shape not in {
+            (batch_size, horizon, 1),
+            (batch_size, horizon, action_dim),
+        }:
+            raise ValueError(
+                "valid_mask must have shape [B,H], [B,H,1], or [B,H,D], "
+                f"got {tuple(valid_mask.shape)}"
+            )
+        mask = mask & valid_mask.bool()
+    return masked_action_l1_loss(pred_actions, target_actions, mask)
 
 
 class VisualTokenPooler(nn.Module):
@@ -433,6 +450,11 @@ class LeWMOFTDefaultConfig:
             "smooth_sigreg_num_proj": 1024,
             "loss_latent_weight": 1.0,
             "latent_cosine_weight": 0.0,
+            # Detach the world-model context/anchor so the latent loss trains
+            # only the predictor. Otherwise the encoder/pooler can lower the
+            # loss by erasing temporal variation (current == future collapse).
+            "detach_wm_input": False,
+            "latent_stats_momentum": 0.99,
             # Multi-step rollout supervision. ``rollout_steps=1`` reproduces the
             # validated single-shot objective exactly; higher values re-anchor
             # the predictor on its own output and need a dataset that provides
@@ -834,6 +856,7 @@ class LeWM_OFT(baseframework):
                 wm_cfg.get("delta_head_sigreg_weight", 0.0),
             )
         )
+        self.detach_wm_input = bool(wm_cfg.get("detach_wm_input", False))
 
         # DINOv3 reports its patch width through the HF encoder config; the
         # TAESD / Qwen vision interfaces expose it directly.
@@ -887,6 +910,7 @@ class LeWM_OFT(baseframework):
             context_correction_ffn_dim=int(wm_cfg.get("context_correction_ffn", 1024)),
             sigreg_weight=self.loss_sigreg_weight,
             stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.99)),
+            detach_input=self.detach_wm_input,
         )
         self.smooth_world_model = (
             SmoothSpatialLatentWorldModel(
@@ -1514,6 +1538,43 @@ class LeWM_OFT(baseframework):
             self.random_execution_horizons,
         )
 
+    def _action_gripper_indices(
+        self, robot_tag: Optional[str]
+    ) -> tuple[int, ...]:
+        action_cfg = self.config.framework.action_model
+        if self.multi_embodiment_actions:
+            if robot_tag is None:
+                raise ValueError("robot_tag is required for embodiment action metadata")
+            configured = self.embodiment_head_specs[robot_tag].get(
+                "gripper_indices", ()
+            )
+        else:
+            configured = action_cfg.get("gripper_indices", ())
+        return tuple(int(index) for index in configured)
+
+    @staticmethod
+    def _action_valid_mask_tensor(
+        examples: List[dict],
+        device: torch.device,
+        action_horizon: int,
+    ) -> Optional[torch.Tensor]:
+        raw_masks = [example.get("action_valid_mask") for example in examples]
+        if all(mask is None for mask in raw_masks):
+            return None
+        if any(mask is None for mask in raw_masks):
+            raise ValueError(
+                "action_valid_mask must be present for every example in a batch"
+            )
+        masks = np.asarray(raw_masks, dtype=np.bool_)
+        if masks.ndim != 2 or masks.shape[1] < action_horizon:
+            raise ValueError(
+                "action_valid_mask must have shape [B,H] with H at least "
+                f"{action_horizon}, got {tuple(masks.shape)}"
+            )
+        return torch.as_tensor(
+            masks[:, -action_horizon:], device=device, dtype=torch.bool
+        )
+
     def _condition_task_on_embodiment(
         self, task_embedding: torch.Tensor, robot_tag: Optional[str]
     ) -> torch.Tensor:
@@ -1545,6 +1606,57 @@ class LeWM_OFT(baseframework):
                 f"view_valid_mask must have shape {expected}, got {tuple(mask.shape)}"
             )
         return mask
+
+    def _wm_loss_mask_tensor(
+        self,
+        examples: List[dict],
+        view_valid_mask: Optional[torch.Tensor],
+        device: torch.device,
+        frame_count: int,
+    ) -> Optional[torch.Tensor]:
+        """Combine view and future-frame validity into a (B, T, K) loss mask.
+
+        Blank padded views carry zero residual targets and end-of-episode
+        padding frames carry repeated frames; both must be excluded from the
+        world-model loss, its statistics, and the copy-ratio diagnostics.
+        """
+        has_frame_mask = any(
+            example.get("future_frame_valid_mask") is not None for example in examples
+        )
+        if view_valid_mask is None and not has_frame_mask:
+            return None
+        batch_size = len(examples)
+        if view_valid_mask is None:
+            token_valid = torch.ones(
+                batch_size,
+                self.num_visual_tokens,
+                device=device,
+                dtype=torch.bool,
+            )
+        else:
+            token_valid = view_valid_mask.repeat_interleave(
+                self.visual_tokens_per_view, dim=1
+            )
+        frame_masks = []
+        for example in examples:
+            raw_mask = example.get("future_frame_valid_mask")
+            if raw_mask is None:
+                frame_masks.append(np.ones(frame_count, dtype=np.bool_))
+                continue
+            mask = np.asarray(raw_mask, dtype=np.bool_)
+            if mask.shape != (frame_count,):
+                raise ValueError(
+                    "expected future_frame_valid_mask shape "
+                    f"({frame_count},), got {mask.shape}"
+                )
+            frame_masks.append(mask)
+        frame_valid = torch.as_tensor(
+            np.stack(frame_masks), device=device, dtype=torch.bool
+        )
+        if not bool(frame_valid[:, 0].all()):
+            raise ValueError("the current frame must always be valid")
+        loss_mask = frame_valid[:, :, None] & token_valid[:, None, :]
+        return loss_mask.to(dtype=torch.float32)
 
     def _validate_future_time_offsets(self, examples: List[dict]) -> None:
         if self.future_time_offsets_s is None:
@@ -1685,16 +1797,21 @@ class LeWM_OFT(baseframework):
             return zero, zero, x.new_ones(())
 
         off_diag = ~torch.eye(K, device=x.device, dtype=torch.bool).view(1, 1, K, K)
-        centered = F.normalize(x - x.mean(dim=2, keepdim=True), dim=-1, eps=1e-6)
-        centered_cos = torch.matmul(centered, centered.transpose(-1, -2))
-        diversity_loss = centered_cos.square().masked_select(off_diag).mean()
+        # Penalize pairwise cosine on the raw normalized content. The previous
+        # per-sample centering (subtract the token-axis mean before normalizing)
+        # had a blind spot: tokens that collapse to a shared direction have
+        # centered values of zero, so the penalty vanished exactly in the
+        # collapse regime it was meant to prevent. The pooler's LayerNorm keeps
+        # per-sample channel variance at one, so the loss cannot be trivially
+        # satisfied by shrinking token norms.
+        normalized = F.normalize(x, dim=-1, eps=1e-6)
+        cosine = torch.matmul(normalized, normalized.transpose(-1, -2))
+        diversity_loss = cosine.square().masked_select(off_diag).mean()
 
         token_std = x.var(dim=2, unbiased=False).add(1e-4).sqrt()
         variance_loss = F.relu(self.visual_token_min_std - token_std).mean()
 
-        normalized = F.normalize(x, dim=-1, eps=1e-6)
-        raw_cos = torch.matmul(normalized, normalized.transpose(-1, -2))
-        mean_cosine = raw_cos.masked_select(off_diag).mean()
+        mean_cosine = cosine.masked_select(off_diag).mean()
         return diversity_loss, variance_loss, mean_cosine
 
     @torch.no_grad()
@@ -1866,7 +1983,9 @@ class LeWM_OFT(baseframework):
         action_model, action_horizon, action_state_dim, execution_horizons = (
             self._action_runtime(robot_tag)
         )
+        gripper_indices = self._action_gripper_indices(robot_tag)
         actions_target = None
+        action_valid_mask = None
         if not self.world_model_only:
             actions = [example["action"] for example in examples]
             actions = torch.tensor(np.array(actions), device=device, dtype=torch.float32)
@@ -1887,6 +2006,9 @@ class LeWM_OFT(baseframework):
                     f"got {actions.shape[2]}"
                 )
             actions_target = actions[:, -action_horizon:, :]
+            action_valid_mask = self._action_valid_mask_tensor(
+                examples, device, action_horizon
+            )
 
         # === Encode the current frame + future frames into a latent sequence ===
         # frames_per_example[b] = [current_views, future_views_1, ..., future_views_Tf]
@@ -1970,8 +2092,14 @@ class LeWM_OFT(baseframework):
                         action_model=action_model,
                     )
                     pred_actions = action_model.predict_action(action_queries)
-                    full_l1_action_loss = self.l1_loss(
-                        pred_actions, actions_target
+                    full_l1_action_loss = masked_action_l1_loss(
+                        pred_actions, actions_target, action_valid_mask
+                    )
+                    action_metrics = action_l1_diagnostics(
+                        pred_actions,
+                        actions_target,
+                        action_valid_mask,
+                        gripper_indices=gripper_indices,
                     )
                     total_loss = (
                         self.smooth_action_loss_weight * full_l1_action_loss
@@ -1990,6 +2118,12 @@ class LeWM_OFT(baseframework):
                         "smooth_world_model_loss": smooth["loss"].detach(),
                         "smooth_joint_total_loss": total_loss.detach(),
                     }
+                    output.update(
+                        {
+                            name: value.detach()
+                            for name, value in action_metrics.items()
+                        }
+                    )
                 else:
                     zero = smooth["loss"].detach() * 0.0
                     output = {
@@ -2048,6 +2182,9 @@ class LeWM_OFT(baseframework):
                 or self.context_correction_state_dim > 0
                 else None
             )
+            wm_loss_mask = self._wm_loss_mask_tensor(
+                examples, view_valid_mask, latent.device, required_frames
+            )
 
             B = latent.shape[0]
             wm_out = self.world_model(
@@ -2060,6 +2197,7 @@ class LeWM_OFT(baseframework):
                 # encoder and pooler move, so delta_scale must track that drift.
                 update_stats=self._should_update_latent_stats(),
                 rollout_steps=self.rollout_steps,
+                loss_mask=wm_loss_mask,
             )
             pred_future_latent = wm_out["pred_future_latent"]
 
@@ -2120,7 +2258,15 @@ class LeWM_OFT(baseframework):
                     else None
                 )
                 pred_actions = action_model.predict_action(action_queries)
-                full_l1_action_loss = self.l1_loss(pred_actions, actions_target)
+                full_l1_action_loss = masked_action_l1_loss(
+                    pred_actions, actions_target, action_valid_mask
+                )
+                action_metrics = action_l1_diagnostics(
+                    pred_actions,
+                    actions_target,
+                    action_valid_mask,
+                    gripper_indices=gripper_indices,
+                )
                 if self.random_prefix_loss_weight > 0 and execution_horizons:
                     choices = torch.tensor(
                         execution_horizons,
@@ -2133,7 +2279,10 @@ class LeWM_OFT(baseframework):
                     sampled_prefix_lengths = choices[choice_indices]
                     sampled_prefix_mean = sampled_prefix_lengths.float().mean()
                     prefix_l1_action_loss = prefix_l1_loss(
-                        pred_actions, actions_target, sampled_prefix_lengths
+                        pred_actions,
+                        actions_target,
+                        sampled_prefix_lengths,
+                        action_valid_mask,
                     )
                     l1_action_loss = (
                         full_l1_action_loss
@@ -2239,6 +2388,10 @@ class LeWM_OFT(baseframework):
             "latent_loss": latent_loss.detach(),
             "latent_cosine_loss": latent_cosine_loss.detach(),
         }
+        if not self.world_model_only:
+            out.update(
+                {name: value.detach() for name, value in action_metrics.items()}
+            )
         if self.world_model_only:
             out["world_model_only_loss"] = total_loss.detach()
         for metric_name, metric_value in wm_out.items():

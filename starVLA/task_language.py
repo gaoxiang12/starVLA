@@ -8,6 +8,7 @@ only receives lexical normalization that can be reproduced at serving time.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import PurePath
 import re
 import unicodedata
@@ -18,11 +19,13 @@ TASK_LANGUAGE_METADATA = "metadata"
 TASK_LANGUAGE_DATASET_NAME = "dataset_name"
 TASK_LANGUAGE_CANONICAL_METADATA = "canonical_metadata"
 TASK_LANGUAGE_BRIDGE_CANONICAL = "bridge_canonical"
+TASK_LANGUAGE_BRIDGE_TAXONOMY = "bridge_taxonomy"
 TASK_LANGUAGE_MODES = {
     TASK_LANGUAGE_METADATA,
     TASK_LANGUAGE_DATASET_NAME,
     TASK_LANGUAGE_CANONICAL_METADATA,
     TASK_LANGUAGE_BRIDGE_CANONICAL,
+    TASK_LANGUAGE_BRIDGE_TAXONOMY,
 }
 
 
@@ -87,6 +90,80 @@ _BRIDGE_ACTION_ALIASES = {
 _ARTICLES = {"a", "an", "the"}
 
 
+@dataclass(frozen=True)
+class BridgeTaskLabel:
+    """Deterministic structured label for one Bridge instruction."""
+
+    canonical_text: str
+    family: str
+    status: str
+    confidence: str
+
+
+_BRIDGE_TAXONOMY_REPLACEMENTS = (
+    (r"\bright\s+top\b", "top right"),
+    (r"\bleft\s+top\b", "top left"),
+    (r"\bright\s+bottom\b", "bottom right"),
+    (r"\bleft\s+bottom\b", "bottom left"),
+    (r"\bcenter\s+top\b", "top center"),
+    (r"\bcenter\s+bottom\b", "bottom center"),
+    (r"\bmiddle\s+top\b", "top center"),
+    (r"\bmiddle\s+bottom\b", "bottom center"),
+    (r"\bin\s+to\b", "in"),
+    (r"\bout\s+of\b", "from"),
+    (r"\boff\s+of\b", "from"),
+    (r"\babove\s+of\b", "above"),
+    (r"\bunderneath\b", "under"),
+    (r"\bnear\s+to\b", "near"),
+    (r"\bon\s+right\s+side\s+of\b", "right of"),
+    (r"\bon\s+left\s+side\s+of\b", "left of"),
+    (r"\bon\s+right\s+of\b", "right of"),
+    (r"\bon\s+left\s+of\b", "left of"),
+    (r"\bto\s+right\s+side\s+of\b", "right of"),
+    (r"\bto\s+left\s+side\s+of\b", "left of"),
+    (r"\bright\s+side\s+of\b", "right of"),
+    (r"\bleft\s+side\s+of\b", "left of"),
+    (r"\bupper\s+right\b", "top right"),
+    (r"\bupper\s+left\b", "top left"),
+    (r"\blower\s+right\b", "bottom right"),
+    (r"\blower\s+left\b", "bottom left"),
+    (r"\brigth\b", "right"),
+    (r"\bbotton\b", "bottom"),
+    (r"\bbotom\b", "bottom"),
+    (r"\bsliver\b", "silver"),
+    (r"\bfabric\b", "cloth"),
+    (r"\brag\b", "cloth"),
+    (r"\bclothes\b", "cloth"),
+)
+
+_BRIDGE_KNOWN_FAMILIES = {
+    "place",
+    "remove",
+    "pick",
+    "open",
+    "close",
+    "fold",
+    "unfold",
+    "sweep",
+    "turn",
+    "flip",
+    "topple",
+    "upright",
+    "slide",
+    "push",
+    "pull",
+    "pour",
+    "wipe",
+    "zip",
+    "unzip",
+    "cover",
+    "hold",
+    "reach",
+    "transition",
+    "no_op",
+}
+
+
 def normalize_task_language_mode(mode: Optional[str]) -> str:
     """Validate a task-language mode while preserving the legacy default."""
     normalized = str(mode or TASK_LANGUAGE_METADATA).strip().lower()
@@ -127,6 +204,85 @@ def canonical_bridge_task(text: Optional[str]) -> str:
     return " ".join(tokens)
 
 
+def classify_bridge_task(text: Optional[str]) -> BridgeTaskLabel:
+    """Map a Bridge instruction to a role-preserving controlled label.
+
+    The classifier intentionally keeps objects, targets, relations, and ordered
+    directions. It only merges surface forms that do not change the requested
+    behavior. Empty or unrecognized descriptions are made explicit so a data
+    pipeline can quarantine them instead of silently sharing one task ID.
+    """
+
+    normalized = canonical_bridge_task(text)
+    if not normalized:
+        return BridgeTaskLabel("", "unlabeled", "unlabeled", "none")
+
+    for pattern, replacement in _BRIDGE_TAXONOMY_REPLACEMENTS:
+        normalized = re.sub(pattern, replacement, normalized)
+    normalized = " ".join(normalized.split())
+
+    if normalized == "lever vertical to front":
+        normalized = "turn lever vertical to front"
+    if normalized in {
+        "nothing",
+        "not moving anything",
+        "no change in image",
+        "robot arm did nothing",
+        "robot did nothing",
+        "arm did nothing",
+        "arm did noothing",
+    }:
+        normalized = "no_op"
+
+    # A pick/remove followed by a placement is classified by its final goal,
+    # while retaining any source phrase in the object span.
+    compound = re.match(
+        r"^(?:pick|take|remove|grab|lift)\s+(.+?)\s+and\s+"
+        r"(?:move|place|put)\s+(?:it\s+|them\s+)?(.+)$",
+        normalized,
+    )
+    if compound:
+        normalized = f"place {compound.group(1)} {compound.group(2)}"
+    elif normalized.startswith("move "):
+        normalized = "place " + normalized.removeprefix("move ")
+    else:
+        removal = re.match(
+            r"^(?:take|remove|pick|grab)\s+(.+?)\s+(?:from|off)\s+(.+)$",
+            normalized,
+        )
+        if removal:
+            normalized = f"remove {removal.group(1)} from {removal.group(2)}"
+        elif re.match(r"^(?:grab|lift)\s+", normalized):
+            normalized = re.sub(r"^(?:grab|lift)\s+", "pick ", normalized)
+        elif normalized.startswith("take "):
+            normalized = "pick " + normalized.removeprefix("take ")
+
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if normalized.startswith("end effector reaching "):
+        normalized = "reach " + normalized.removeprefix("end effector reaching ")
+    elif normalized.startswith("end effector transition from "):
+        normalized = "transition " + normalized.removeprefix(
+            "end effector transition from "
+        )
+    elif normalized in {
+        "robotic arm did not move",
+        "robot arm did not move",
+        "robot did not move",
+    }:
+        normalized = "no_op"
+
+    family = normalized.split()[0] if normalized else "unlabeled"
+    if family in _BRIDGE_KNOWN_FAMILIES:
+        return BridgeTaskLabel(normalized, family, "classified", "high")
+    return BridgeTaskLabel(normalized, family, "needs_review", "low")
+
+
+def canonical_bridge_taxonomy_task(text: Optional[str]) -> str:
+    """Return the controlled Bridge text used as a categorical task label."""
+
+    return classify_bridge_task(text).canonical_text
+
+
 def configured_task_language_mode(
     config: Optional[Mapping[str, Any]], routing_key: Any = None
 ) -> str:
@@ -156,4 +312,6 @@ def resolve_task_language(
         return canonical_metadata_text(original_text)
     if normalized_mode == TASK_LANGUAGE_BRIDGE_CANONICAL:
         return canonical_bridge_task(original_text)
+    if normalized_mode == TASK_LANGUAGE_BRIDGE_TAXONOMY:
+        return canonical_bridge_taxonomy_task(original_text)
     return str(original_text or "")

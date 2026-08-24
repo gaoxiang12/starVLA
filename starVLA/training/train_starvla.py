@@ -517,6 +517,11 @@ class VLATrainer(TrainerUtils):
         # Surface any auxiliary scalar losses the framework reports.
         for k in (
             "l1_action_loss",
+            "continuous_action_l1",
+            "gripper_action_l1",
+            "gripper_action_accuracy",
+            "first_action_l1",
+            "valid_action_fraction",
             "latent_loss",
             "latent_cosine_loss",
             "world_model_only_loss",
@@ -583,8 +588,16 @@ class VLATrainer(TrainerUtils):
             for metric_name in (
                 "action_dit_loss",
                 "l1_action_loss",
+                "continuous_action_l1",
+                "gripper_action_l1",
+                "gripper_action_accuracy",
+                "first_action_l1",
+                "valid_action_fraction",
                 "latent_loss",
                 "latent_cosine_loss",
+                "delta_to_copy_ratio",
+                "delta_direction_cosine",
+                "visual_token_mean_cosine",
             ):
                 if metric_name in step_log:
                     step_log[f"{metric_name}/{robot_tag}"] = step_log[metric_name]
