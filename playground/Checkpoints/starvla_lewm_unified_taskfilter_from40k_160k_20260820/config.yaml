@@ -1,0 +1,179 @@
+datasets:
+  vla_data:
+    balance_dataset_weights: false
+    balance_trajectory_weights: false
+    data_mix: unified_libero_robotwin_bridge_wm
+    data_root_dir: /home/gaoxiang/data/gaoxiang
+    dataset_py: lerobot_datasets
+    drop_last: true
+    embodiment_sampling_weights:
+      aloha: 0.333334
+      franka: 0.333333
+      oxe_bridge: 0.333333
+    homogeneous_embodiment_batches: true
+    num_workers: 8
+    obs_image_size:
+    - 224
+    - 224
+    per_device_batch_size: 8
+    persistent_workers: true
+    pin_memory: true
+    prefetch_factor: 2
+    task_language_mode: metadata
+    task_language_modes:
+      aloha: dataset_name
+      franka: canonical_metadata
+      oxe_bridge: bridge_taxonomy
+    video_backend: pyav
+framework:
+  action_model:
+    act_dim_feedforward: 2048
+    act_dropout: 0.1
+    act_mlp_hidden_dim: 512
+    act_num_heads: 8
+    act_num_layers: 3
+    act_num_state_tokens: 2
+    action_hidden_dim: 384
+    action_horizon: 8
+    action_model_type: ACT
+    embodiment_heads:
+      aloha:
+        action_dim: 14
+        action_horizon: 16
+        action_spec_id: aloha_dual_joint_14
+        gripper_indices:
+        - 6
+        - 13
+        random_execution_horizons:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 16
+        state_dim: 14
+      franka:
+        action_dim: 7
+        action_horizon: 8
+        action_spec_id: franka_eef_delta_7
+        gripper_indices:
+        - 6
+        random_execution_horizons:
+        - 1
+        - 2
+        - 4
+        - 8
+        state_dim: 8
+      oxe_bridge:
+        action_dim: 7
+        action_horizon: 3
+        action_spec_id: bridge_eef_delta_7
+        gripper_indices:
+        - 6
+        random_execution_horizons:
+        - 1
+        - 2
+        - 3
+        state_dim: 8
+    random_execution_horizons:
+    - 1
+    - 2
+    - 4
+    - 8
+    random_prefix_loss_weight: 0.0
+  lang_cond:
+    embed_dim: 384
+    num_buckets: 4096
+    text_depth: 2
+    text_dropout: 0.1
+    text_ffn_dim: 512
+    text_heads: 4
+    text_hidden_dim: 256
+    text_max_length: 128
+    type: text
+  name: LeWMOFT
+  world_model:
+    base_wm: dino_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth
+    context_correction_depth: 0
+    context_correction_dim: 384
+    context_correction_ffn: 1024
+    context_correction_freeze_base: false
+    context_correction_heads: 6
+    context_correction_state_dim: 0
+    ctx_len: 1
+    detach_wm_input: true
+    freeze_latent_stats: false
+    future_time_offsets_s:
+    - 0.0
+    - 0.2
+    - 0.4
+    latent_cosine_weight: 0.1
+    latent_stats_momentum: 0.9
+    loss_latent_weight: 1.0
+    loss_rollout_weight: 0.0
+    n_future: 2
+    num_views: 3
+    num_visual_tokens: 16
+    predictor_state_current_index: 0
+    predictor_state_dim: 0
+    predictor_state_history: 1
+    progress_anchor_weight: 0.5
+    progress_detach_action: true
+    progress_detach_latents: true
+    progress_ema: 0.8
+    progress_goal_weight: 0.2
+    progress_loss_weight: 0.2
+    progress_ranking_weight: 0.1
+    residual_predictor_depth: 4
+    residual_predictor_dim: 384
+    residual_predictor_ffn: 1024
+    residual_predictor_heads: 6
+    residual_predictor_sigreg_weight: 0.0
+    rollout_steps: 1
+    smooth_action_enabled: false
+    smooth_action_loss_weight: 1.0
+    smooth_latent_enabled: false
+    smooth_world_model_loss_weight: 1.0
+    state_cond_hidden_dim: 256
+    state_cond_only: false
+    train_encoder: true
+    transition_mode: false
+    use_progress_checker: false
+    use_state_cond: true
+    use_state_probe: false
+    visual_diagnostics: false
+    visual_token_dim: 384
+    visual_token_diversity_weight: 0.02
+    visual_token_min_std: 0.1
+    visual_token_variance_weight: 0.02
+    visual_tokens_per_view: 16
+    world_model_only: false
+output_dir: playground/Checkpoints/starvla_lewm_unified_taskfilter_from40k_160k_20260820
+run_id: starvla_lewm_unified_taskfilter_from40k_160k_20260820
+run_root_dir: playground/Checkpoints
+seed: 42
+trainer:
+  eval_interval: 2000
+  freeze_modules: ''
+  gradient_clipping: 1.0
+  is_resume: false
+  learning_rate:
+    action_models: 0.0001
+    backbone:
+      encoder: 1.0e-06
+    base: 0.0001
+  logging_frequency: 100
+  lr_scheduler_type: cosine_with_min_lr
+  max_train_steps: 160000
+  num_warmup_steps: 5000
+  optimizer:
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+  pretrained_checkpoint: /data/lily/gaoxiang/starVLA/playground/Checkpoints/starvla_lewm_unified_actionfix_warm50k_200k_20260819/checkpoints/steps_40000_pytorch_model.pt
+  save_interval: 10000
+  scheduler_specific_kwargs:
+    min_lr: 1.0e-06
+wandb_entity: your_wandb_entity
+wandb_project: starVLA_UnifiedPretrain
