@@ -23,11 +23,11 @@ import pandas as pd
 from huggingface_hub import hf_hub_download
 from PIL import Image
 
-
 REPO_ID = "TianxingChen/RoboTwin2.0"
 ROBOT = "aloha-agilex"
 FPS = 30
 CHUNK_SIZE = 1000
+STATS_FORMAT_VERSION = 2
 CAMERA_MAP = {
     "observation.images.cam_high": "head_camera",
     "observation.images.cam_left_wrist": "left_camera",
@@ -192,6 +192,29 @@ def write_jsonl(path: Path, rows: list[dict]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def summarize_numeric_chunks(chunks: list[np.ndarray]) -> dict[str, list[float]]:
+    values = np.concatenate([np.asarray(chunk, dtype=np.float32) for chunk in chunks], axis=0)
+    if values.ndim == 1:
+        values = values[:, None]
+    return {
+        "mean": np.mean(values, axis=0).tolist(),
+        "std": np.std(values, axis=0).tolist(),
+        "min": np.min(values, axis=0).tolist(),
+        "max": np.max(values, axis=0).tolist(),
+        "q01": np.quantile(values, 0.01, axis=0).tolist(),
+        "q99": np.quantile(values, 0.99, axis=0).tolist(),
+    }
+
+
+def write_abs_stats(path: Path, chunks_by_key: dict[str, list[np.ndarray]]) -> None:
+    payload = {
+        "__format_version": STATS_FORMAT_VERSION,
+        "__cache_config": {"mode": "abs"},
+        "statistics": {key: summarize_numeric_chunks(chunks) for key, chunks in chunks_by_key.items()},
+    }
+    path.write_text(json.dumps(payload, indent=4) + "\n")
+
+
 def build_info(total_episodes: int, total_frames: int, total_tasks: int, width: int, height: int) -> dict:
     features = {key: feature_image(width, height) for key in CAMERA_MAP}
     features.update(
@@ -240,20 +263,36 @@ def extract_zip(zip_path: Path, tmp_root: Path) -> Path:
 
 
 def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path) -> None:
-    hdf5_files = sorted((extracted_root / "data").glob("episode*.hdf5"), key=lambda p: int(p.stem.removeprefix("episode")))
+    hdf5_files = sorted(
+        (extracted_root / "data").glob("episode*.hdf5"), key=lambda p: int(p.stem.removeprefix("episode"))
+    )
     if not hdf5_files:
         raise FileNotFoundError(f"No episode HDF5 files found under {extracted_root / 'data'}")
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    (output_dir / "meta").mkdir(parents=True, exist_ok=True)
-    (output_dir / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = output_dir.with_name(f".{output_dir.name}.tmp-convert")
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    (staging_dir / "meta").mkdir(parents=True, exist_ok=True)
+    (staging_dir / "data").mkdir(parents=True, exist_ok=True)
 
     task_to_index: dict[str, int] = {}
     tasks_rows: list[dict] = []
     episodes_rows: list[dict] = []
     total_frames = 0
     image_size: tuple[int, int] | None = None
+    stats_chunks: dict[str, list[np.ndarray]] = {
+        key: []
+        for key in (
+            "observation.state",
+            "action",
+            "timestamp",
+            "frame_index",
+            "episode_index",
+            "index",
+            "task_index",
+        )
+    }
 
     for episode_index, hdf5_path in enumerate(hdf5_files):
         instruction_path = extracted_root / "instructions" / f"episode{episode_index}.json"
@@ -276,6 +315,13 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
                 "index": list(range(total_frames, total_frames + length)),
                 "task_index": [task_index] * length,
             }
+            stats_chunks["observation.state"].append(state)
+            stats_chunks["action"].append(action)
+            stats_chunks["timestamp"].append(np.arange(length, dtype=np.float32)[:, None] / FPS)
+            stats_chunks["frame_index"].append(np.arange(length, dtype=np.float32)[:, None])
+            stats_chunks["episode_index"].append(np.full((length, 1), episode_index, dtype=np.float32))
+            stats_chunks["index"].append(np.arange(total_frames, total_frames + length, dtype=np.float32)[:, None])
+            stats_chunks["task_index"].append(np.full((length, 1), task_index, dtype=np.float32))
             for out_key, camera_name in CAMERA_MAP.items():
                 frames = handle[f"observation/{camera_name}/rgb"]
                 if image_size is None and len(frames):
@@ -283,8 +329,11 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
                     image_size = image.size
                 columns[out_key] = [image_entry(bytes(frame)) for frame in frames]
 
+        episode_chunk = episode_index // CHUNK_SIZE
+        chunk_dir = staging_dir / "data" / f"chunk-{episode_chunk:03d}"
+        chunk_dir.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(columns).to_parquet(
-            output_dir / "data" / "chunk-000" / f"episode_{episode_index:06d}.parquet",
+            chunk_dir / f"episode_{episode_index:06d}.parquet",
             index=False,
         )
         episodes_rows.append({"episode_index": episode_index, "tasks": [instruction], "length": length})
@@ -292,22 +341,30 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
 
     if image_size is None:
         image_size = (320, 240)
-    shutil.copyfile(modality_src, output_dir / "meta" / "modality.json")
-    write_jsonl(output_dir / "meta" / "tasks.jsonl", tasks_rows)
-    write_jsonl(output_dir / "meta" / "episodes.jsonl", episodes_rows)
-    (output_dir / "meta" / "info.json").write_text(
+    shutil.copyfile(modality_src, staging_dir / "meta" / "modality.json")
+    write_jsonl(staging_dir / "meta" / "tasks.jsonl", tasks_rows)
+    write_jsonl(staging_dir / "meta" / "episodes.jsonl", episodes_rows)
+    write_abs_stats(staging_dir / "meta" / "stats_gr00t.json", stats_chunks)
+    (staging_dir / "meta" / "info.json").write_text(
         json.dumps(build_info(len(hdf5_files), total_frames, len(tasks_rows), image_size[0], image_size[1]), indent=4),
     )
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    staging_dir.replace(output_dir)
 
 
-def prepare_one(task: str, split: str, raw_root: Path, output_root: Path, modality_src: Path, args: argparse.Namespace) -> None:
+def prepare_one(
+    task: str, split: str, raw_root: Path, output_root: Path, modality_src: Path, args: argparse.Namespace
+) -> None:
     output_split, _, _ = split_names(split)
     output_dir = output_root / output_split / task
     if output_dir.exists() and not args.force:
         print(f"[skip] {output_dir} already exists")
         return
 
-    zip_path = download_zip(task, split, raw_root, args.download_retries) if args.download else local_zip(task, split, raw_root)
+    zip_path = (
+        download_zip(task, split, raw_root, args.download_retries) if args.download else local_zip(task, split, raw_root)
+    )
     if not zip_path.exists():
         raise FileNotFoundError(f"Missing zip: {zip_path}")
 

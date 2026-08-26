@@ -108,11 +108,15 @@ celerybeat.pid
 # Environments
 .env
 .venv
+/.venv-robotwin/
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local benchmark simulators and their downloaded assets.
+/thirdparty/
 
 # Spyder project settings
 .spyderproject

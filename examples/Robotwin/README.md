@@ -221,6 +221,52 @@ The model is trained using the official **RobotWin 2.0 dataset**.
 The local LeWM-OFT recipe uses all 50 Clean and Randomized task datasets,
 three RGB views, 14-D proprioception, and 16-step absolute-qpos action chunks.
 
+## Generate a scaled local dataset
+
+The resumable local generator targets 2,000 Clean and 1,000 Randomized
+episodes for each of the 50 official tasks (150,000 episodes total). Always
+run the two-episode end-to-end smoke before launching the full supervisor:
+
+```bash
+.venv/bin/python examples/Robotwin/generate_local_dataset.py collect \
+  --smoke --tasks click_bell --gpus 0,1
+.venv/bin/python examples/Robotwin/generate_local_dataset.py convert \
+  --smoke --tasks click_bell
+.venv/bin/python examples/Robotwin/generate_local_dataset.py validate \
+  --smoke --tasks click_bell --deep
+```
+
+Launch the full eight-GPU end-to-end pipeline detached. Each GPU processes its
+assigned task/split jobs sequentially, while each job resumes from its existing
+`seed.txt` and HDF5 files after interruption. The pipeline also resumes a
+stopped collector, converts all completed raw jobs, and deeply validates all
+150,000 episodes before writing `pipeline.complete.json`:
+
+```bash
+DATA_ROOT=/home/gaoxiang/data/gaoxiang
+mkdir -p "${DATA_ROOT}/RoboTwinGenerated_raw"
+nohup setsid .venv/bin/python -u \
+  examples/Robotwin/generate_local_dataset.py pipeline \
+  --gpus 0,1,2,3,4,5,6,7 --deep \
+  > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.log" 2>&1 < /dev/null &
+echo $! > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.pid"
+```
+
+Inspect progress without changing collection state:
+
+```bash
+.venv/bin/python examples/Robotwin/generate_local_dataset.py status
+```
+
+The converted LeRobot datasets are written automatically under
+`/home/gaoxiang/data/gaoxiang/RoboTwinGenerated/{Clean,Randomized}/<task>`.
+The conversion and validation commands can also be run manually:
+
+```bash
+.venv/bin/python examples/Robotwin/generate_local_dataset.py convert
+.venv/bin/python examples/Robotwin/generate_local_dataset.py validate --deep
+```
+
 Prepare the LeRobot data:
 
 ```bash
