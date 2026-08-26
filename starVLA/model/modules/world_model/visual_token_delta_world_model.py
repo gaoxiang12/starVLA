@@ -702,7 +702,12 @@ class VisualTokenLatentWorldModel(nn.Module):
         if residual_mask is not None:
             weights = residual_mask.to(dtype=squared_error.dtype)
             horizon_numerator = (squared_error * weights).sum(dim=(0, 2, 3))
-            horizon_denominator = weights.sum(dim=(0, 2, 3)).clamp_min(1.0)
+            # ``weights`` has a singleton feature axis and broadcasts across
+            # the latent channels in ``squared_error``. Include that channel
+            # count so this diagnostic remains an MSE, like ``latent_loss``.
+            horizon_denominator = (
+                weights.sum(dim=(0, 2, 3)) * squared_error.shape[-1]
+            ).clamp_min(1.0)
             per_horizon_loss = horizon_numerator / horizon_denominator
         else:
             per_horizon_loss = squared_error.mean(dim=(0, 2, 3))

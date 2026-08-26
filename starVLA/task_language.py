@@ -14,18 +14,22 @@ import re
 import unicodedata
 from typing import Any, Mapping, Optional
 
+from starVLA.droid_task_taxonomy import classify_droid_task
+
 
 TASK_LANGUAGE_METADATA = "metadata"
 TASK_LANGUAGE_DATASET_NAME = "dataset_name"
 TASK_LANGUAGE_CANONICAL_METADATA = "canonical_metadata"
 TASK_LANGUAGE_BRIDGE_CANONICAL = "bridge_canonical"
 TASK_LANGUAGE_BRIDGE_TAXONOMY = "bridge_taxonomy"
+TASK_LANGUAGE_DROID_TAXONOMY = "droid_taxonomy"
 TASK_LANGUAGE_MODES = {
     TASK_LANGUAGE_METADATA,
     TASK_LANGUAGE_DATASET_NAME,
     TASK_LANGUAGE_CANONICAL_METADATA,
     TASK_LANGUAGE_BRIDGE_CANONICAL,
     TASK_LANGUAGE_BRIDGE_TAXONOMY,
+    TASK_LANGUAGE_DROID_TAXONOMY,
 }
 
 
@@ -283,6 +287,12 @@ def canonical_bridge_taxonomy_task(text: Optional[str]) -> str:
     return classify_bridge_task(text).canonical_text
 
 
+def canonical_droid_task(text: Optional[str]) -> str:
+    """Return the controlled DROID skill description used as a task ID."""
+
+    return classify_droid_task(str(text or ""))
+
+
 def configured_task_language_mode(
     config: Optional[Mapping[str, Any]], routing_key: Any = None
 ) -> str:
@@ -314,4 +324,6 @@ def resolve_task_language(
         return canonical_bridge_task(original_text)
     if normalized_mode == TASK_LANGUAGE_BRIDGE_TAXONOMY:
         return canonical_bridge_taxonomy_task(original_text)
+    if normalized_mode == TASK_LANGUAGE_DROID_TAXONOMY:
+        return canonical_droid_task(original_text)
     return str(original_text or "")

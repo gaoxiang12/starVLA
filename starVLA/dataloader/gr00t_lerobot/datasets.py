@@ -580,6 +580,7 @@ class LeRobotSingleDataset(Dataset):
         data_cfg = None,
         task_language_mode: str | None = None,
         episode_blacklist_path: Path | str | None = None,
+        episode_blacklist: Sequence[int] | None = None,
         **kwargs,
     ):
         """
@@ -600,7 +601,10 @@ class LeRobotSingleDataset(Dataset):
         if not Path(dataset_path).exists():
             raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
         # indict letobot version
-        self._lerobot_version =  self.data_cfg.get("lerobot_version", "v2.0") #self._indict_lerobot_version(**kwargs)
+        configured_version = kwargs.pop("lerobot_version", None)
+        if configured_version is None and self.data_cfg is not None:
+            configured_version = self.data_cfg.get("lerobot_version", None)
+        self._lerobot_version = configured_version or "v2.0"
 
         self._action_mode = None
         self._action_mode_state_map = {}
@@ -618,7 +622,10 @@ class LeRobotSingleDataset(Dataset):
         self._dataset_path = Path(dataset_path)
         self._dataset_name = self._dataset_path.name
         self.episode_blacklist_path = episode_blacklist_path
-        self._episode_blacklist = self._load_episode_blacklist()
+        self._episode_blacklist = {
+            int(episode_index) for episode_index in (episode_blacklist or ())
+        }
+        self._episode_blacklist.update(self._load_episode_blacklist())
         if isinstance(embodiment_tag, EmbodimentTag):
             self.tag = embodiment_tag.value
         else:
@@ -935,6 +942,8 @@ class LeRobotSingleDataset(Dataset):
                     if str(c).startswith("videos/") and str(c).endswith("/from_timestamp")
                 ]
                 for index, episode in episodes_data.iterrows():
+                    if int(episode["episode_index"]) in self._episode_blacklist:
+                        continue
                     trajectory_ids.append(episode["episode_index"])
                     trajectory_lengths.append(episode["length"])
 
@@ -960,7 +969,6 @@ class LeRobotSingleDataset(Dataset):
                                 "chunk_index": int(episode[chunk_col]),
                                 "file_index": int(episode[file_col]),
                             }
-                    print(video_file_indices)
                     episode_meta = {
                         "data/chunk_index": episode["data/chunk_index"],
                         "data/file_index": episode["data/file_index"],
@@ -1367,9 +1375,11 @@ class LeRobotSingleDataset(Dataset):
         elif self._lerobot_version == "v3.0":
             tasks_path = self.dataset_path / LE_ROBOT3_TASKS_FILENAME
             df = pd.read_parquet(tasks_path)
-            df = df.reset_index()  # convert index to a column, typically named 'index'
-            df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
-            df = df[['task_index', 'task']]  # reorder columns
+            if "task" not in df.columns:
+                df = df.reset_index()
+            if "task" not in df.columns and "index" in df.columns:
+                df = df.rename(columns={"index": "task"})
+            df = df[["task_index", "task"]]
             language_mode = getattr(
                 self, "task_language_mode", None
             ) or configured_task_language_mode(self.data_cfg, getattr(self, "tag", None))
@@ -1377,7 +1387,7 @@ class LeRobotSingleDataset(Dataset):
                 resolve_task_language(task, self.dataset_name, language_mode)
                 for task in df["task"]
             ]
-            return df
+            return df.set_index("task_index")
     def _check_integrity(self):
         """Use the config to check if the keys are valid and detect silent data corruption."""
         ERROR_MSG_HEADER = f"Error occurred in initializing dataset {self.dataset_name}:\n"
@@ -1682,7 +1692,11 @@ class LeRobotSingleDataset(Dataset):
         """
         data = {}
         # Get the data for all modalities # just for action base data
+        # curr_traj_id must be updated together with curr_traj_data, otherwise
+        # get_trajectory_data's cache-hit check (curr_traj_id == trajectory_id)
+        # never passes and every sample re-reads the parquet file from disk.
         self.curr_traj_data = self.get_trajectory_data(trajectory_id)
+        self.curr_traj_id = trajectory_id
         # TODO @JinhuiYE The logic below is poorly implemented. Data reading should be directly based on curr_traj_data.
         for modality in self.modality_keys:
             # Get the data corresponding to each key in the modality
@@ -1830,8 +1844,8 @@ class LeRobotSingleDataset(Dataset):
                 video_file_index = episode_meta["data/file_index"]
             video_filename = self.video_path_pattern.format(
                 video_key=original_key,
-                chunk_index=episode_meta["data/chunk_index"],
-                file_index=episode_meta["data/file_index"],
+                chunk_index=video_chunk_index,
+                file_index=video_file_index,
             )
         return self.dataset_path / video_filename
 
@@ -2241,6 +2255,7 @@ class CachedLeRobotSingleDataset(LeRobotSingleDataset):
         """
         data = {}
         self.curr_traj_data = self.get_trajectory_data(trajectory_id)
+        self.curr_traj_id = trajectory_id
         # Get the data for all modalities
         for modality in self.modality_keys:
             # Get the data corresponding to each key in the modality
@@ -2444,6 +2459,19 @@ class LeRobotMixtureDataset(Dataset):
         self.seed = seed
         self.mode = mode
         self.data_cfg = kwargs["data_cfg"] if "data_cfg" in kwargs else None
+        self._active_cached_dataset = None
+        self._clear_inactive_trajectory_cache = bool(
+            self.data_cfg.get("clear_inactive_trajectory_cache", False)
+            if self.data_cfg is not None
+            else False
+        )
+        self._worker_memory_release_interval = int(
+            self.data_cfg.get("worker_memory_release_interval", 0)
+            if self.data_cfg is not None
+            else 0
+        )
+        if self._worker_memory_release_interval < 0:
+            raise ValueError("worker_memory_release_interval must be non-negative")
 
         # Set properties for sampling
 
@@ -2611,8 +2639,11 @@ class LeRobotMixtureDataset(Dataset):
             forced_dataset_index, index = (int(index[0]), int(index[1]))
 
         self._getitem_count += 1
-        if self._getitem_count % 1000 == 0:
-            gc.collect()
+        if (
+            self._worker_memory_release_interval > 0
+            and self._getitem_count % self._worker_memory_release_interval == 0
+        ):
+            self._release_unused_worker_memory()
 
         max_retries = 10
         last_exception = None
@@ -2644,6 +2675,7 @@ class LeRobotMixtureDataset(Dataset):
                         break
                     index = random.randint(0, len(self) - 1)
                     
+                self._activate_dataset_cache(dataset)
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
@@ -2672,6 +2704,31 @@ class LeRobotMixtureDataset(Dataset):
                     print(f"Last error: {last_exception}")
                     # Return a dummy sample or re-raise the exception
                     raise last_exception
+
+    def _activate_dataset_cache(self, dataset: LeRobotSingleDataset) -> None:
+        """Keep at most one trajectory DataFrame cached per mixture worker."""
+
+        if not self._clear_inactive_trajectory_cache:
+            return
+        previous = self._active_cached_dataset
+        if previous is dataset:
+            return
+        if previous is not None:
+            previous.curr_traj_data = None
+            previous.curr_traj_id = None
+        self._active_cached_dataset = dataset
+
+    @staticmethod
+    def _release_unused_worker_memory() -> None:
+        """Return unused Python and Arrow allocations to the operating system."""
+
+        gc.collect()
+        try:
+            import pyarrow as pa
+
+            pa.default_memory_pool().release_unused()
+        except (ImportError, AttributeError):
+            pass
 
     def __len__(self) -> int:
         """Get the length of a single epoch in the mixture.

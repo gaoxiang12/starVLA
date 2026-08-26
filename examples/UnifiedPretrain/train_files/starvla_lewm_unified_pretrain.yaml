@@ -70,12 +70,47 @@ framework:
         state_dim: 8
         gripper_indices: [6]
         random_execution_horizons: [1, 2, 3]
+      oxe_droid:
+        action_spec_id: droid_eef_delta_7
+        action_dim: 7
+        action_horizon: 16
+        state_dim: 10
+        gripper_indices: [6]
+        random_execution_horizons: [1, 2, 4, 8, 16]
+      kuka:
+        action_spec_id: kuka_eef_delta_rpy_gripper_open_abs_7
+        action_dim: 7
+        action_horizon: 8
+        state_dim: 8
+        gripper_indices: [6]
+        random_execution_horizons: [1, 2, 4, 8]
       aloha:
         action_spec_id: aloha_dual_joint_14
         action_dim: 14
         action_horizon: 16
         state_dim: 14
         gripper_indices: [6, 13]
+        random_execution_horizons: [1, 2, 4, 8, 16]
+      so100:
+        action_spec_id: so100_joint_abs_6
+        action_dim: 6
+        action_horizon: 16
+        state_dim: 6
+        gripper_indices: []
+        random_execution_horizons: [1, 2, 4, 8, 16]
+      so101:
+        action_spec_id: so101_joint_abs_6
+        action_dim: 6
+        action_horizon: 16
+        state_dim: 6
+        gripper_indices: []
+        random_execution_horizons: [1, 2, 4, 8, 16]
+      so_follower:
+        action_spec_id: so_follower_joint_abs_6
+        action_dim: 6
+        action_horizon: 16
+        state_dim: 6
+        gripper_indices: []
         random_execution_horizons: [1, 2, 4, 8, 16]
   lang_cond:
     type: text
@@ -91,7 +126,9 @@ datasets:
   vla_data:
     dataset_py: lerobot_datasets
     data_root_dir: /home/gaoxiang/data/gaoxiang
-    data_mix: unified_libero_robotwin_bridge_wm
+    data_mix: unified_libero_robotwin_bridge_droid_kuka_so_family_wm
+    dataset_manifests:
+      community_so_family: /home/gaoxiang/data/gaoxiang/community_dataset_v3/community_so_family_manifest.json
     # Language is a task ID for this non-VLM model.  Use the authoritative
     # RoboTwin task directory, and deterministic lexical aliases for Bridge.
     task_language_mode: metadata
@@ -99,6 +136,11 @@ datasets:
       franka: canonical_metadata
       aloha: dataset_name
       oxe_bridge: bridge_canonical
+      oxe_droid: droid_taxonomy
+      kuka: canonical_metadata
+      so100: canonical_metadata
+      so101: canonical_metadata
+      so_follower: canonical_metadata
     future_obs_frames: true
     future_obs_valid_mask: true
     action_valid_mask: true
@@ -106,9 +148,16 @@ datasets:
     target_num_views: 3
     homogeneous_embodiment_batches: true
     embodiment_sampling_weights:
-      franka: 0.333333
-      oxe_bridge: 0.333333
-      aloha: 0.333334
+      franka: 0.19
+      oxe_bridge: 0.19
+      oxe_droid: 0.19
+      aloha: 0.19
+      kuka: 0.05
+      # Keep the SO family at 19% total while sampling its three calibration
+      # spaces approximately in proportion to retained episode counts.
+      so100: 0.133
+      so101: 0.031
+      so_follower: 0.026
     balance_dataset_weights: false
     balance_trajectory_weights: false
     sequential_step_sampling: false
@@ -120,6 +169,8 @@ datasets:
     pin_memory: true
     persistent_workers: true
     prefetch_factor: 2
+    clear_inactive_trajectory_cache: true
+    worker_memory_release_interval: 32
     drop_last: true
 
 trainer:
@@ -128,7 +179,7 @@ trainer:
   save_interval: 10000
   eval_interval: 2000
   learning_rate:
-    base: 1.0e-4
+    base: 5.0e-5
     action_models: 1.0e-4
     backbone:
       encoder: 1.0e-6

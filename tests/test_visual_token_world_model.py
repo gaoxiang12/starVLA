@@ -66,12 +66,29 @@ class VisualTokenComponentsTest(unittest.TestCase):
         ):
             model = LeWM_OFT(config=config)
 
-        self.assertEqual(set(model.action_models), {"franka", "oxe_bridge", "aloha"})
+        self.assertEqual(
+            set(model.action_models),
+            {
+                "franka",
+                "oxe_bridge",
+                "oxe_droid",
+                "aloha",
+                "kuka",
+                "so100",
+                "so101",
+                "so_follower",
+            },
+        )
         visual = torch.randn(2, 3, 12, 24)
         expected = {
             "franka": (8, 7, 8),
             "oxe_bridge": (3, 7, 8),
+            "oxe_droid": (16, 7, 10),
             "aloha": (16, 14, 14),
+            "kuka": (8, 7, 8),
+            "so100": (16, 6, 6),
+            "so101": (16, 6, 6),
+            "so_follower": (16, 6, 6),
         }
         for tag, (horizon, action_dim, state_dim) in expected.items():
             selected_tag = model._resolve_batch_embodiment(
@@ -375,6 +392,30 @@ class VisualTokenLatentWorldModelTest(unittest.TestCase):
             remapped["world_model.residual_predictor.out.weight"], legacy_weight
         )
 
+    def test_droid_expansion_preserves_legacy_embodiment_embeddings(self):
+        framework = object.__new__(LeWM_OFT)
+        nn.Module.__init__(framework)
+        framework.embodiment_tags = (
+            "aloha",
+            "franka",
+            "oxe_bridge",
+            "oxe_droid",
+        )
+        framework.embodiment_embedding = nn.Embedding(4, 3)
+        droid_initial = framework.embodiment_embedding.weight[3].detach().clone()
+        legacy_embedding = torch.arange(9, dtype=torch.float32).reshape(3, 3)
+
+        remapped = framework.remap_checkpoint_state_dict(
+            {"embodiment_embedding.weight": legacy_embedding}
+        )
+
+        torch.testing.assert_close(
+            remapped["embodiment_embedding.weight"][:3], legacy_embedding
+        )
+        torch.testing.assert_close(
+            remapped["embodiment_embedding.weight"][3], droid_initial
+        )
+
     def test_delta_training_and_inference(self):
         torch.manual_seed(0)
         model = VisualTokenLatentWorldModel(
@@ -484,6 +525,37 @@ class VisualTokenLatentWorldModelTest(unittest.TestCase):
         )
         torch.testing.assert_close(
             output["rollout_latent_loss"], torch.tensor(12.5)
+        )
+
+    def test_masked_horizon_losses_keep_mse_scale(self):
+        model = VisualTokenLatentWorldModel(
+            latent_dim=4,
+            goal_dim=None,
+            n_future=2,
+            num_tokens=2,
+            dim=8,
+            depth=1,
+            num_heads=1,
+            ffn_dim=16,
+        )
+        latent = torch.zeros(1, 3, 2, 4)
+        latent[:, 1] = 1.0
+        latent[:, 2] = 2.0
+        loss_mask = torch.ones(1, 3, 2, dtype=torch.bool)
+
+        output = model(
+            latent,
+            ctx_len=1,
+            update_stats=False,
+            loss_mask=loss_mask,
+        )
+
+        torch.testing.assert_close(output["latent_loss"], torch.tensor(2.5))
+        torch.testing.assert_close(
+            output["latent_loss_horizon_1"], torch.tensor(1.0)
+        )
+        torch.testing.assert_close(
+            output["latent_loss_horizon_2"], torch.tensor(4.0)
         )
 
     def test_delta_scale_keeps_exact_fp32_value_under_bfloat16_cast(self):

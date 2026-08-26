@@ -1,14 +1,20 @@
 # Unified pretraining
 
 This recipe trains one shared visual/language/latent-world-model trunk on
-augmented LIBERO, RoboTwin, and Bridge while routing each homogeneous batch to
-the matching native ACT head.
+augmented LIBERO, RoboTwin, Bridge, DROID, success-filtered KUKA, and a curated
+community SO-family subset while routing each homogeneous batch to the matching
+native ACT head.
 
 | Embodiment tag | Action space | Shape | Control / targets |
 | --- | --- | --- | --- |
 | `franka` | Cartesian EEF delta + gripper | `8 x 7` | 20 Hz; WM at 0/.2/.4 s |
 | `oxe_bridge` | Cartesian EEF delta + gripper | `3 x 7` | 5 Hz; WM at 0/.2/.4 s |
+| `oxe_droid` | Cartesian EEF delta + gripper | `16 x 7` | 15 Hz; WM at 0/.2/.4 s |
+| `kuka` | Cartesian EEF delta RPY + absolute open-gripper | `8 x 7` | 10 Hz; WM at 0/.2/.4 s |
 | `aloha` | dual-arm joints + grippers | `16 x 14` | 30 Hz; WM at 0/.2/.4 s |
+| `so100` | absolute single-arm joints | `16 x 6` | 30 Hz; WM at 0/.2/.4 s |
+| `so101` | absolute single-arm joints | `16 x 6` | 30 Hz; WM at 0/.2/.4 s |
+| `so_follower` | calibrated follower joints | `16 x 6` | 30 Hz; WM at 0/.2/.4 s |
 
 The data root is `/home/gaoxiang/data/gaoxiang`. LIBERO's two real views are
 padded to the shared three-view layout and accompanied by `view_valid_mask`;
@@ -43,6 +49,41 @@ containers and generate the configured non-destructive episode blacklist with:
 
 The loader reads `meta/video_health/bad_episodes.jsonl`; source videos and
 episode metadata are never deleted or rewritten.
+
+Build the SO-family manifest after downloading or updating
+`community_dataset_v3`. The builder selects compatible SO100/SO101 main and
+follower 6-D joint schemas at 30 Hz, requires at least one usable view and
+complete local parquet/video files, and rejects only low-quality task text.
+Directory names such as `test` are not treated as quality labels. Exact
+action/state trajectory copies are recorded as episode exclusions in the
+manifest; source metadata and media remain unchanged:
+
+```bash
+.venv/bin/python \
+  examples/UnifiedPretrain/data_tools/build_community_so100_manifest.py \
+  /home/gaoxiang/data/gaoxiang/community_dataset_v3 \
+  --source-revision 19933f69e5f4d0a979953e4b5fcfa35656dcbc8f
+```
+
+The generated `community_so_family_manifest.json` is the only new file under
+the dataset root. Single-view roots are padded to the common view count and
+identified by `view_valid_mask`.
+
+Prepare KUKA non-destructively. The audit verifies every Parquet and video
+container, fully decodes a deterministic video sample, detects exact
+state/action/video copies, and computes q01/q99 from all retained frames:
+
+```bash
+.venv/bin/python \
+  examples/UnifiedPretrain/data_tools/prepare_kuka_pretrain.py \
+  /home/gaoxiang/data/gaoxiang/kuka_lerobot
+cp examples/UnifiedPretrain/train_files/kuka_modality.json \
+  /home/gaoxiang/data/gaoxiang/kuka_lerobot/meta/modality.json
+```
+
+The source files remain unchanged. Exclusions are recorded in
+`meta/pretrain_audit/excluded_episodes.jsonl`; the loader pads KUKA's single
+real view to three and marks the other two invalid.
 
 Run a short smoke job first:
 

@@ -1432,7 +1432,7 @@ class LeWM_OFT(baseframework):
         return {**output, "raw_progress": raw_progress, "progress": filtered_progress}
 
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
-        """Load checkpoints written before delta_head was renamed."""
+        """Adapt older LeWMOFT checkpoints to the current module layout."""
         remapped = dict(state_dict)
         legacy_marker = "world_model.delta_head."
         current_marker = "world_model.residual_predictor."
@@ -1442,6 +1442,53 @@ class LeWM_OFT(baseframework):
             current_key = key.replace(legacy_marker, current_marker)
             remapped.setdefault(current_key, remapped[key])
             del remapped[key]
+
+        # Expanding a multi-embodiment model changes this table's first
+        # dimension. A plain shape-filtered load would then discard every
+        # previously learned row. Action-head keys identify the source tags,
+        # whose embedding rows were stored in sorted-tag order; copy every
+        # overlapping row by tag and leave only genuinely new tags initialized.
+        embedding_key = "embodiment_embedding.weight"
+        source_embedding = remapped.get(embedding_key)
+        target_embedding = getattr(self, "embodiment_embedding", None)
+        target_tags = tuple(getattr(self, "embodiment_tags", ()))
+        source_tags = tuple(
+            sorted(
+                {
+                    key.split(".", 2)[1]
+                    for key in remapped
+                    if key.startswith("action_models.") and key.count(".") >= 2
+                }
+            )
+        )
+        if (
+            not source_tags
+            and source_embedding is not None
+            and source_embedding.ndim == 2
+            and source_embedding.shape[0] <= len(target_tags)
+        ):
+            # Some lightweight/legacy checkpoints contain only the shared
+            # embedding table. Embodiment rows historically followed the
+            # framework's sorted tag order, so the existing rows are the
+            # corresponding prefix of the expanded table.
+            source_tags = target_tags[: source_embedding.shape[0]]
+        if (
+            source_embedding is not None
+            and target_embedding is not None
+            and source_embedding.ndim == target_embedding.weight.ndim == 2
+            and source_embedding.shape[0] == len(source_tags)
+            and source_embedding.shape[1:] == target_embedding.weight.shape[1:]
+            and target_embedding.weight.shape[0] == len(target_tags)
+            and set(source_tags).issubset(target_tags)
+            and source_embedding.shape != target_embedding.weight.shape
+        ):
+            expanded_embedding = target_embedding.weight.detach().clone()
+            target_index = {tag: index for index, tag in enumerate(target_tags)}
+            for source_index, tag in enumerate(source_tags):
+                expanded_embedding[target_index[tag]].copy_(
+                    source_embedding[source_index]
+                )
+            remapped[embedding_key] = expanded_embedding
         return remapped
 
     def _pool_visual_tokens_to_action_queries(

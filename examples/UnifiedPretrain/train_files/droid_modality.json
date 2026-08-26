@@ -1,0 +1,60 @@
+{
+  "state": {
+    "eef_position": {
+      "start": 0,
+      "end": 3,
+      "absolute": true,
+      "dtype": "float32"
+    },
+    "eef_rotation": {
+      "start": 3,
+      "end": 6,
+      "rotation_type": "euler_angles_rpy",
+      "absolute": true,
+      "dtype": "float32"
+    },
+    "gripper_position": {
+      "start": 7,
+      "end": 8,
+      "absolute": true,
+      "dtype": "float32"
+    }
+  },
+  "action": {
+    "eef_position_delta": {
+      "start": 0,
+      "end": 3,
+      "absolute": false,
+      "dtype": "float32"
+    },
+    "eef_rotation_delta": {
+      "start": 3,
+      "end": 6,
+      "rotation_type": "axis_angle",
+      "absolute": false,
+      "dtype": "float32"
+    },
+    "gripper_position": {
+      "start": 6,
+      "end": 7,
+      "absolute": true,
+      "dtype": "float32"
+    }
+  },
+  "video": {
+    "exterior_image_1": {
+      "original_key": "observation.images.exterior_image_1_left"
+    },
+    "exterior_image_2": {
+      "original_key": "observation.images.exterior_image_2_left"
+    },
+    "wrist_image": {
+      "original_key": "observation.images.wrist_image_left"
+    }
+  },
+  "annotation": {
+    "language.language_instruction": {
+      "original_key": "task_index"
+    }
+  }
+}

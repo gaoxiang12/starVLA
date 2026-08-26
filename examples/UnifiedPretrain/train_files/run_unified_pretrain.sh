@@ -24,6 +24,29 @@ num_processes=${NUM_PROCESSES:-$(tr ',' '\n' <<<"${CUDA_VISIBLE_DEVICES}" | wc -
 trainer_args=(
   --trainer.is_resume "${is_resume}"
 )
+if [[ -n "${DATA_MIX:-}" ]]; then
+  trainer_args+=(--datasets.vla_data.data_mix "${DATA_MIX}")
+fi
+if [[ -n "${EMBODIMENT_SAMPLING_WEIGHTS:-}" ]]; then
+  trainer_args+=(
+    --datasets.vla_data.embodiment_sampling_weights
+    "${EMBODIMENT_SAMPLING_WEIGHTS}"
+  )
+fi
+if [[ -n "${NUM_WORKERS:-}" ]]; then
+  trainer_args+=(--datasets.vla_data.num_workers "${NUM_WORKERS}")
+fi
+if [[ -n "${LOGGING_FREQUENCY:-}" ]]; then
+  trainer_args+=(--trainer.logging_frequency "${LOGGING_FREQUENCY}")
+fi
+if [[ -n "${WARMUP_STEPS:-}" ]]; then
+  trainer_args+=(--trainer.num_warmup_steps "${WARMUP_STEPS}")
+fi
+if [[ -n "${GRADIENT_ACCUMULATION_STEPS:-}" ]]; then
+  trainer_args+=(
+    --trainer.gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}"
+  )
+fi
 if [[ -n "${pretrained_checkpoint}" ]]; then
   trainer_args+=(--trainer.pretrained_checkpoint "${pretrained_checkpoint}")
 fi

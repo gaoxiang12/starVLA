@@ -4,12 +4,14 @@
 # Modified by [Jinhui YE/ HKUST University] in [2025]. 
 # Modification: [suport topdowm processing, suport param from config].
 
+import json
 import logging
 import math
 from pathlib import Path
 from typing import Iterator, Mapping, Sequence
-from omegaconf import OmegaConf
+
 import numpy as np
+from omegaconf import OmegaConf
 from torch.utils.data import Sampler
 
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotSingleDataset, LeRobotMixtureDataset
@@ -21,6 +23,74 @@ from starVLA.dataloader.gr00t_lerobot.registry import (
 from starVLA.task_language import configured_task_language_mode
 
 logger = logging.getLogger(__name__)
+
+_DATASET_MANIFEST_PREFIX = "@manifest:"
+
+
+def _safe_relative_dataset_path(value: str, *, field: str) -> Path:
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"{field} must be a relative path without '..': {value!r}")
+    return path
+
+
+def _expand_dataset_manifest_entries(
+    mixture_spec: Sequence[tuple[str, float, str]],
+    data_cfg,
+    data_root_dir: Path,
+) -> list[tuple[str, float, str]]:
+    """Expand ``@manifest:<key>`` registry entries into concrete datasets."""
+
+    expanded = []
+    manifest_paths = data_cfg.get("dataset_manifests", {})
+    for data_name, weight, robot_type in mixture_spec:
+        if not str(data_name).startswith(_DATASET_MANIFEST_PREFIX):
+            expanded.append((data_name, weight, robot_type))
+            continue
+
+        manifest_key = str(data_name)[len(_DATASET_MANIFEST_PREFIX) :]
+        if manifest_key not in manifest_paths:
+            raise KeyError(
+                f"Dataset manifest {manifest_key!r} is required by the data mixture; "
+                "configure datasets.vla_data.dataset_manifests."
+            )
+        manifest_path = Path(str(manifest_paths[manifest_key]))
+        if not manifest_path.is_absolute():
+            manifest_path = data_root_dir / manifest_path
+        payload = json.loads(manifest_path.read_text())
+        if payload.get("format_version") != 1:
+            raise ValueError(
+                f"Unsupported dataset manifest format in {manifest_path}: "
+                f"{payload.get('format_version')!r}"
+            )
+        source_root = _safe_relative_dataset_path(
+            str(payload.get("source_root", "")), field="source_root"
+        )
+        datasets = payload.get("datasets")
+        if not isinstance(datasets, list) or not datasets:
+            raise ValueError(f"Dataset manifest is empty: {manifest_path}")
+        for entry in datasets:
+            if not isinstance(entry, dict) or "path" not in entry:
+                raise ValueError(f"Invalid dataset entry in {manifest_path}: {entry!r}")
+            relative_path = _safe_relative_dataset_path(
+                str(entry["path"]), field="datasets[].path"
+            )
+            entry_weight = float(entry.get("weight", weight))
+            entry_robot_type = str(entry.get("data_config", robot_type))
+            if entry_robot_type not in ROBOT_TYPE_CONFIG_MAP:
+                raise KeyError(
+                    f"Manifest entry {relative_path} selects unknown data_config "
+                    f"{entry_robot_type!r} in {manifest_path}"
+                )
+            expanded.append(
+                (
+                    (source_root / relative_path).as_posix(),
+                    entry_weight,
+                    entry_robot_type,
+                )
+            )
+    return expanded
+
 
 def collate_fn(batch):
     return batch
@@ -148,6 +218,7 @@ def make_LeRobotSingleDataset(
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "torchvision_av"
     task_language_mode = configured_task_language_mode(data_cfg, embodiment_tag)
     episode_blacklist_path = getattr(data_config, "episode_blacklist_path", None)
+    lerobot_version = getattr(data_config, "lerobot_version", None)
 
     # Opt-in factory hook: a DataConfig may define ``make_dataset(dataset_name=..., **ds_kwargs)``
     # to swap in a custom dataset class (e.g. with per-task filtering / chunk stride).
@@ -164,6 +235,7 @@ def make_LeRobotSingleDataset(
             dataset_name=data_name,
             task_language_mode=task_language_mode,
             episode_blacklist_path=episode_blacklist_path,
+            lerobot_version=lerobot_version,
         )
 
     else:
@@ -177,6 +249,7 @@ def make_LeRobotSingleDataset(
             data_cfg=data_cfg,
             task_language_mode=task_language_mode,
             episode_blacklist_path=episode_blacklist_path,
+            lerobot_version=lerobot_version,
         )
 
     # Keep routing/schema information next to each concrete dataset.  This is
@@ -217,7 +290,9 @@ def get_vla_dataset(
     data_root_dir = data_cfg.data_root_dir
     data_mix = data_cfg.data_mix
     delete_pause_frame = data_cfg.get("delete_pause_frame", False)
-    mixture_spec = DATASET_NAMED_MIXTURES[data_mix]
+    mixture_spec = _expand_dataset_manifest_entries(
+        DATASET_NAMED_MIXTURES[data_mix], data_cfg, Path(data_root_dir)
+    )
     logger.info(f"[dataloader] Using mixture '{data_mix}': {[(d, w, r) for d, w, r in mixture_spec]}")
     included_datasets, filtered_mixture_spec = set(), []
     for d_name, d_weight, robot_type in mixture_spec:  
