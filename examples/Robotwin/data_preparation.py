@@ -9,6 +9,7 @@ RoboTwin training config expects LeRobot-style directories under
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import shutil
@@ -17,11 +18,14 @@ import time
 import zipfile
 from pathlib import Path
 
+import av
 import h5py
 import numpy as np
 import pandas as pd
 from huggingface_hub import hf_hub_download
 from PIL import Image
+
+from starVLA.task_language import canonical_task_text
 
 REPO_ID = "TianxingChen/RoboTwin2.0"
 ROBOT = "aloha-agilex"
@@ -164,13 +168,9 @@ def read_instruction(path: Path) -> str:
     return ""
 
 
-def image_entry(raw_bytes: bytes) -> dict[str, bytes]:
-    return {"bytes": raw_bytes, "path": None}
-
-
-def feature_image(width: int, height: int) -> dict:
+def feature_video(width: int, height: int) -> dict:
     return {
-        "dtype": "image",
+        "dtype": "video",
         "shape": [height, width, 3],
         "names": ["height", "width", "channel"],
         "info": {
@@ -178,8 +178,8 @@ def feature_image(width: int, height: int) -> dict:
             "video.width": width,
             "video.channels": 3,
             "video.fps": FPS,
-            "video.codec": "image",
-            "video.pix_fmt": "rgb24",
+            "video.codec": "h264",
+            "video.pix_fmt": "yuv420p",
             "video.is_depth_map": False,
             "has_audio": False,
         },
@@ -187,6 +187,7 @@ def feature_image(width: int, height: int) -> dict:
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -207,16 +208,46 @@ def summarize_numeric_chunks(chunks: list[np.ndarray]) -> dict[str, list[float]]
 
 
 def write_abs_stats(path: Path, chunks_by_key: dict[str, list[np.ndarray]]) -> None:
+    statistics = {key: summarize_numeric_chunks(chunks) for key, chunks in chunks_by_key.items()}
     payload = {
         "__format_version": STATS_FORMAT_VERSION,
         "__cache_config": {"mode": "abs"},
-        "statistics": {key: summarize_numeric_chunks(chunks) for key, chunks in chunks_by_key.items()},
+        "statistics": statistics,
     }
     path.write_text(json.dumps(payload, indent=4) + "\n")
+    (path.parent / "stats.json").write_text(json.dumps(statistics, indent=4) + "\n")
+
+
+def write_video(path: Path, encoded_frames, width: int, height: int) -> int:
+    """Encode one RoboTwin JPEG sequence as a LeRobot H.264 video."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame_count = 0
+    with av.open(str(path), mode="w") as container:
+        stream = container.add_stream("libx264", rate=FPS)
+        stream.width = width
+        stream.height = height
+        stream.pix_fmt = "yuv420p"
+        stream.options = {"crf": "23", "preset": "veryfast"}
+        for encoded in encoded_frames:
+            with Image.open(io.BytesIO(bytes(encoded))) as image:
+                rgb = np.asarray(image.convert("RGB"))
+            if rgb.shape != (height, width, 3):
+                raise ValueError(
+                    f"Inconsistent RoboTwin frame shape {rgb.shape}; "
+                    f"expected {(height, width, 3)}"
+                )
+            frame = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+            for packet in stream.encode(frame):
+                container.mux(packet)
+            frame_count += 1
+        for packet in stream.encode():
+            container.mux(packet)
+    return frame_count
 
 
 def build_info(total_episodes: int, total_frames: int, total_tasks: int, width: int, height: int) -> dict:
-    features = {key: feature_image(width, height) for key in CAMERA_MAP}
+    features = {key: feature_video(width, height) for key in CAMERA_MAP}
     features.update(
         {
             "observation.state": {
@@ -242,7 +273,7 @@ def build_info(total_episodes: int, total_frames: int, total_tasks: int, width: 
         "total_episodes": total_episodes,
         "total_frames": total_frames,
         "total_tasks": total_tasks,
-        "total_videos": 0,
+        "total_videos": total_episodes * len(CAMERA_MAP),
         "total_chunks": max(1, (total_episodes + CHUNK_SIZE - 1) // CHUNK_SIZE),
         "chunks_size": CHUNK_SIZE,
         "fps": FPS,
@@ -262,23 +293,35 @@ def extract_zip(zip_path: Path, tmp_root: Path) -> Path:
     return roots[0]
 
 
-def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path) -> None:
+def convert_extracted(
+    extracted_root: Path,
+    output_dir: Path,
+    modality_src: Path,
+    task_name: str | None = None,
+) -> None:
     hdf5_files = sorted(
         (extracted_root / "data").glob("episode*.hdf5"), key=lambda p: int(p.stem.removeprefix("episode"))
     )
     if not hdf5_files:
         raise FileNotFoundError(f"No episode HDF5 files found under {extracted_root / 'data'}")
 
+    canonical_task = canonical_task_text(task_name or output_dir.name)
+    if not canonical_task:
+        raise ValueError(f"Cannot derive canonical RoboTwin task from {task_name or output_dir.name!r}")
+
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     staging_dir = output_dir.with_name(f".{output_dir.name}.tmp-convert")
+    backup_dir = output_dir.with_name(f".{output_dir.name}.previous")
+    if not output_dir.exists() and backup_dir.exists():
+        backup_dir.replace(output_dir)
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
     (staging_dir / "meta").mkdir(parents=True, exist_ok=True)
     (staging_dir / "data").mkdir(parents=True, exist_ok=True)
 
-    task_to_index: dict[str, int] = {}
-    tasks_rows: list[dict] = []
+    tasks_rows = [{"task_index": 0, "task": canonical_task}]
     episodes_rows: list[dict] = []
+    language_audit_rows: list[dict] = []
     total_frames = 0
     image_size: tuple[int, int] | None = None
     stats_chunks: dict[str, list[np.ndarray]] = {
@@ -297,13 +340,26 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
     for episode_index, hdf5_path in enumerate(hdf5_files):
         instruction_path = extracted_root / "instructions" / f"episode{episode_index}.json"
         instruction = read_instruction(instruction_path) if instruction_path.exists() else ""
-        if instruction not in task_to_index:
-            task_to_index[instruction] = len(task_to_index)
-            tasks_rows.append({"task_index": task_to_index[instruction], "task": instruction})
-        task_index = task_to_index[instruction]
+        if not instruction.strip():
+            raise ValueError(f"Missing task language for episode {episode_index}: {instruction_path}")
+        task_index = 0
+        language_audit_rows.append(
+            {
+                "episode_index": episode_index,
+                "raw_description": instruction,
+                "canonical_description": canonical_task,
+                "canonical_source": "starVLA.task_language.canonical_task_text",
+                "included": True,
+                "exclusion_reason": None,
+            }
+        )
 
         with h5py.File(hdf5_path, "r") as handle:
             action = np.asarray(handle["joint_action/vector"], dtype=np.float32)
+            if action.ndim != 2 or action.shape[1] != 14 or action.shape[0] <= 0:
+                raise ValueError(f"Invalid action shape {action.shape} in {hdf5_path}")
+            if not np.isfinite(action).all():
+                raise ValueError(f"NaN/Inf action in {hdf5_path}")
             state = action.copy()
             length = int(action.shape[0])
             columns: dict[str, list] = {
@@ -324,10 +380,33 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
             stats_chunks["task_index"].append(np.full((length, 1), task_index, dtype=np.float32))
             for out_key, camera_name in CAMERA_MAP.items():
                 frames = handle[f"observation/{camera_name}/rgb"]
-                if image_size is None and len(frames):
-                    image = Image.open(io.BytesIO(bytes(frames[0]))).convert("RGB")
-                    image_size = image.size
-                columns[out_key] = [image_entry(bytes(frame)) for frame in frames]
+                if len(frames) != length:
+                    raise ValueError(
+                        f"Camera/action length mismatch in {hdf5_path}: "
+                        f"{camera_name}={len(frames)}, action={length}"
+                    )
+                if image_size is None:
+                    with Image.open(io.BytesIO(bytes(frames[0]))) as image:
+                        image_size = image.convert("RGB").size
+                episode_chunk = episode_index // CHUNK_SIZE
+                video_path = (
+                    staging_dir
+                    / "videos"
+                    / f"chunk-{episode_chunk:03d}"
+                    / out_key
+                    / f"episode_{episode_index:06d}.mp4"
+                )
+                written_frames = write_video(
+                    video_path,
+                    frames,
+                    width=image_size[0],
+                    height=image_size[1],
+                )
+                if written_frames != length:
+                    raise ValueError(
+                        f"Encoded frame count mismatch in {video_path}: "
+                        f"{written_frames} != {length}"
+                    )
 
         episode_chunk = episode_index // CHUNK_SIZE
         chunk_dir = staging_dir / "data" / f"chunk-{episode_chunk:03d}"
@@ -336,7 +415,7 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
             chunk_dir / f"episode_{episode_index:06d}.parquet",
             index=False,
         )
-        episodes_rows.append({"episode_index": episode_index, "tasks": [instruction], "length": length})
+        episodes_rows.append({"episode_index": episode_index, "tasks": [canonical_task], "length": length})
         total_frames += length
 
     if image_size is None:
@@ -344,13 +423,48 @@ def convert_extracted(extracted_root: Path, output_dir: Path, modality_src: Path
     shutil.copyfile(modality_src, staging_dir / "meta" / "modality.json")
     write_jsonl(staging_dir / "meta" / "tasks.jsonl", tasks_rows)
     write_jsonl(staging_dir / "meta" / "episodes.jsonl", episodes_rows)
+    write_jsonl(
+        staging_dir / "meta" / "task_language" / "robotwin_task_language_audit.jsonl",
+        language_audit_rows,
+    )
+    write_jsonl(staging_dir / "meta" / "audit" / "episode_blacklist.jsonl", [])
+    write_jsonl(staging_dir / "meta" / "audit" / "duplicate_episodes.jsonl", [])
     write_abs_stats(staging_dir / "meta" / "stats_gr00t.json", stats_chunks)
     (staging_dir / "meta" / "info.json").write_text(
-        json.dumps(build_info(len(hdf5_files), total_frames, len(tasks_rows), image_size[0], image_size[1]), indent=4),
+        json.dumps(build_info(len(hdf5_files), total_frames, 1, image_size[0], image_size[1]), indent=4),
+    )
+    conversion_audit = {
+        "dataset": canonical_task,
+        "source": str(extracted_root),
+        "episodes": len(hdf5_files),
+        "frames": total_frames,
+        "videos": len(hdf5_files) * len(CAMERA_MAP),
+        "action_semantics": "absolute joint position",
+        "state_semantics": "observed joint position",
+        "control_hz": FPS,
+        "canonical_task_count": 1,
+        "raw_language_rows": len(language_audit_rows),
+        "content_digest": hashlib.sha256(
+            "\n".join(
+                f"{row['episode_index']}:{row['raw_description']}" for row in language_audit_rows
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    (staging_dir / "meta" / "audit" / "conversion_audit.json").write_text(
+        json.dumps(conversion_audit, indent=2, ensure_ascii=False) + "\n"
     )
     if output_dir.exists():
-        shutil.rmtree(output_dir)
-    staging_dir.replace(output_dir)
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
+        output_dir.replace(backup_dir)
+    try:
+        staging_dir.replace(output_dir)
+    except Exception:
+        if not output_dir.exists() and backup_dir.exists():
+            backup_dir.replace(output_dir)
+        raise
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
 
 
 def prepare_one(
@@ -371,7 +485,7 @@ def prepare_one(
     print(f"[convert] {zip_path} -> {output_dir}")
     with tempfile.TemporaryDirectory(prefix="robotwin_extract_") as tmp:
         extracted_root = extract_zip(zip_path, Path(tmp))
-        convert_extracted(extracted_root, output_dir, modality_src)
+        convert_extracted(extracted_root, output_dir, modality_src, task_name=task)
 
     if args.remove_zip:
         zip_path.unlink()

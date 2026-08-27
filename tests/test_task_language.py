@@ -9,7 +9,9 @@ from starVLA.task_language import (
     canonical_bridge_task,
     canonical_bridge_taxonomy_task,
     canonical_metadata_text,
+    canonical_oxe_task,
     canonical_task_text,
+    classify_oxe_task,
     classify_bridge_task,
     configured_task_language_mode,
     resolve_task_language,
@@ -129,6 +131,21 @@ class TaskLanguageTest(unittest.TestCase):
 
     def test_canonical_metadata_matches_text_encoder_normalization(self):
         self.assertEqual(canonical_metadata_text("  PICK\u3000UP  Cup  "), "pick up cup")
+
+    def test_oxe_taxonomy_is_conservative_about_move_and_place(self):
+        self.assertEqual(canonical_oxe_task("Put the cup into the bowl."), "place in")
+        self.assertEqual(canonical_oxe_task("Move the arm in a circle"), "move in circular")
+        self.assertNotEqual(
+            canonical_oxe_task("Move the arm in a circle"),
+            canonical_oxe_task("Place the arm in a circle"),
+        )
+        self.assertEqual(classify_oxe_task("Insert the hexagon object").status, "classified")
+
+    def test_oxe_taxonomy_mode_routes_through_shared_resolver(self):
+        self.assertEqual(
+            resolve_task_language("PICK UP the red block!", "ignored", "oxe_taxonomy"),
+            "pick",
+        )
 
 
 if __name__ == "__main__":

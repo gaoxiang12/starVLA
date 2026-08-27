@@ -363,6 +363,12 @@ DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
     (dataset, weight, "robotwin_wm")
     for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
 ]
+# Local 500-success Clean generation uses the same per-task schema but lives
+# under a separate data root so it can be audited before replacing any
+# official-data recipe.
+DATASET_NAMED_MIXTURES["robotwin_generated_clean500_wm"] = list(
+    DATASET_NAMED_MIXTURES["robotwin_clean_wm"]
+)
 
 # Smooth-latent runs intentionally use a separate robot type so archived
 # residual-WM configs and checkpoints keep their original [0, 8, 16] schema.

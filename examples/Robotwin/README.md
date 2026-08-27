@@ -223,55 +223,81 @@ three RGB views, 14-D proprioception, and 16-step absolute-qpos action chunks.
 
 ## Generate a scaled local dataset
 
-The resumable local generator targets 2,000 Clean and 1,000 Randomized
-episodes for each of the 50 official tasks (150,000 episodes total). Always
+The resumable local generator targets exactly 500 successful Clean episodes
+for each of the 50 official tasks (25,000 episodes total). It rejects failed
+replays, malformed episodes, non-finite actions, empty language and exact
+action-plus-image duplicates. Set up the two isolated environments and always
 run the two-episode end-to-end smoke before launching the full supervisor:
 
 ```bash
-.venv/bin/python examples/Robotwin/generate_local_dataset.py collect \
-  --smoke --tasks click_bell --gpus 0,1
-.venv/bin/python examples/Robotwin/generate_local_dataset.py convert \
+bash ../setup-envs.sh RoboTwin
+bash ../setup-envs.sh starVLA
+
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py collect \
+  --smoke --tasks click_bell --gpus 0
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py convert \
   --smoke --tasks click_bell
-.venv/bin/python examples/Robotwin/generate_local_dataset.py validate \
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py validate \
   --smoke --tasks click_bell --deep
 ```
 
-Launch the full eight-GPU end-to-end pipeline detached. Each GPU processes its
-assigned task/split jobs sequentially, while each job resumes from its existing
+Launch the end-to-end pipeline detached. Each selected free GPU processes its
+assigned task jobs sequentially, while each job resumes from its existing
 `seed.txt` and HDF5 files after interruption. The pipeline also resumes a
 stopped collector, converts all completed raw jobs, and deeply validates all
-150,000 episodes before writing `pipeline.complete.json`:
+25,000 episodes before writing `pipeline.complete.json`:
 
 ```bash
 DATA_ROOT=/home/gaoxiang/data/gaoxiang
 mkdir -p "${DATA_ROOT}/RoboTwinGenerated_raw"
-nohup setsid .venv/bin/python -u \
-  examples/Robotwin/generate_local_dataset.py pipeline \
-  --gpus 0,1,2,3,4,5,6,7 --deep \
+nohup setsid bash examples/Robotwin/run_clean500_generation.sh \
   > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.log" 2>&1 < /dev/null &
 echo $! > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.pid"
 ```
 
+The launcher defaults to GPUs 3–7 and, only after the deep audit completes,
+synchronizes the converted dataset to
+`36.212.196.90:/data/gaoxiang/RoboTwinGenerated/` over SSH port 1227. Override
+the GPU list with `ROBOTWIN_GENERATION_GPUS` when host allocation changes.
+
 Inspect progress without changing collection state:
 
 ```bash
-.venv/bin/python examples/Robotwin/generate_local_dataset.py status
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py status
+```
+
+Use otherwise-idle CPU cores to convert collector-complete tasks while the GPU
+workers continue generating later tasks. `prefinalize` acquires a separate
+singleton lock and only reads jobs whose collector lock has already been
+released. It performs representative validation; the main pipeline still runs
+the mandatory all-episode deep audit before completion and synchronization:
+
+```bash
+nohup setsid ../.venvs/starVLA/bin/python -u \
+  examples/Robotwin/generate_local_dataset.py prefinalize \
+  --tasks all --splits clean --clean-target 500 \
+  --poll-seconds 60 --finalize-workers 3 \
+  > /data/gaoxiang/RoboTwinGenerated_raw/prefinalize.log 2>&1 < /dev/null &
 ```
 
 The converted LeRobot datasets are written automatically under
-`/home/gaoxiang/data/gaoxiang/RoboTwinGenerated/{Clean,Randomized}/<task>`.
+`/data/gaoxiang/RoboTwinGenerated/Clean/<task>`. Every task has one canonical
+task ID, three H.264 video streams, numeric Parquet episodes, `stats.json`,
+`stats_gr00t.json`, and reproducible language/duplicate/blacklist audits. The
+independent unified-pretraining mixture name is
+`unified_robotwin_generated_clean500_wm`.
 The conversion and validation commands can also be run manually:
 
 ```bash
-.venv/bin/python examples/Robotwin/generate_local_dataset.py convert
-.venv/bin/python examples/Robotwin/generate_local_dataset.py validate --deep
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py convert
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py validate --deep
 ```
 
 Prepare the LeRobot data:
 
 ```bash
-.venv/bin/python examples/Robotwin/data_preparation.py \
-  --tasks all --splits clean randomized
+../.venvs/starVLA/bin/python examples/Robotwin/data_preparation.py \
+  --tasks all --splits clean
 ```
 
 Launch a four-GPU training run (choose free GPUs first):

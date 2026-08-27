@@ -23,6 +23,7 @@ TASK_LANGUAGE_CANONICAL_METADATA = "canonical_metadata"
 TASK_LANGUAGE_BRIDGE_CANONICAL = "bridge_canonical"
 TASK_LANGUAGE_BRIDGE_TAXONOMY = "bridge_taxonomy"
 TASK_LANGUAGE_DROID_TAXONOMY = "droid_taxonomy"
+TASK_LANGUAGE_OXE_TAXONOMY = "oxe_taxonomy"
 TASK_LANGUAGE_MODES = {
     TASK_LANGUAGE_METADATA,
     TASK_LANGUAGE_DATASET_NAME,
@@ -30,6 +31,7 @@ TASK_LANGUAGE_MODES = {
     TASK_LANGUAGE_BRIDGE_CANONICAL,
     TASK_LANGUAGE_BRIDGE_TAXONOMY,
     TASK_LANGUAGE_DROID_TAXONOMY,
+    TASK_LANGUAGE_OXE_TAXONOMY,
 }
 
 
@@ -104,6 +106,16 @@ class BridgeTaskLabel:
     confidence: str
 
 
+@dataclass(frozen=True)
+class OxeTaskLabel:
+    """Conservative categorical label for Open-X task descriptions."""
+
+    canonical_text: str
+    family: str
+    status: str
+    confidence: str
+
+
 _BRIDGE_TAXONOMY_REPLACEMENTS = (
     (r"\bright\s+top\b", "top right"),
     (r"\bleft\s+top\b", "top left"),
@@ -165,6 +177,104 @@ _BRIDGE_KNOWN_FAMILIES = {
     "reach",
     "transition",
     "no_op",
+}
+
+
+_OXE_ACTION_ALIASES = {
+    "collapse": "collapse",
+    "close": "close",
+    "closed": "close",
+    "closing": "close",
+    "cover": "cover",
+    "drag": "drag",
+    "grab": "pick",
+    "grasp": "pick",
+    "insert": "insert",
+    "lift": "pick",
+    "knock": "knock",
+    "move": "move",
+    "open": "open",
+    "opened": "open",
+    "opening": "open",
+    "pick": "pick",
+    "picked": "pick",
+    "pickup": "pick",
+    "place": "place",
+    "placed": "place",
+    "pour": "pour",
+    "pull": "pull",
+    "push": "push",
+    "put": "place",
+    "rotate": "rotate",
+    "rotated": "rotate",
+    "slide": "slide",
+    "slid": "slide",
+    "stack": "stack",
+    "stand": "place",
+    "store": "place",
+    "sweep": "sweep",
+    "switch": "toggle",
+    "take": "pick",
+    "toggle": "toggle",
+    "turn": "turn",
+    "unstack": "unstack",
+    "wipe": "wipe",
+}
+
+_OXE_KNOWN_FAMILIES = {
+    "close",
+    "collapse",
+    "cover",
+    "drag",
+    "fold",
+    "hold",
+    "insert",
+    "knock",
+    "move",
+    "open",
+    "pick",
+    "place",
+    "pour",
+    "pull",
+    "push",
+    "reach",
+    "remove",
+    "reorient",
+    "rotate",
+    "slide",
+    "sweep",
+    "stack",
+    "take",
+    "turn",
+    "toggle",
+    "unfold",
+    "wipe",
+    "unstack",
+}
+
+_OXE_STRUCTURAL_TOKENS = {
+    "above",
+    "around",
+    "back",
+    "behind",
+    "bottom",
+    "circular",
+    "clockwise",
+    "counterclockwise",
+    "down",
+    "from",
+    "front",
+    "in",
+    "left",
+    "near",
+    "off",
+    "on",
+    "right",
+    "top",
+    "to",
+    "under",
+    "up",
+    "upright",
 }
 
 
@@ -293,6 +403,61 @@ def canonical_droid_task(text: Optional[str]) -> str:
     return classify_droid_task(str(text or ""))
 
 
+def classify_oxe_task(text: Optional[str]) -> OxeTaskLabel:
+    """Build a role-preserving task ID for heterogeneous Open-X datasets.
+
+    This is deliberately more conservative than the Bridge taxonomy: in
+    particular, ``move`` and ``place`` remain distinct because commands such
+    as "move the arm in a circle" are not placement tasks.
+    """
+
+    normalized = canonical_metadata_text(text)
+    normalized = re.sub(r"\bpick\s+(?:it\s+)?up\b", "pick", normalized)
+    normalized = re.sub(r"\bon\s+top\s+of\b", "on", normalized)
+    normalized = re.sub(r"\bonto\b", "on", normalized)
+    normalized = re.sub(r"\binto\b", "in", normalized)
+    normalized = re.sub(r"\binside\s+of\b", "in", normalized)
+    normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
+    tokens = [token for token in normalized.split() if token not in _ARTICLES]
+    if not tokens:
+        return OxeTaskLabel("", "unlabeled", "unlabeled", "none")
+    tokens = ["circular" if token == "circle" else token for token in tokens]
+    normalized = " ".join(tokens)
+    if normalized in {
+        "nothing",
+        "no op",
+        "robot did nothing",
+        "robot arm did nothing",
+    }:
+        return OxeTaskLabel("no_op", "no_op", "excluded", "high")
+    action_candidates: list[tuple[int, str]] = []
+    for index, token in enumerate(tokens):
+        action = _OXE_ACTION_ALIASES.get(token)
+        if action is not None:
+            action_candidates.append((index, action))
+    if not action_candidates:
+        family = tokens[0]
+    else:
+        _, family = action_candidates[-1]
+    if family == "turn":
+        family = "toggle" if {"on", "off"}.intersection(tokens) else "rotate"
+    modifiers = [token for token in tokens if token in _OXE_STRUCTURAL_TOKENS]
+    canonical_tokens = [family]
+    for modifier in modifiers:
+        if not canonical_tokens or modifier != canonical_tokens[-1]:
+            canonical_tokens.append(modifier)
+    normalized = " ".join(canonical_tokens)
+    if family in _OXE_KNOWN_FAMILIES:
+        return OxeTaskLabel(normalized, family, "classified", "high")
+    return OxeTaskLabel(normalized, family, "needs_review", "low")
+
+
+def canonical_oxe_task(text: Optional[str]) -> str:
+    """Return the conservative Open-X taxonomy label used as a task ID."""
+
+    return classify_oxe_task(text).canonical_text
+
+
 def configured_task_language_mode(
     config: Optional[Mapping[str, Any]], routing_key: Any = None
 ) -> str:
@@ -326,4 +491,6 @@ def resolve_task_language(
         return canonical_bridge_taxonomy_task(original_text)
     if normalized_mode == TASK_LANGUAGE_DROID_TAXONOMY:
         return canonical_droid_task(original_text)
+    if normalized_mode == TASK_LANGUAGE_OXE_TAXONOMY:
+        return canonical_oxe_task(original_text)
     return str(original_text or "")

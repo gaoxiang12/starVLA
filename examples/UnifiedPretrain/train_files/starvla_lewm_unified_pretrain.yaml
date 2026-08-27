@@ -84,12 +84,41 @@ framework:
         state_dim: 8
         gripper_indices: [6]
         random_execution_horizons: [1, 2, 4, 8]
+      taco_franka:
+        action_spec_id: taco_franka_world_delta_scaled_xyz50_rpy20_gripper_open_abs_7_15hz
+        action_dim: 7
+        action_horizon: 8
+        state_dim: 8
+        gripper_indices: [6]
+        random_execution_horizons: [1, 2, 4, 8]
+      google_bcz:
+        action_spec_id: google_bcz_eef_delta_xyz_axis_angle_gripper_open_abs_7_10hz
+        action_dim: 7
+        action_horizon: 8
+        state_dim: 8
+        gripper_indices: [6]
+        random_execution_horizons: [1, 2, 4, 8]
+      google_rt1:
+        action_spec_id: google_rt1_eef_delta_xyz_rpy_gripper_open_abs_7_3hz
+        action_dim: 7
+        action_horizon: 8
+        state_dim: 8
+        gripper_indices: [6]
+        random_execution_horizons: [1, 2, 4, 8]
+      fmb_franka:
+        action_spec_id: fmb_franka_eef_twist_normalized_gripper_open_abs_7_10hz
+        action_dim: 7
+        action_horizon: 8
+        state_dim: 8
+        gripper_indices: [6]
+        random_execution_horizons: [1, 2, 4, 8]
       aloha:
         action_spec_id: aloha_dual_joint_14
         action_dim: 14
         action_horizon: 16
         state_dim: 14
-        gripper_indices: [6, 13]
+        # Packed DataConfig order is [left joints, right joints, left grip, right grip].
+        gripper_indices: [12, 13]
         random_execution_horizons: [1, 2, 4, 8, 16]
       so100:
         action_spec_id: so100_joint_abs_6
@@ -138,6 +167,10 @@ datasets:
       oxe_bridge: bridge_canonical
       oxe_droid: droid_taxonomy
       kuka: canonical_metadata
+      taco_franka: oxe_taxonomy
+      google_bcz: oxe_taxonomy
+      google_rt1: oxe_taxonomy
+      fmb_franka: oxe_taxonomy
       so100: canonical_metadata
       so101: canonical_metadata
       so_follower: canonical_metadata

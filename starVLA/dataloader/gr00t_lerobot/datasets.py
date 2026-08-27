@@ -1606,9 +1606,20 @@ class LeRobotSingleDataset(Dataset):
         trajectory_index = self.get_trajectory_index(trajectory_id)
         trajectory_length = int(self.trajectory_lengths[trajectory_index])
         absolute_steps = offsets + int(base_index)
-        sample["future_frame_valid_mask"] = np.logical_and(
+        valid_mask = np.logical_and(
             absolute_steps >= 0, absolute_steps < trajectory_length
         )
+        # A low-rate dataset can map two requested real-time horizons to the
+        # same nearest frame (for example 3 Hz at +0.2 s and +0.4 s). Keep the
+        # frame for batch alignment, but never count the duplicate as a second
+        # supervision target.
+        seen_offsets: set[int] = set()
+        for position, offset in enumerate(offsets.tolist()):
+            if offset in seen_offsets:
+                valid_mask[position] = False
+            else:
+                seen_offsets.add(offset)
+        sample["future_frame_valid_mask"] = valid_mask
         return sample
 
     def _attach_progress_fields(

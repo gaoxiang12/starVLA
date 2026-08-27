@@ -40,6 +40,18 @@ class EmbodimentTag(Enum):
     KUKA = "kuka"
     """The KUKA iiwa bin-picking embodiment."""
 
+    TACO_FRANKA = "taco_franka"
+    """Franka Panda with TACO Play scaled relative EEF commands."""
+
+    GOOGLE_BCZ = "google_bcz"
+    """Google robot with BC-Z residual EEF commands at 10 Hz."""
+
+    GOOGLE_RT1 = "google_rt1"
+    """Google robot with RT-1 residual EEF commands at 3 Hz."""
+
+    FMB_FRANKA = "fmb_franka"
+    """Franka Panda with FMB normalized EEF-twist commands."""
+
     AGIBOT_GENIE1 = "agibot_genie1"
     """
     The AgiBot Genie-1 with gripper dataset.
@@ -88,6 +100,10 @@ EMBODIMENT_TAG_MAPPING = {
     EmbodimentTag.OXE_BRIDGE.value: 18,
     EmbodimentTag.OXE_RT1.value: 19,
     EmbodimentTag.KUKA.value: 20,
+    EmbodimentTag.TACO_FRANKA.value: 21,
+    EmbodimentTag.GOOGLE_BCZ.value: 22,
+    EmbodimentTag.GOOGLE_RT1.value: 23,
+    EmbodimentTag.FMB_FRANKA.value: 27,
     EmbodimentTag.AGIBOT_GENIE1.value: 26,
     EmbodimentTag.GR1.value: 24,
     EmbodimentTag.FRANKA.value: 25,
@@ -107,6 +123,10 @@ ROBOT_TYPE_TO_EMBODIMENT_TAG = {
     "oxe_bridge": EmbodimentTag.OXE_BRIDGE,
     "oxe_rt1": EmbodimentTag.OXE_RT1,
     "unified_kuka_wm": EmbodimentTag.KUKA,
+    "unified_taco_play_wm": EmbodimentTag.TACO_FRANKA,
+    "unified_bc_z_wm": EmbodimentTag.GOOGLE_BCZ,
+    "unified_fractal_wm": EmbodimentTag.GOOGLE_RT1,
+    "unified_fmb_wm": EmbodimentTag.FMB_FRANKA,
     "demo_sim_franka_delta_joints": EmbodimentTag.FRANKA,
     "custom_robot_config": EmbodimentTag.NEW_EMBODIMENT,
     "fourier_gr1_arms_waist": EmbodimentTag.GR1,

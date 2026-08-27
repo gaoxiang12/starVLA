@@ -244,6 +244,13 @@ class _KukaSingleDataset(LeRobotSingleDataset):
         return _LazyStepIndex(self.trajectory_ids, self.trajectory_lengths)
 
 
+class _CommunityEefSingleDataset(LeRobotSingleDataset):
+    """Memory-bounded reader for the large per-episode Open-X exports."""
+
+    def _get_all_steps(self):
+        return _LazyStepIndex(self.trajectory_ids, self.trajectory_lengths)
+
+
 class UnifiedDroidWMDataConfig(OxeDroidDataConfig):
     episode_blacklist_path = (
         "meta/task_language/droid_pretrain_excluded_episodes.jsonl"
@@ -301,6 +308,196 @@ class UnifiedDroidWMDataConfig(OxeDroidDataConfig):
     def make_dataset(self, **kwargs):
         kwargs.pop("dataset_name", None)
         return _DroidSingleDataset(**kwargs)
+
+
+class _UnifiedCommunityEefWMDataConfig:
+    """Shared loader plumbing; subclasses retain distinct action semantics."""
+
+    episode_blacklist_path = "meta/pretrain_audit/excluded_episodes.jsonl"
+    future_time_offsets_s = (0.0, 0.2, 0.4)
+    language_keys = ["annotation.human.action.task_description"]
+    observation_indices = [0]
+    state_indices = [0]
+    action_indices = list(range(8))
+    gripper_action_keys = ("action.gripper_open",)
+    gripper_state_keys = ()
+
+    def modality_config(self):
+        return {
+            "video": ModalityConfig(
+                delta_indices=self.video_indices,
+                modality_keys=self.video_keys,
+            ),
+            "state": ModalityConfig(
+                delta_indices=self.state_indices,
+                modality_keys=self.state_keys,
+            ),
+            "action": ModalityConfig(
+                delta_indices=self.action_indices,
+                modality_keys=self.action_keys,
+            ),
+            "language": ModalityConfig(
+                delta_indices=self.observation_indices,
+                modality_keys=self.language_keys,
+            ),
+        }
+
+    def transform(self):
+        return _unified_state_action_transform(self, state_mode="q99")
+
+    def make_dataset(self, **kwargs):
+        kwargs.pop("dataset_name", None)
+        return _CommunityEefSingleDataset(**kwargs)
+
+
+class UnifiedTacoPlayWMDataConfig(_UnifiedCommunityEefWMDataConfig):
+    embodiment_tag = EmbodimentTag.TACO_FRANKA
+    action_spec_id = (
+        "taco_franka_world_delta_scaled_xyz50_rpy20_gripper_open_abs_7_15hz"
+    )
+    state_spec_id = "taco_franka_eef_xyz_rpy_pad_gripper_state_8"
+    control_hz = 15
+    video_keys = ["video.rgb_static", "video.rgb_gripper"]
+    video_indices = [0, 3, 6]
+    state_keys = [
+        "state.eef_position",
+        "state.eef_rotation_rpy",
+        "state.pad",
+        "state.gripper_position",
+    ]
+    state_key_dims = {
+        "state.eef_position": 3,
+        "state.eef_rotation_rpy": 3,
+        "state.pad": 1,
+        "state.gripper_position": 1,
+    }
+    action_keys = [
+        "action.eef_position_delta_scaled",
+        "action.eef_rotation_delta_rpy_scaled",
+        "action.gripper_open",
+    ]
+    action_key_dims = {
+        "action.eef_position_delta_scaled": 3,
+        "action.eef_rotation_delta_rpy_scaled": 3,
+        "action.gripper_open": 1,
+    }
+    action_absolute_overrides = {
+        "action.eef_position_delta_scaled": False,
+        "action.eef_rotation_delta_rpy_scaled": False,
+        "action.gripper_open": True,
+    }
+
+
+class UnifiedBcZWMDataConfig(_UnifiedCommunityEefWMDataConfig):
+    embodiment_tag = EmbodimentTag.GOOGLE_BCZ
+    action_spec_id = (
+        "google_bcz_eef_delta_xyz_axis_angle_gripper_open_abs_7_10hz"
+    )
+    state_spec_id = "google_bcz_eef_xyz_rpy_pad_gripper_position_8"
+    control_hz = 10
+    video_keys = ["video.image"]
+    video_indices = [0, 2, 4]
+    state_keys = [
+        "state.eef_position",
+        "state.eef_rotation_rpy",
+        "state.pad",
+        "state.gripper_position",
+    ]
+    state_key_dims = {
+        "state.eef_position": 3,
+        "state.eef_rotation_rpy": 3,
+        "state.pad": 1,
+        "state.gripper_position": 1,
+    }
+    action_keys = [
+        "action.eef_position_delta",
+        "action.eef_rotation_delta_axis_angle",
+        "action.gripper_open",
+    ]
+    action_key_dims = {
+        "action.eef_position_delta": 3,
+        "action.eef_rotation_delta_axis_angle": 3,
+        "action.gripper_open": 1,
+    }
+    action_absolute_overrides = {
+        "action.eef_position_delta": False,
+        "action.eef_rotation_delta_axis_angle": False,
+        "action.gripper_open": True,
+    }
+
+
+class UnifiedFractalWMDataConfig(_UnifiedCommunityEefWMDataConfig):
+    embodiment_tag = EmbodimentTag.GOOGLE_RT1
+    action_spec_id = "google_rt1_eef_delta_xyz_rpy_gripper_open_abs_7_3hz"
+    state_spec_id = "google_rt1_eef_xyz_quaternion_xyzw_gripper_closed_8"
+    control_hz = 3
+    video_keys = ["video.image"]
+    # At 3 Hz, these are the nearest frames to +0.2 s and +0.4 s.
+    video_indices = [0, 1, 1]
+    state_keys = [
+        "state.eef_position",
+        "state.eef_quaternion_xyzw",
+        "state.gripper_closed",
+    ]
+    state_key_dims = {
+        "state.eef_position": 3,
+        "state.eef_quaternion_xyzw": 4,
+        "state.gripper_closed": 1,
+    }
+    action_keys = [
+        "action.eef_position_delta",
+        "action.eef_rotation_delta_rpy",
+        "action.gripper_open",
+    ]
+    action_key_dims = {
+        "action.eef_position_delta": 3,
+        "action.eef_rotation_delta_rpy": 3,
+        "action.gripper_open": 1,
+    }
+    gripper_state_keys = ("state.gripper_closed",)
+    action_absolute_overrides = {
+        "action.eef_position_delta": False,
+        "action.eef_rotation_delta_rpy": False,
+        "action.gripper_open": True,
+    }
+
+
+class UnifiedFmbWMDataConfig(_UnifiedCommunityEefWMDataConfig):
+    embodiment_tag = EmbodimentTag.FMB_FRANKA
+    action_spec_id = "fmb_franka_eef_twist_normalized_gripper_open_abs_7_10hz"
+    state_spec_id = "fmb_franka_eef_xyz_quaternion_xyzw_gripper_position_8"
+    control_hz = 10
+    video_keys = [
+        "video.image_side_1",
+        "video.image_side_2",
+        "video.image_wrist_1",
+    ]
+    video_indices = [0, 2, 4]
+    state_keys = [
+        "state.eef_position",
+        "state.eef_quaternion_xyzw",
+        "state.gripper_position",
+    ]
+    state_key_dims = {
+        "state.eef_position": 3,
+        "state.eef_quaternion_xyzw": 4,
+        "state.gripper_position": 1,
+    }
+    action_keys = [
+        "action.eef_linear_twist_normalized",
+        "action.eef_angular_twist_normalized",
+        "action.gripper_open",
+    ]
+    action_key_dims = {
+        "action.eef_linear_twist_normalized": 3,
+        "action.eef_angular_twist_normalized": 3,
+        "action.gripper_open": 1,
+    }
+    action_absolute_overrides = {
+        "action.eef_linear_twist_normalized": False,
+        "action.eef_angular_twist_normalized": False,
+        "action.gripper_open": True,
+    }
 
 
 @lru_cache(maxsize=8)
@@ -563,6 +760,10 @@ ROBOT_TYPE_CONFIG_MAP = {
     "unified_bridge_wm": UnifiedBridgeWMDataConfig(),
     "unified_kuka_wm": UnifiedKukaWMDataConfig(),
     "unified_droid_wm": UnifiedDroidWMDataConfig(),
+    "unified_taco_play_wm": UnifiedTacoPlayWMDataConfig(),
+    "unified_bc_z_wm": UnifiedBcZWMDataConfig(),
+    "unified_fractal_wm": UnifiedFractalWMDataConfig(),
+    "unified_fmb_wm": UnifiedFmbWMDataConfig(),
     "unified_so100_wm": UnifiedSo100WMDataConfig(),
     "unified_so101_wm": UnifiedSo101WMDataConfig(),
     "unified_so_follower_wm": UnifiedSoFollowerWMDataConfig(),
@@ -574,6 +775,11 @@ def _under(prefix, mixture, robot_type):
 
 
 DATASET_NAMED_MIXTURES = {
+    "unified_robotwin_generated_clean500_wm": _under(
+        "RoboTwinGenerated",
+        ROBOTWIN_MIXTURES["robotwin_generated_clean500_wm"],
+        "unified_robotwin_wm",
+    ),
     "unified_libero_robotwin_bridge_wm": (
         _under(
             "libero",
@@ -599,6 +805,18 @@ DATASET_NAMED_MIXTURES = {
     "unified_kuka_wm": [
         ("kuka_lerobot", 1.0, "unified_kuka_wm"),
     ],
+    "unified_taco_play_wm": [
+        ("taco_play_lerobot", 1.0, "unified_taco_play_wm"),
+    ],
+    "unified_bc_z_wm": [
+        ("bc_z_lerobot", 1.0, "unified_bc_z_wm"),
+    ],
+    "unified_fractal_wm": [
+        ("fractal20220817_data_lerobot", 1.0, "unified_fractal_wm"),
+    ],
+    "unified_fmb_wm": [
+        ("fmb_dataset_lerobot", 1.0, "unified_fmb_wm"),
+    ],
     "unified_so100_wm": [
         ("@manifest:community_so100", 1.0, "unified_so100_wm"),
     ],
@@ -606,6 +824,13 @@ DATASET_NAMED_MIXTURES = {
         ("@manifest:community_so_family", 1.0, "unified_so100_wm"),
     ],
 }
+
+DATASET_NAMED_MIXTURES["unified_community_oxe_candidate_wm"] = (
+    DATASET_NAMED_MIXTURES["unified_taco_play_wm"]
+    + DATASET_NAMED_MIXTURES["unified_bc_z_wm"]
+    + DATASET_NAMED_MIXTURES["unified_fractal_wm"]
+    + DATASET_NAMED_MIXTURES["unified_fmb_wm"]
+)
 
 DATASET_NAMED_MIXTURES["unified_libero_robotwin_bridge_droid_wm"] = (
     DATASET_NAMED_MIXTURES["unified_libero_robotwin_bridge_wm"]
