@@ -63,6 +63,7 @@ class Args:
     # Utils
     #################################################################################################################
     video_out_path: str = "experiments/libero/logs"  # Path to save videos
+    save_video: bool = False
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -167,9 +168,7 @@ def eval_libero(args: Args) -> None:
 
             # Setup
             t = 0
-            replay_images = []
-            full_actions = []
-            progress_trace = []
+            replay_images = [] if args.save_video else None
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
@@ -189,8 +188,8 @@ def eval_libero(args: Args) -> None:
                 img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                 wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
-                # Save preprocessed image for replay video
-                replay_images.append(img)
+                if replay_images is not None:
+                    replay_images.append(img)
 
                 state = np.concatenate(
                     (
@@ -217,18 +216,6 @@ def eval_libero(args: Args) -> None:
                 start_time = time.time()
 
                 response = client_model.step(example=example_dict, step=step)
-                if response.get("progress_updated", False):
-                    progress_trace.append(
-                        {
-                            "step": step,
-                            "raw_progress": response.get("raw_progress"),
-                            "progress": response.get("progress"),
-                            "conditioning_progress": response.get(
-                                "conditioning_progress"
-                            ),
-                        }
-                    )
-
                 end_time = time.time()
                 # print(f"time: {end_time - start_time}")
 
@@ -253,8 +240,6 @@ def eval_libero(args: Args) -> None:
                 else:
                     delta_action = np.concatenate([world_vector_delta, rotation_delta, gripper], axis=0)
 
-                full_actions.append(delta_action)
-
                 # __import__("ipdb").set_trace()
                 # see ../robosuite/controllers/controller_factory.py
                 obs, reward, done, info = env.step(delta_action.tolist())
@@ -268,38 +253,17 @@ def eval_libero(args: Args) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            # Save a replay video of the episode
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
-            imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
-                fps=10,
-                format="FFMPEG",
-                macro_block_size=1,
-            )
-
-            full_actions = np.stack(full_actions)
-            progress_payload = {
-                "task_suite": args.task_suite_name,
-                "task_id": task_id,
-                "task": task_description,
-                "episode_index": episode_idx,
-                "success": bool(done),
-                "execute_horizon": client_model.execute_horizon,
-                "server_metadata": client_model._server_metadata,
-                "trace": progress_trace,
-            }
-            progress_path = (
-                pathlib.Path(args.video_out_path)
-                / f"rollout_{task_segment}_episode{episode_idx}_{suffix}_progress.json"
-            )
-            progress_path.write_text(
-                json.dumps(progress_payload, indent=2, allow_nan=False) + "\n"
-            )
-            # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
-
-            # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
+            if replay_images is not None:
+                imageio.mimwrite(
+                    pathlib.Path(args.video_out_path)
+                    / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
+                    [np.asarray(x) for x in replay_images],
+                    fps=10,
+                    format="FFMPEG",
+                    macro_block_size=1,
+                )
             # Log current results
             logging.info(f"Success: {done}")
             logging.info(f"# episodes completed so far: {total_episodes}")

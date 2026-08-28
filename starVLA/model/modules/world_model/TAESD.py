@@ -12,7 +12,7 @@ logger = initialize_overwatch(__name__)
 
 
 class _TAESD_Interface(nn.Module):
-    """Expose deterministic TAESD encoder feature maps to LeWM-OFT."""
+    """Expose deterministic TAESD encoder feature maps to GAWM."""
 
     def __init__(self, config: Optional[dict] = None, **kwargs) -> None:
         super().__init__()

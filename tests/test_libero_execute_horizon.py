@@ -24,9 +24,6 @@ class _FakePolicy:
         return {
             "data": {
                 "actions": chunk[None],
-                "progress": np.asarray([0.25 * self.calls]),
-                "raw_progress": np.asarray([0.3 * self.calls]),
-                "conditioning_progress": np.asarray([0.2 * self.calls]),
             }
         }
 
@@ -64,22 +61,16 @@ class ExecuteHorizonTest(unittest.TestCase):
         "examples.LIBERO.eval_files.model2libero_interface.WebsocketClientPolicy",
         _FakePolicy,
     )
-    def test_episode_start_and_progress_are_forwarded(self):
+    def test_episode_start_is_forwarded(self):
         client = ModelClient(execute_horizon=4, action_ensemble=False)
         example = {"image": [], "lang": "test"}
 
         first = client.step(example, step=0)
-        cached = client.step(example, step=1)
+        client.step(example, step=1)
 
         self.assertTrue(
             client.client.payloads[0]["examples"][0]["episode_start"]
         )
-        self.assertEqual(first["progress"], 0.25)
-        self.assertAlmostEqual(first["raw_progress"], 0.3)
-        self.assertAlmostEqual(first["conditioning_progress"], 0.2)
-        self.assertTrue(first["progress_updated"])
-        self.assertFalse(cached["progress_updated"])
-        self.assertEqual(cached["progress"], first["progress"])
         self.assertEqual(client.client.calls, 1)
 
     @patch(

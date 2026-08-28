@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-config_yaml=examples/UnifiedPretrain/train_files/starvla_lewm_unified_pretrain.yaml
+config_yaml=examples/UnifiedPretrain/train_files/starvla_gawm_unified_pretrain.yaml
 run_root_dir=playground/Checkpoints
-run_id=${RUN_ID:-starvla_lewm_unified_pretrain}
+run_id=${RUN_ID:-starvla_gawm_unified_taskfilter_from40k_160k}
 main_port=${MAIN_PORT:-29620}
 batch=${BATCH:-8}
-steps=${STEPS:-200000}
+steps=${STEPS:-160000}
 accelerate_bin=${ACCELERATE_BIN:-.venv/bin/accelerate}
 pretrained_checkpoint=${PRETRAINED_CHECKPOINT:-}
 is_resume=${IS_RESUME:-false}

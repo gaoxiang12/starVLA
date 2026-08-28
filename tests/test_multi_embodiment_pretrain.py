@@ -13,7 +13,7 @@ from starVLA.dataloader.gr00t_lerobot.registry import (
 )
 from starVLA.dataloader.gr00t_lerobot.datasets import LeRobotMixtureDataset
 from starVLA.dataloader.lerobot_datasets import EmbodimentBatchSampler
-from starVLA.model.framework.WM4A.LeWMOFT import LeWM_OFT
+from starVLA.model.framework.WM4A.GAWM import GAWM
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
 
 
@@ -71,7 +71,7 @@ class MultiEmbodimentPretrainTest(unittest.TestCase):
         self.assertIsNotNone(second.curr_traj_data)
 
     def test_checkpoint_expansion_preserves_existing_embodiment_rows(self):
-        model = object.__new__(LeWM_OFT)
+        model = object.__new__(GAWM)
         nn.Module.__init__(model)
         model.embodiment_tags = (
             "aloha",
