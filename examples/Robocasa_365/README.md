@@ -6,8 +6,7 @@ PandaOmron mobile robot, 365 simulated kitchen tasks). This walk-through covers:
 
 1. Environment install (`robocasa365` conda env)
 2. Data download (18 Atomic-Seen target/human tasks, already in LeRobot v2.1)
-3. LeWM-OFT training on the 18 Atomic-Seen tasks
-4. Evaluation (websocket policy server + gym sim client)
+3. Evaluation (websocket policy server + gym sim client)
 
 > The Nvidia GR1 fork lives under [`examples/Robocasa_tabletop`](../Robocasa_tabletop/README.md). This folder targets the **official** robocasa repo at the version released for the 365-task benchmark. They are intentionally separate.
 
@@ -58,7 +57,7 @@ The dataset registry [`train_files/data_registry/data_config.py`](train_files/da
 | ----------------------------------------- | --------------------------- |
 | `robocasa365_open_drawer_target_human`    | OpenDrawer only (smoke test) |
 | `robocasa365_atomic_target_human_all`     | all 18 Atomic-Seen target/human tasks |
-| `robocasa365_atomic_target_human_wm`      | Atomic-Seen with current, +8, +16 frames for LeWM-OFT |
+| `robocasa365_atomic_target_human_wm`      | Atomic-Seen with current, +8, +16 frames for GAWM |
 
 Modalities (matches the dataset's `meta/modality.json`):
 
@@ -66,22 +65,7 @@ Modalities (matches the dataset's `meta/modality.json`):
 * action 12-d: `eef_pos(3) + eef_rot(3) + gripper_close(1) + base_motion(4) + control_mode(1)`
 * video: left agentview, right agentview, and eye-in-hand (256 × 256 → resized to 224 × 224 in the loader)
 
-## 3. Train LeWM-OFT (Atomic-Seen)
-
-```bash
-source .venv/bin/activate
-bash examples/Robocasa_365/train_files/run_lewm_oft_atomic_seen.sh
-# overrides: NUM_GPUS=4 bash ...
-```
-
-The YAML at [`train_files/starvla_lewm_oft_robocasa365_atomic_seen.yaml`](train_files/starvla_lewm_oft_robocasa365_atomic_seen.yaml)
-uses DINOv3-base with the visual-token LeWM and OFT action head. It consumes all
-three camera views, conditions the action head on the transformed 32-D robot
-state, predicts 16-step 12-D action chunks, and uses a learned hash embedding of
-the task instruction as a discrete task ID. It does not load or train a VLM. The
-launcher defaults to 200k steps and all visible GPUs.
-
-## 4. Evaluate
+## 3. Evaluate
 
 Two terminals; the script is the same wrapper for both.
 

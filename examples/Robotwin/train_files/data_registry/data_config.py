@@ -53,35 +53,15 @@ class AgilexDataConfig:
 
 
 class AgilexWMDataConfig(AgilexDataConfig):
-    """RoboTwin schema with future camera frames for LeWM training.
+    """RoboTwin schema with future camera frames for GAWM training.
 
-    The action horizon is 16 environment steps and LeWM predicts two future
+    The action horizon is 16 environment steps and GAWM predicts two future
     latents, so load the midpoint and horizon-end frames in addition to the
     current observation.  State remains current-only because this recipe uses
     it for action conditioning rather than future-state supervision.
     """
 
     video_indices = [0, 8, 16]
-
-    def modality_config(self):
-        config = super().modality_config()
-        config["video"] = ModalityConfig(
-            delta_indices=self.video_indices,
-            modality_keys=self.video_keys,
-        )
-        return config
-
-
-class AgilexSmoothLatentWMDataConfig(AgilexDataConfig):
-    """RoboTwin sampling aligned with LIBERO's smooth latent objective.
-
-    The first three frames are the current observation and two consecutive
-    prediction targets. The final frame is used only by the temporal-order
-    regularizer. Out-of-range frames are masked by the dataset packer when
-    ``future_obs_valid_mask`` is enabled.
-    """
-
-    video_indices = [0, 1, 2, 8]
 
     def modality_config(self):
         config = super().modality_config()
@@ -165,7 +145,6 @@ class ArxX5DataConfig:
 ROBOT_TYPE_CONFIG_MAP = {
     "robotwin": AgilexDataConfig(),
     "robotwin_wm": AgilexWMDataConfig(),
-    "robotwin_smooth_latent_wm": AgilexSmoothLatentWMDataConfig(),
     "robotwin50": AgilexData50Config(),
     "arx_x5": ArxX5DataConfig(),
 }
@@ -369,17 +348,6 @@ DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
 DATASET_NAMED_MIXTURES["robotwin_generated_clean500_wm"] = list(
     DATASET_NAMED_MIXTURES["robotwin_clean_wm"]
 )
-
-# Smooth-latent runs intentionally use a separate robot type so archived
-# residual-WM configs and checkpoints keep their original [0, 8, 16] schema.
-DATASET_NAMED_MIXTURES["robotwin_all_smooth_latent_wm"] = [
-    (dataset, weight, "robotwin_smooth_latent_wm")
-    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_all"]
-]
-DATASET_NAMED_MIXTURES["robotwin_clean_smooth_latent_wm"] = [
-    (dataset, weight, "robotwin_smooth_latent_wm")
-    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
-]
 
 # Locally collected Clean click_bell demonstrations.  This mixture expects
 # data_root_dir=playground/Datasets/RoboTwinClickBellClean1000 and intentionally

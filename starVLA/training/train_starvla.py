@@ -144,12 +144,6 @@ class VLATrainer(TrainerUtils):
 
         self.completed_steps = 0
         self.total_batch_size = self._calculate_total_batch_size()
-        world_model_cfg = self.config.framework.get("world_model", {})
-        # A representation-only run has no meaningful action prediction to
-        # score.
-        self.action_evaluation_enabled = not bool(
-            world_model_cfg.get("world_model_only", False)
-        )
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -443,10 +437,7 @@ class VLATrainer(TrainerUtils):
                     }
                 )
 
-            if (
-                self.action_evaluation_enabled
-                and self.completed_steps % self.config.trainer.eval_interval == 0
-            ):
+            if self.completed_steps % self.config.trainer.eval_interval == 0:
                 step_metrics = self.eval_action_model(step_metrics)
 
             step_metrics["timing/data"] = t_end_data - t_start_data
@@ -524,11 +515,6 @@ class VLATrainer(TrainerUtils):
             "valid_action_fraction",
             "latent_loss",
             "latent_cosine_loss",
-            "world_model_only_loss",
-            "sigreg_loss",
-            "latent_base_loss",
-            "context_correction_rms",
-            "context_correction_to_base_ratio",
             "delta_scale",
             "delta_target_rms",
             "delta_pred_rms",
@@ -540,33 +526,6 @@ class VLATrainer(TrainerUtils):
             "visual_token_diversity_loss",
             "visual_token_variance_loss",
             "visual_token_mean_cosine",
-            "visual_content_spatial_std",
-            "visual_content_sample_std",
-            "visual_content_mean_cosine",
-            "visual_content_effective_rank",
-            "visual_pred_content_spatial_std",
-            "visual_pred_content_mean_cosine",
-            "visual_pred_content_effective_rank",
-            "future_action_sensitivity",
-            "future_action_sensitivity_ratio",
-            "state_loss",
-            "transition_teacher_recon_loss",
-            "transition_teacher_l1_loss",
-            "transition_teacher_cosine_loss",
-            "transition_alignment_loss",
-            "transition_alignment_cosine_loss",
-            "transition_alignment_l1_loss",
-            "transition_decode_loss",
-            "transition_decode_l1_loss",
-            "transition_decode_cosine_loss",
-            "progress_mean",
-            "progress_target_mean",
-            "progress_geometric_mean",
-            "progress_regression_loss",
-            "progress_anchor_loss",
-            "progress_ranking_loss",
-            "progress_goal_loss",
-            "progress_auxiliary_loss",
         ):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):
@@ -575,7 +534,6 @@ class VLATrainer(TrainerUtils):
             for k, v in output_dict.items():
                 if (
                     k.startswith("latent_loss_horizon_")
-                    or k.startswith("smooth_")
                 ) and torch.is_tensor(v):
                     step_log[k] = v.item()
         robot_tags = {

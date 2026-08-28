@@ -97,9 +97,6 @@ class ModelClient:
         # Cached unnormalized chunk; only its first `execute_horizon` actions
         # are executed before incorporating a fresh observation.
         self.raw_actions: Optional[np.ndarray] = None
-        self.latest_progress: Optional[float] = None
-        self.latest_raw_progress: Optional[float] = None
-        self.latest_conditioning_progress: Optional[float] = None
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
@@ -118,9 +115,6 @@ class ModelClient:
         self.sticky_gripper_action = 0.0
         self.previous_gripper_action = None
         self.raw_actions = None
-        self.latest_progress = None
-        self.latest_raw_progress = None
-        self.latest_conditioning_progress = None
 
     def step(self, example: dict, step: int = 0, **kwargs) -> dict:
         """One env step.
@@ -184,17 +178,6 @@ class ModelClient:
                     f"full response={response}"
                 )
             self.raw_actions = np.asarray(actions_batch)[0]  # (T, D)
-            response_data = response.get("data", {})
-            if "progress" in response_data:
-                self.latest_progress = float(np.asarray(response_data["progress"])[0])
-            if "raw_progress" in response_data:
-                self.latest_raw_progress = float(
-                    np.asarray(response_data["raw_progress"])[0]
-                )
-            if "conditioning_progress" in response_data:
-                self.latest_conditioning_progress = float(
-                    np.asarray(response_data["conditioning_progress"])[0]
-                )
             if self.action_ensemble:
                 self.action_ensembler.add_chunk(self.raw_actions)
 
@@ -207,14 +190,7 @@ class ModelClient:
             "rotation_delta": np.array(raw_actions[0, 3:6]),
             "open_gripper": np.array(raw_actions[0, 6:7]),  # 1 = open; 0 = close
         }
-        result = {"raw_action": raw_action, "progress_updated": refreshed}
-        if self.latest_progress is not None:
-            result["progress"] = self.latest_progress
-        if self.latest_raw_progress is not None:
-            result["raw_progress"] = self.latest_raw_progress
-        if self.latest_conditioning_progress is not None:
-            result["conditioning_progress"] = self.latest_conditioning_progress
-        return result
+        return {"raw_action": raw_action}
 
     def visualize_epoch(
         self, predicted_raw_actions: Sequence[np.ndarray], images: Sequence[np.ndarray], save_path: str

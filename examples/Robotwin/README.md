@@ -216,9 +216,10 @@ The model is trained using the official **RobotWin 2.0 dataset**.
 
 ---
 
-# LeWM-OFT training and evaluation
+# GAWM-ready local dataset generation
 
-The local LeWM-OFT recipe uses all 50 Clean and Randomized task datasets,
+GAWM stands for **Geometry-Aware World Model**. The local GAWM recipe uses all
+50 Clean and Randomized task datasets,
 three RGB views, 14-D proprioception, and 16-step absolute-qpos action chunks.
 
 ## Generate a scaled local dataset
@@ -299,33 +300,6 @@ Prepare the LeRobot data:
 ../.venvs/starVLA/bin/python examples/Robotwin/data_preparation.py \
   --tasks all --splits clean
 ```
-
-Launch a four-GPU training run (choose free GPUs first):
-
-```bash
-CUDA_DEVS=0,1,2,3 \
-ACCELERATE_BIN=.venv/bin/accelerate \
-WANDB_MODE=disabled \
-bash examples/Robotwin/train_files/run_lewm_oft_dinov2b_train.sh
-```
-
-For long runs, invoke that launcher through the repository's usual detached
-`nohup setsid` pattern and retain `train.log` plus the supervisor PID.
-
-The staged evaluation protocol (interface smoke test, checkpoint selection,
-then the 10,000-rollout final benchmark) is documented in
-`eval_files/LEWM_OFT_EVALUATION.txt`. A one-task smoke command is:
-
-```bash
-EPISODES=3 MODES=demo_clean SEED=91 CUDA_VISIBLE_DEVICES=0 \
-bash examples/Robotwin/eval_files/run_lewm_oft_dinov2b_eval.sh \
-  /path/to/checkpoint.pt click_bell
-```
-
-If `thirdparty/RoboTwin` exists, the launcher selects it automatically.
-Otherwise, set `ROBOTWIN_PATH`. It also auto-detects `.venv` for StarVLA and a
-conda environment named `robotwin`; explicit `STARVLA_PYTHON` and
-`ROBOTWIN_PYTHON` values take precedence.
 
 ---
 

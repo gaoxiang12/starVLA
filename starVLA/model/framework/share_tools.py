@@ -422,31 +422,35 @@ def apply_config_compat(cfg, *, strict: bool = False):
 
     Performed transformations (each applied only when needed):
 
-      1.  `framework.action_model.action_horizon` ↔ `future_action_window_size`
+      1.  Legacy GAWM framework identifier
+          - Rewritten to the canonical `framework.name: GAWM`, so checkpoints
+            saved before the paper-facing rename remain loadable.
+
+      2.  `framework.action_model.action_horizon` ↔ `future_action_window_size`
           - `action_horizon` is canonical (preferred user-facing name).
           - `future_action_window_size = action_horizon - 1` is auto-filled so
             framework code that still reads the old key keeps working.
           - If both are present and inconsistent, a warning is emitted and
             `action_horizon` wins.
 
-      2.  `framework.action_model.diffusion_model_cfg.output_dim`
+      3.  `framework.action_model.diffusion_model_cfg.output_dim`
           - Auto-filled from `framework.action_model.hidden_size` when missing.
 
-      3.  `framework.action_model.diffusion_model_cfg.cross_attention_dim`
+      4.  `framework.action_model.diffusion_model_cfg.cross_attention_dim`
           - Auto-filled from `framework.qwenvl.vl_hidden_dim` when missing.
             Frameworks that further override this at runtime (e.g. QwenGR00T)
             are unaffected.
 
-      4.  `framework.action_model.action_hidden_dim`
+      5.  `framework.action_model.action_hidden_dim`
           - Auto-filled from `hidden_size` when missing. OFT-family frameworks
             still overwrite this from VLM hidden_size at runtime.
 
-      5.  `framework.action_model.past_action_window_size`
+      6.  `framework.action_model.past_action_window_size`
           - Auto-filled to `0` when missing. All released starVLA frameworks
             run with past=0; the field is therefore dropped from user YAMLs
             and only re-materialised here for legacy code that still reads it.
 
-      6.  `cfg.version_id` is stamped to `"0.21"`.
+      7.  `cfg.version_id` is stamped to `"0.21"`.
 
     Args:
         cfg: An OmegaConf DictConfig (or anything _to_omegaconf can wrap).
@@ -462,7 +466,15 @@ def apply_config_compat(cfg, *, strict: bool = False):
 
     src_version = OmegaConf.select(cfg, "version_id", default=None)
 
-    # ---- 1. action_horizon ↔ future_action_window_size ----
+    # ---- 1. canonical GAWM framework identifier ----
+    framework_name = OmegaConf.select(cfg, "framework.name", default=None)
+    if framework_name == "LeWMOFT":
+        OmegaConf.update(cfg, "framework.name", "GAWM", force_add=True)
+        overwatch.info(
+            "[apply_config_compat] migrated legacy framework name to 'GAWM'"
+        )
+
+    # ---- 2. action_horizon ↔ future_action_window_size ----
     am_path = "framework.action_model"
     am = OmegaConf.select(cfg, am_path, default=None)
     if am is not None:
@@ -486,7 +498,7 @@ def apply_config_compat(cfg, *, strict: bool = False):
             overwatch.warning(msg)
             OmegaConf.update(cfg, f"{am_path}.future_action_window_size", int(ah) - 1, force_add=True)
 
-        # ---- 2 & 3. diffusion_model_cfg auto-fill ----
+        # ---- 3 & 4. diffusion_model_cfg auto-fill ----
         dm_path = f"{am_path}.diffusion_model_cfg"
         dm = OmegaConf.select(cfg, dm_path, default=None)
         if dm is not None:
@@ -500,17 +512,17 @@ def apply_config_compat(cfg, *, strict: bool = False):
                     OmegaConf.update(cfg, f"{dm_path}.cross_attention_dim", int(vl_hidden), force_add=True)
                 # else: leave None — framework __init__ may auto-bind it
 
-        # ---- 4. action_hidden_dim fallback ----
+        # ---- 5. action_hidden_dim fallback ----
         if OmegaConf.select(am, "action_hidden_dim", default=None) is None:
             hidden_size = OmegaConf.select(am, "hidden_size", default=None)
             if hidden_size is not None:
                 OmegaConf.update(cfg, f"{am_path}.action_hidden_dim", int(hidden_size), force_add=True)
 
-        # ---- 5. past_action_window_size default ----
+        # ---- 6. past_action_window_size default ----
         if OmegaConf.select(am, "past_action_window_size", default=None) is None:
             OmegaConf.update(cfg, f"{am_path}.past_action_window_size", 0, force_add=True)
 
-    # ---- 6. stamp version ----
+    # ---- 7. stamp version ----
     if src_version != CONFIG_VERSION:
         try:
             OmegaConf.update(cfg, "version_id", CONFIG_VERSION, force_add=True)

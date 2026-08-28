@@ -1,17 +1,18 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
-"""
-LeWM World Model Interface — DINOv3 encoder frontend.
+"""GAWM (Geometry-Aware World Model) DINOv3 encoder interface.
 
-Wraps the LeWorldModel (LeWM) front-end: a raw facebookresearch/dinov3
-torchhub checkpoint converted to a HuggingFace ``DINOv3ViTModel``. The
-flow-matching predictor of the original LeWM is intentionally dropped — in
-starVLA the action head is provided by a separate (OFT) module.
+Builds a HuggingFace ``DINOv3ViTModel`` from an architecture spec. A complete
+starVLA checkpoint supplies its encoder weights, so deployment does not need a
+separate DINO weight file. An optional raw facebookresearch/dinov3 checkpoint
+can still initialize the encoder for new training runs. GAWM preserves the spatial patch layout for
+geometry-aware visual-token prediction; the action head remains a separate
+module in starVLA.
 
-Per-frame latent (matches the LeWM `encode()` convention):
+Per-frame global latent (used by the compatibility path):
     latent = concat([CLS_token, mean_pool(patch_tokens)])  -> dim = 2 * hidden
 so a `vit-tiny` (hidden=192) yields a 384-d latent per view, identical to the
-LeWM `embed_dim`.
+legacy encoder dimensionality.
 
 The wrapper exposes the standard starVLA world-model contract:
   - ``build_inputs(images, instructions)`` -> dict of tensors
@@ -34,51 +35,47 @@ from starVLA.training.trainer_utils import initialize_overwatch
 logger = initialize_overwatch(__name__)
 
 
-class _LeWM_Interface(nn.Module):
+class _GAWM_Interface(nn.Module):
     """World-model wrapper exposing a ViT encoder as a feature backbone."""
 
     def __init__(self, config: Optional[dict] = None, **kwargs):
         super().__init__()
 
         wm_cfg = config.framework.get("world_model", {})
-        model_name = wm_cfg.get("base_wm")
-        if not model_name:
-            raise ValueError(
-                "framework.world_model.base_wm is required (e.g. "
-                "facebook/dinov2-base or a DINOv3 .pth); the legacy "
-                "qwenvl.base_vlm / vit-tiny fallback was removed"
-            )
-        model_path = Path(model_name).expanduser()
-        if not model_path.is_absolute() and not model_path.exists():
-            repo_relative = Path(__file__).resolve().parents[4] / model_path
-            if repo_relative.exists():
-                model_path = repo_relative
-        model_name = os.fspath(model_path)
         self.config = config
         self.train_encoder = bool(wm_cfg.get("train_encoder", False))
+        encoder_spec = str(wm_cfg.get("encoder_spec", "vitb16")).strip().lower()
+        model_name = wm_cfg.get("base_wm")
 
-        # DINOv3 is the only supported encoder: raw facebookresearch/dinov3
-        # torchhub ``.pth`` files whose token layout is [CLS, register_tokens,
-        # patches]. The HF ViT / DINO v1 / DINOv2 AutoModel path was removed.
-        is_dinov3_raw = (
-            model_name.endswith(".pth")
-            and "dinov3" in os.path.basename(model_name).lower()
-        )
-        if not is_dinov3_raw:
-            raise ValueError(
-                "LeWM world model now supports only raw DINOv3 checkpoints "
-                "(*.pth with 'dinov3' in the filename); "
-                f"got {model_name!r}"
+        from .dinov3_loader import build_dinov3, load_dinov3, spec_from_filename
+
+        if model_name:
+            model_path = Path(model_name).expanduser()
+            if not model_path.is_absolute() and not model_path.exists():
+                repo_relative = Path(__file__).resolve().parents[4] / model_path
+                if repo_relative.exists():
+                    model_path = repo_relative
+            model_name = os.fspath(model_path)
+            inferred_spec = spec_from_filename(model_name)
+            if inferred_spec != encoder_spec:
+                raise ValueError(
+                    f"encoder_spec={encoder_spec!r} does not match "
+                    f"DINO checkpoint architecture {inferred_spec!r}"
+                )
+            logger.info(
+                f"Initializing DINOv3 {encoder_spec} from raw checkpoint {model_name}"
             )
-
-        from .dinov3_loader import load_dinov3
-
-        logger.info(f"Loading DINOv3 vision encoder from raw checkpoint {model_name}")
-        self.encoder, self.processor, num_register = load_dinov3(model_name)
+            self.encoder, self.processor, num_register = load_dinov3(model_name)
+        else:
+            logger.info(
+                f"Building DINOv3 {encoder_spec}; weights will come from the "
+                "unified GAWM checkpoint"
+            )
+            self.encoder, self.processor, num_register = build_dinov3(encoder_spec)
         self.num_prefix_tokens = 1 + num_register
 
         vit_hidden = self.encoder.config.hidden_size
-        # LeWM latent = concat(cls, mean-pool patches) -> 2 * hidden
+        # GAWM latent = concat(cls, mean-pool patches) -> 2 * hidden
         self._hidden_size = vit_hidden * 2
 
         # Frozen by default; keep joint fine-tuning interface available.

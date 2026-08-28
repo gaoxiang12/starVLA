@@ -1,6 +1,6 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
-"""Load original facebookresearch/dinov3 torchhub checkpoints as HF models.
+"""Build DINOv3 encoders and optionally load original torchhub weights.
 
 The ``dinov3_weights/*.pth`` files are the *original* DINOv3 state_dicts
 (keys like ``blocks.0.attn.qkv.weight`` / ``storage_tokens`` / ``ls1.gamma``),
@@ -123,18 +123,36 @@ def convert_state_dict(raw: dict, cfg, gated: bool) -> dict:
     return out
 
 
+def build_dinov3(spec: str) -> Tuple[object, object, int]:
+    """Build an uninitialized HF DINOv3 encoder for a known architecture.
+
+    This path is used when a complete starVLA checkpoint supplies the encoder
+    weights. It deliberately performs no file or network access.
+    """
+    from transformers import DINOv3ViTImageProcessorFast, DINOv3ViTModel
+
+    if spec not in SPECS:
+        raise ValueError(
+            f"unsupported DINOv3 encoder_spec {spec!r}; "
+            f"expected one of {sorted(SPECS)}"
+        )
+    cfg = build_config(spec)
+    return (
+        DINOv3ViTModel(cfg),
+        DINOv3ViTImageProcessorFast(),
+        cfg.num_register_tokens,
+    )
+
+
 def load_dinov3(path: str) -> Tuple[object, object, int]:
     """Build a HF ``DINOv3ViTModel`` from a raw torchhub ``.pth`` checkpoint.
 
     Returns ``(encoder, image_processor, num_register_tokens)``.
     """
-    from transformers import DINOv3ViTImageProcessorFast, DINOv3ViTModel
-
     spec = spec_from_filename(path)
     gated = SPECS[spec]["gated"]
-    cfg = build_config(spec)
-
-    model = DINOv3ViTModel(cfg)
+    model, processor, num_register_tokens = build_dinov3(spec)
+    cfg = model.config
     raw = torch.load(path, map_location="cpu")
     hf_sd = convert_state_dict(raw, cfg, gated)
     missing, unexpected = model.load_state_dict(hf_sd, strict=False)
@@ -148,5 +166,4 @@ def load_dinov3(path: str) -> Tuple[object, object, int]:
             f"missing={real_missing[:8]} unexpected={unexpected[:8]}"
         )
 
-    processor = DINOv3ViTImageProcessorFast()
-    return model, processor, cfg.num_register_tokens
+    return model, processor, num_register_tokens

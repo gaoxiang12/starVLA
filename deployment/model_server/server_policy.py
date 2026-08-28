@@ -22,9 +22,6 @@ def main(args) -> None:
         ckpt_path=args.ckpt_path,
         device="cuda",
         use_bf16=args.use_bf16,
-        progress_mode=args.progress_mode,
-        fixed_progress=args.fixed_progress,
-        progress_ema=args.progress_ema,
     )
 
     hostname = socket.gethostname()
@@ -48,13 +45,6 @@ def build_argparser():
     parser.add_argument("--ckpt_path", type=str, default="Qwen/Qwen2.5-VL-3B-Instruct")
     parser.add_argument("--port", type=int, default=10093)
     parser.add_argument("--use_bf16", action="store_true")
-    parser.add_argument(
-        "--progress-mode",
-        choices=("learned", "disabled", "fixed"),
-        default="learned",
-    )
-    parser.add_argument("--fixed-progress", type=float, default=0.5)
-    parser.add_argument("--progress-ema", type=float, default=None)
     parser.add_argument("--idle_timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     return parser
 

@@ -78,10 +78,10 @@ class StateTokenProjection(nn.Module):
 
 
 class TurboStyleACTActionHead(nn.Module):
-    """Decode an action chunk from LeWM visual and state memory.
+    """Decode an action chunk from GAWM visual and state memory.
 
-    This follows TurboVLA's action-head form while retaining LeWM's explicit
-    frame and spatial-token embeddings. LeWM needs those embeddings because its
+    This follows TurboVLA's action-head form while retaining GAWM's explicit
+    frame and spatial-token embeddings. GAWM needs those embeddings because its
     memory contains current and world-model-predicted future token grids.
     """
 

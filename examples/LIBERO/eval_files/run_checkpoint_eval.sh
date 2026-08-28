@@ -17,9 +17,6 @@ TASK_SUITE_NAME="${TASK_SUITE_NAME:-libero_goal}"
 TASK_START="${TASK_START:-0}"
 TEMPORAL_ACTION_ENSEMBLE="${TEMPORAL_ACTION_ENSEMBLE:-false}"
 ADAPTIVE_ENSEMBLE_ALPHA="${ADAPTIVE_ENSEMBLE_ALPHA:-0.0}"
-PROGRESS_MODE="${PROGRESS_MODE:-learned}"
-FIXED_PROGRESS="${FIXED_PROGRESS:-0.5}"
-PROGRESS_EMA="${PROGRESS_EMA:-}"
 RUN_VARIANT="${RUN_VARIANT:-}"
 UNNORM_KEY="${UNNORM_KEY:-}"
 LIBERO_HOME="${LIBERO_HOME:-${STARVLA_DIR}/playground/LIBERO}"
@@ -46,17 +43,11 @@ ENSEMBLE_TAG=""
 if [[ "${TEMPORAL_ACTION_ENSEMBLE}" == "true" ]]; then
   ENSEMBLE_TAG="_temporalens_a${ADAPTIVE_ENSEMBLE_ALPHA}"
 fi
-PROGRESS_TAG="_progress${PROGRESS_MODE}"
-if [[ "${PROGRESS_MODE}" == "fixed" ]]; then
-  PROGRESS_TAG="${PROGRESS_TAG}${FIXED_PROGRESS}"
-fi
-if [[ -n "${PROGRESS_EMA}" ]]; then
-  PROGRESS_TAG="${PROGRESS_TAG}_ema${PROGRESS_EMA}"
-fi
+VARIANT_TAG=""
 if [[ -n "${RUN_VARIANT}" ]]; then
-  PROGRESS_TAG="${PROGRESS_TAG}_${RUN_VARIANT}"
+  VARIANT_TAG="_${RUN_VARIANT}"
 fi
-RUN_NAME="${CKPT_NAME}_${TASK_SUITE_NAME}_${NUM_TRIALS_PER_TASK}x10_seed${SEED}_exec${EXECUTE_TAG}${PROGRESS_TAG}${ENSEMBLE_TAG}${TASK_TAG}"
+RUN_NAME="${CKPT_NAME}_${TASK_SUITE_NAME}_${NUM_TRIALS_PER_TASK}x10_seed${SEED}_exec${EXECUTE_TAG}${VARIANT_TAG}${ENSEMBLE_TAG}${TASK_TAG}"
 LOG_DIR="${MODEL_ROOT}/logs/${TASK_SUITE_NAME}_10x10"
 VIDEO_DIR="${MODEL_ROOT}/results/${TASK_SUITE_NAME}_eval${NUM_TRIALS_PER_TASK}ep/${RUN_NAME}"
 SERVER_LOG="${LOG_DIR}/${RUN_NAME}_server.log"
@@ -80,18 +71,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "[eval] ckpt=${CKPT} gpu=${GPU_ID} port=${PORT} trials_per_task=${NUM_TRIALS_PER_TASK} seed=${SEED} execute_horizon=${EXECUTE_TAG} progress_mode=${PROGRESS_MODE} fixed_progress=${FIXED_PROGRESS} progress_ema=${PROGRESS_EMA:-checkpoint} unnorm_key=${UNNORM_KEY:-auto}"
+echo "[eval] ckpt=${CKPT} gpu=${GPU_ID} port=${PORT} trials_per_task=${NUM_TRIALS_PER_TASK} seed=${SEED} execute_horizon=${EXECUTE_TAG} unnorm_key=${UNNORM_KEY:-auto}"
 SERVER_CMD=(
   "${PYTHON}" deployment/model_server/server_policy.py
   --ckpt_path "${CKPT}" \
   --port "${PORT}"
   --use_bf16
-  --progress-mode "${PROGRESS_MODE}"
-  --fixed-progress "${FIXED_PROGRESS}"
 )
-if [[ -n "${PROGRESS_EMA}" ]]; then
-  SERVER_CMD+=(--progress-ema "${PROGRESS_EMA}")
-fi
 CUDA_VISIBLE_DEVICES="${GPU_ID}" "${SERVER_CMD[@]}" >"${SERVER_LOG}" 2>&1 &
 server_pid=$!
 

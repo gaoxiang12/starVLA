@@ -85,7 +85,7 @@ class PandaOmronRoboCasa365DataConfig:
 
 
 class PandaOmronRoboCasa365WMDataConfig(PandaOmronRoboCasa365DataConfig):
-    """LeWM schema with current, midpoint, and horizon-end camera frames."""
+    """GAWM schema with current, midpoint, and horizon-end camera frames."""
 
     video_indices = [0, 8, 16]
 
