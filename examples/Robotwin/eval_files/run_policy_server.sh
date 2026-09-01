@@ -26,7 +26,7 @@ echo "[INFO] checkpoint: ${your_ckpt}"
 echo "[INFO] gpu: ${gpu_id}"
 echo "[INFO] port: ${port}"
 
-CUDA_VISIBLE_DEVICES="${gpu_id}" "${star_vla_python}" "${REPO_ROOT}/deployment/model_server/server_policy.py" \
+exec env CUDA_VISIBLE_DEVICES="${gpu_id}" "${star_vla_python}" "${REPO_ROOT}/deployment/model_server/server_policy.py" \
     --ckpt_path "${your_ckpt}" \
     --port "${port}" \
     "${use_bf16_flag[@]}"

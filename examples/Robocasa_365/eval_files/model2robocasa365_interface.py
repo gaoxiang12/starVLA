@@ -5,7 +5,6 @@ but adapted to the single-arm 12-d action / 16-d state layout produced by
 ``robocasa.wrappers.gym_wrapper.PandaOmronKeyConverter``.
 """
 
-from collections import deque
 from typing import Dict, Optional
 
 import cv2 as cv
@@ -24,6 +23,12 @@ STATE_KEY_ORDER = [
     "state.end_effector_position_relative",
     "state.end_effector_rotation_relative",
     "state.gripper_qpos",
+]
+
+VIDEO_KEY_ORDER = [
+    "video.robot0_agentview_left",
+    "video.robot0_agentview_right",
+    "video.robot0_eye_in_hand",
 ]
 
 # Action splits in the trained 12-d output (see PandaOmronRoboCasa365DataConfig)
@@ -52,6 +57,7 @@ class PolicyWarper:
         adaptive_ensemble_alpha: float = 0.1,
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
+        send_state: bool = True,
     ) -> None:
         self.client = WebsocketClientPolicy(host, port)
         self.unnorm_key = unnorm_key
@@ -59,13 +65,12 @@ class PolicyWarper:
         self.n_action_steps = n_action_steps
         self.use_ddim = use_ddim
         self.num_ddim_steps = num_ddim_steps
+        self.send_state = send_state
 
         self.task_description = None
         self.action_ensemble = action_ensemble
         self.action_ensembler = (
-            AdaptiveEnsembler(action_ensemble_horizon, adaptive_ensemble_alpha)
-            if action_ensemble
-            else None
+            AdaptiveEnsembler(action_ensemble_horizon, adaptive_ensemble_alpha) if action_ensemble else None
         )
 
         server_meta = self.client.get_server_metadata()
@@ -89,25 +94,24 @@ class PolicyWarper:
         if instructions[0] != self.task_description:
             self.reset(instructions[0])
 
-        # 2) image — the tabletop multi-view env returns (B, n_obs, H, W, 3); we use the
-        # left agentview (the same one used during training).
-        view = observations["video.robot0_agentview_left"]  # (B, 1, H, W, 3)
-        images = [[self._resize_image(img) for img in sample] for sample in view]
+        # Keep the camera order identical to PandaOmronRoboCasa365DataConfig.
+        batch_size = len(instructions)
+        images = [[self._resize_image(observations[key][b, -1]) for key in VIDEO_KEY_ORDER] for b in range(batch_size)]
 
-        # 3) state — concatenate parts in the same order as in training
-        state_parts = [observations[k] for k in STATE_KEY_ORDER]  # each (B, 1, d)
-        input_state = np.concatenate(state_parts, axis=-1)  # (B, 1, 16)
-        input_state = self._sin_cos_state(input_state)
+        input_state = None
+        if self.send_state:
+            state_parts = [observations[key] for key in STATE_KEY_ORDER]
+            input_state = np.concatenate(state_parts, axis=-1)[:, -1]  # (B, 16)
 
         examples = []
         for b in range(len(images)):
-            examples.append(
-                {
-                    "image": images[b],
-                    "lang": instructions[b] if b < len(instructions) else instructions[0],
-                    "state": input_state[b],
-                }
-            )
+            example = {
+                "image": images[b],
+                "lang": instructions[b] if b < len(instructions) else instructions[0],
+            }
+            if input_state is not None:
+                example["state"] = input_state[b]
+            examples.append(example)
 
         vla_input = {
             "examples": examples,
@@ -137,10 +141,3 @@ class PolicyWarper:
     # ------------------------------------------------------------------
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
         return cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
-
-    @staticmethod
-    def _sin_cos_state(state: np.ndarray) -> np.ndarray:
-        """Match training-time StateActionSinCosTransform on the state."""
-        return np.concatenate([np.sin(state), np.cos(state)], axis=-1)
-
-

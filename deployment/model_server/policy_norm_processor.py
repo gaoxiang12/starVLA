@@ -56,9 +56,9 @@ def _resolve_robot_type(
 
     When a data_mix contains entries from multiple robot types (e.g.
     ``bridge_rt_1`` covers ``oxe_bridge`` + ``oxe_rt1``), ``unnorm_key``
-    is used to identify which embodiment is requested.  In those mixtures
-    the ``robot_type`` field of each entry **matches** the top-level key in
-    ``dataset_statistics.json``, so ``unnorm_key`` serves as the selector.
+    is used to identify which embodiment is requested. It may match either a
+    legacy ``robot_type`` statistics key or the current embodiment-tag key in
+    ``dataset_statistics.json``.
     """
     try:
         data_mix = model_cfg["datasets"]["vla_data"]["data_mix"]
@@ -81,16 +81,33 @@ def _resolve_robot_type(
     if len(robot_types) == 1:
         return robot_types[0]
 
-    # Multiple robot types in the mixture.
-    # Use unnorm_key as a direct selector: for multi-robot mixtures the
-    # dataset_statistics.json top-level keys equal the robot_type values.
+    # Multiple robot types in the mixture.  Older mixtures used robot_type as
+    # the statistics key; current multi-embodiment mixtures save statistics by
+    # embodiment tag (franka / aloha / oxe_bridge).
     if unnorm_key is not None and unnorm_key in robot_types:
         return unnorm_key
 
+    if unnorm_key is not None:
+        matching_robot_types = []
+        for robot_type in robot_types:
+            data_config = ROBOT_TYPE_CONFIG_MAP.get(robot_type)
+            tag = getattr(data_config, "embodiment_tag", None)
+            tag = tag.value if hasattr(tag, "value") else tag
+            if tag == unnorm_key:
+                matching_robot_types.append(robot_type)
+        if len(matching_robot_types) == 1:
+            return matching_robot_types[0]
+        if len(matching_robot_types) > 1:
+            raise ValueError(
+                f"unnorm_key={unnorm_key!r} matches multiple robot_types "
+                f"{matching_robot_types}; use distinct embodiment tags or an "
+                "explicit robot_type statistics key"
+            )
+
     raise ValueError(
         f"data_mix={data_mix!r} contains multiple robot_types {robot_types}. "
-        "Pass `unnorm_key` matching one of them to disambiguate "
-        f"(e.g. unnorm_key={robot_types[0]!r})."
+        "Pass `unnorm_key` matching a robot_type or its embodiment tag to "
+        "disambiguate."
     )
 
 
@@ -345,6 +362,36 @@ class PolicyNormProcessor:
     @property
     def transform(self) -> ComposedModalityTransform:
         return self._transform
+
+    def apply_state(self, raw_state: np.ndarray) -> np.ndarray:
+        """Normalize env-space proprio state with the training-time transform."""
+        raw_state = np.asarray(raw_state, dtype=np.float32)
+        squeeze = raw_state.ndim == 1
+        if squeeze:
+            raw_state = raw_state[None]
+        if raw_state.ndim != 2:
+            raise ValueError(f"Expected state shape (D,) or (T, D), got {raw_state.shape}")
+
+        data: Dict[str, np.ndarray] = {}
+        cursor = 0
+        for full_key in self._state_keys:
+            dim_k = self._state_key_dims.get(full_key, 1)
+            data[full_key] = raw_state[..., cursor : cursor + dim_k].copy()
+            cursor += dim_k
+        if cursor != raw_state.shape[-1]:
+            raise ValueError(
+                f"Sum of state key dims ({cursor}) != state dim ({raw_state.shape[-1]})"
+            )
+
+        out = self._transform.apply(data)
+        parts = []
+        for full_key in self._state_keys:
+            value = out[full_key]
+            if isinstance(value, torch.Tensor):
+                value = value.detach().cpu().numpy()
+            parts.append(np.asarray(value))
+        normalized = np.concatenate(parts, axis=-1)
+        return normalized[0] if squeeze else normalized
 
     # ------------------------------------------------------------------
     # Inverse path (model output → env action)

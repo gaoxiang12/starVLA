@@ -1,0 +1,60 @@
+{
+  "state": {
+    "eef_position": {
+      "start": 0,
+      "end": 3,
+      "absolute": true,
+      "dtype": "float32",
+      "original_key": "observation.state"
+    },
+    "eef_quaternion_xyzw": {
+      "start": 3,
+      "end": 7,
+      "rotation_type": "quaternion",
+      "absolute": true,
+      "dtype": "float32",
+      "original_key": "observation.state"
+    },
+    "gripper_closed": {
+      "start": 7,
+      "end": 8,
+      "absolute": true,
+      "dtype": "float32",
+      "original_key": "observation.state"
+    }
+  },
+  "action": {
+    "eef_position_delta": {
+      "start": 0,
+      "end": 3,
+      "absolute": false,
+      "dtype": "float32",
+      "original_key": "action"
+    },
+    "eef_rotation_delta_rpy": {
+      "start": 3,
+      "end": 6,
+      "rotation_type": "euler_angles_rpy",
+      "absolute": false,
+      "dtype": "float32",
+      "original_key": "action"
+    },
+    "gripper_open": {
+      "start": 6,
+      "end": 7,
+      "absolute": true,
+      "dtype": "float32",
+      "original_key": "action"
+    }
+  },
+  "video": {
+    "image": {
+      "original_key": "observation.images.image"
+    }
+  },
+  "annotation": {
+    "human.action.task_description": {
+      "original_key": "task_index"
+    }
+  }
+}

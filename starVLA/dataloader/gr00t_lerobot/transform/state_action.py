@@ -98,10 +98,17 @@ class RotationTransform:
 class Normalizer:
     valid_modes = ["q99", "mean_std", "min_max", "binary"]
 
-    def __init__(self, mode: str, statistics: dict, binary_threshold: float = 0.5):
+    def __init__(
+        self,
+        mode: str,
+        statistics: dict,
+        binary_threshold: float = 0.5,
+        q99_clip: float = 2.2,
+    ):
         self.mode = mode
         self.statistics = statistics
         self.binary_threshold = binary_threshold
+        self.q99_clip = float(q99_clip)
         for key, value in self.statistics.items():
             self.statistics[key] = torch.tensor(value)
 
@@ -131,8 +138,8 @@ class Normalizer:
             # Set the normalized values to the original values where q01 == q99
             normalized[..., ~mask] = x[..., ~mask].to(x.dtype)
 
-            # Clip the normalized values to be between -1 and 1
-            normalized = torch.clamp(normalized, -2.2, 2.2)
+            # Clip to the range accepted by the downstream consumer.
+            normalized = torch.clamp(normalized, -self.q99_clip, self.q99_clip)
 
         elif self.mode == "mean_std":
             # Range of mean_std is not fixed, but can be positive or negative
@@ -300,6 +307,11 @@ class StateActionTransform(InvertibleModalityTransform):
     binary_threshold: float = Field(
         default=0.5, description="Threshold for binary normalization mode."
     )
+    q99_clip: float = Field(
+        default=2.2,
+        gt=0,
+        description="Symmetric clipping bound after q01/q99 normalization.",
+    )
     modality_metadata: dict[str, StateActionMetadata] = Field(
         default_factory=dict, description="The modality metadata for each state key."
     )
@@ -331,7 +343,13 @@ class StateActionTransform(InvertibleModalityTransform):
 
     def model_dump(self, *args, **kwargs):
         if kwargs.get("mode", "python") == "json":
-            include = {"apply_to", "normalization_modes", "target_rotations"}
+            include = {
+                "apply_to",
+                "normalization_modes",
+                "target_rotations",
+                "binary_threshold",
+                "q99_clip",
+            }
         else:
             include = kwargs.pop("include", None)
 
@@ -471,8 +489,10 @@ class StateActionTransform(InvertibleModalityTransform):
             else:
                 statistics = self.normalization_statistics[key]
             self._normalizers[key] = Normalizer(
-                mode=self.normalization_modes[key], statistics=statistics,
+                mode=self.normalization_modes[key],
+                statistics=statistics,
                 binary_threshold=self.binary_threshold,
+                q99_clip=self.q99_clip,
             )
 
     def apply(self, data: dict[str, Any]) -> dict[str, Any]:

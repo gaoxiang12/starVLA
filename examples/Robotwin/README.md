@@ -216,6 +216,93 @@ The model is trained using the official **RobotWin 2.0 dataset**.
 
 ---
 
+# GAWM-ready local dataset generation
+
+GAWM stands for **Geometry-Aware World Model**. The local GAWM recipe uses all
+50 Clean and Randomized task datasets,
+three RGB views, 14-D proprioception, and 16-step absolute-qpos action chunks.
+
+## Generate a scaled local dataset
+
+The resumable local generator targets exactly 500 successful Clean episodes
+for each of the 50 official tasks (25,000 episodes total). It rejects failed
+replays, malformed episodes, non-finite actions, empty language and exact
+action-plus-image duplicates. Set up the two isolated environments and always
+run the two-episode end-to-end smoke before launching the full supervisor:
+
+```bash
+bash ../setup-envs.sh RoboTwin
+bash ../setup-envs.sh starVLA
+
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py collect \
+  --smoke --tasks click_bell --gpus 0
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py convert \
+  --smoke --tasks click_bell
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py validate \
+  --smoke --tasks click_bell --deep
+```
+
+Launch the end-to-end pipeline detached. Each selected free GPU processes its
+assigned task jobs sequentially, while each job resumes from its existing
+`seed.txt` and HDF5 files after interruption. The pipeline also resumes a
+stopped collector, converts all completed raw jobs, and deeply validates all
+25,000 episodes before writing `pipeline.complete.json`:
+
+```bash
+DATA_ROOT=/home/gaoxiang/data/gaoxiang
+mkdir -p "${DATA_ROOT}/RoboTwinGenerated_raw"
+nohup setsid bash examples/Robotwin/run_clean500_generation.sh \
+  > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.log" 2>&1 < /dev/null &
+echo $! > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.pid"
+```
+
+The launcher defaults to GPUs 3–7 and, only after the deep audit completes,
+synchronizes the converted dataset to
+`36.212.196.90:/data/gaoxiang/RoboTwinGenerated/` over SSH port 1227. Override
+the GPU list with `ROBOTWIN_GENERATION_GPUS` when host allocation changes.
+
+Inspect progress without changing collection state:
+
+```bash
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py status
+```
+
+Use otherwise-idle CPU cores to convert collector-complete tasks while the GPU
+workers continue generating later tasks. `prefinalize` acquires a separate
+singleton lock and only reads jobs whose collector lock has already been
+released. It performs representative validation; the main pipeline still runs
+the mandatory all-episode deep audit before completion and synchronization:
+
+```bash
+nohup setsid ../.venvs/starVLA/bin/python -u \
+  examples/Robotwin/generate_local_dataset.py prefinalize \
+  --tasks all --splits clean --clean-target 500 \
+  --poll-seconds 60 --finalize-workers 3 \
+  > /data/gaoxiang/RoboTwinGenerated_raw/prefinalize.log 2>&1 < /dev/null &
+```
+
+The converted LeRobot datasets are written automatically under
+`/data/gaoxiang/RoboTwinGenerated/Clean/<task>`. Every task has one canonical
+task ID, three H.264 video streams, numeric Parquet episodes, `stats.json`,
+`stats_gr00t.json`, and reproducible language/duplicate/blacklist audits. The
+independent unified-pretraining mixture name is
+`unified_robotwin_generated_clean500_wm`.
+The conversion and validation commands can also be run manually:
+
+```bash
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py convert
+../.venvs/starVLA/bin/python examples/Robotwin/generate_local_dataset.py validate --deep
+```
+
+Prepare the LeRobot data:
+
+```bash
+../.venvs/starVLA/bin/python examples/Robotwin/data_preparation.py \
+  --tasks all --splits clean
+```
+
+---
+
 
 
 # Evaluation
@@ -246,48 +333,8 @@ pip install -r examples/Robotwin/eval_files/requirements.txt
 export ROBOTWIN_PATH=/path/to/RoboTwin
 ```
 
-4. Because RoboTwin is a third-party repository, patch your own local RoboTwin checkout so `script/eval_policy.py` accepts `--policy_ckpt_path`.
-
-Apply the following change in your own RoboTwin repo:
-
-```diff
-diff --git a/script/eval_policy.py b/script/eval_policy.py
-index eded198..9fb36e3 100644
---- a/script/eval_policy.py
-+++ b/script/eval_policy.py
-@@ -69,6 +69,7 @@ def main(usr_args):
-     # checkpoint_num = usr_args['checkpoint_num']
-     policy_name = usr_args["policy_name"]
-     instruction_type = usr_args["instruction_type"]
-+    policy_ckpt_path = usr_args["policy_ckpt_path"]
-     save_dir = None
-     video_save_dir = None
-     video_size = None
-@@ -81,6 +82,7 @@ def main(usr_args):
-     args['task_name'] = task_name
-     args["task_config"] = task_config
-     args["ckpt_setting"] = ckpt_setting
-+    args["policy_ckpt_path"] = policy_ckpt_path
-
-     embodiment_type = args.get("embodiment")
-     embodiment_config_path = os.path.join(CONFIGS_PATH, "_embodiment_config.yml")
-@@ -327,11 +329,13 @@ def eval_policy(task_name,
- def parse_args_and_config():
-     parser = argparse.ArgumentParser()
-     parser.add_argument("--config", type=str, required=True)
-+    parser.add_argument("--policy_ckpt_path", type=str, required=True)
-     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
-     args = parser.parse_args()
-
-     with open(args.config, "r", encoding="utf-8") as f:
-         config = yaml.safe_load(f)
-+    config["policy_ckpt_path"] = args.policy_ckpt_path
-
-     # Parse overrides
-     def parse_override_pairs(pairs):
-```
-
-This patch is intentionally documented here rather than vendored into `starVLA`, because RoboTwin is maintained in a separate repository. The StarVLA launcher passes `--policy_ckpt_path` at runtime; without this patch, RoboTwin cannot forward the checkpoint path into `model2robotwin_interface.py`.
+The StarVLA adapter injects its checkpoint path and configurable rollout budget
+at runtime. No changes to the third-party RoboTwin checkout are required.
 
 Optional:
 
@@ -325,6 +372,7 @@ All remaining arguments after flags are treated as tasks. You can specify:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-s`, `--seed` | `0` | Eval seed (also via `ROBOTWIN_SEED`) |
+| `-e`, `--episodes` | `100` | Valid rollouts per task (also via `EPISODES`) |
 | `-j`, `--jobs-per-gpu` | `1` | Concurrent jobs per visible GPU (also via `ROBOTWIN_JOBS_PER_GPU`) |
 | `-p`, `--base-port` | `5694` | First port to allocate (also via `ROBOTWIN_BASE_PORT`) |
 | `--server-timeout` | `600` | Seconds to wait for the policy server to start (also via `ROBOTWIN_SERVER_TIMEOUT`) |
@@ -429,9 +477,11 @@ These environment variables are read when the corresponding flag is not set:
 | `STARVLA_PYTHON` | auto | Explicit path to the starvla Python binary (skips conda env lookup) |
 | `ROBOTWIN_PYTHON` | auto | Explicit path to the robotwin Python binary (skips conda env lookup) |
 | `ROBOTWIN_SEED` | `0` | Eval seed (overridden by `-s`) |
+| `EPISODES` | `100` | Valid rollouts per task (overridden by `-e`) |
 | `ROBOTWIN_JOBS_PER_GPU` | `1` | Concurrent jobs per GPU (overridden by `-j`) |
 | `ROBOTWIN_BASE_PORT` | `5694` | First port to allocate (overridden by `-p`) |
 | `ROBOTWIN_SERVER_TIMEOUT` | `600` | Server startup timeout in seconds (overridden by `--server-timeout`) |
+| `ROBOTWIN_EVAL_VIDEO_LOG` | `0` | Set to `1` to encode every policy rollout as MP4; disabled by default for throughput |
 | `ROBOTWIN_AUTO_INSTALL_DEPS` | `0` | Set to `1` to bootstrap pip deps (overridden by `--install-deps`) |
 | `ROBOTWIN_LOG_ROOT` | auto | Override the log output directory |
 

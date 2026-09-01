@@ -34,7 +34,7 @@ except ImportError:
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import set_seed
+from accelerate.utils import GradientAccumulationPlugin, set_seed
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -47,15 +47,35 @@ from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
 
-deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
-accelerator.print(accelerator.state)
-
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Initialize logger
 logger = get_logger(__name__)
+
+
+def build_accelerator(cfg) -> Accelerator:
+    """Construct Accelerate after loading the configured accumulation factor."""
+    gradient_accumulation_steps = int(
+        getattr(cfg.trainer, "gradient_accumulation_steps", 1)
+    )
+    if gradient_accumulation_steps < 1:
+        raise ValueError("trainer.gradient_accumulation_steps must be positive")
+
+    # The trainer owns scheduler stepping below. Disabling Accelerate's
+    # automatic coupling prevents AcceleratedScheduler from stepping once per
+    # process.
+    return Accelerator(
+        deepspeed_plugin=DeepSpeedPlugin(),
+        gradient_accumulation_plugin=GradientAccumulationPlugin(
+            num_steps=gradient_accumulation_steps,
+            # DeepSpeed ZeRO-2 partitions gradients and rejects no_sync().
+            # It performs accumulation internally, so keep synchronization
+            # enabled for every micro-batch.
+            sync_each_batch=True,
+        ),
+        step_scheduler_with_optimizer=False,
+    )
 
 
 def load_fast_tokenizer():
@@ -146,12 +166,17 @@ class VLATrainer(TrainerUtils):
         self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
         self.print_trainable_parameters(self.model)
 
-        self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
+        self.model, self.optimizer, self.vla_train_dataloader, self.lr_scheduler = self.setup_distributed_training(
             self.accelerator,
             self.model,
             self.optimizer,
             self.vla_train_dataloader,
+            self.lr_scheduler,
         )
+
+        if self.resume_training_state:
+            self._load_checkpoint(self.resume_training_state)
+            self._repair_lr_scheduler_after_resume()
 
         self._init_wandb()
 
@@ -220,12 +245,25 @@ class VLATrainer(TrainerUtils):
         pretrained_checkpoint = getattr(self.config.trainer, "pretrained_checkpoint", None)
         is_resume = getattr(self.config.trainer, "is_resume", False)
         self.resume_from_checkpoint = pretrained_checkpoint
+        self.resume_training_state = None
 
         if is_resume:
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
-                self.model = self.load_pretrained_backbones(self.model, self.resume_from_checkpoint, reload_modules=None)
+                training_state = os.path.join(
+                    self.checkpoint_dir, f"steps_{self.completed_steps}_training_state"
+                )
+                if os.path.isdir(training_state):
+                    self.resume_training_state = training_state
+                else:
+                    self.model = self.load_pretrained_backbones(
+                        self.model, self.resume_from_checkpoint, reload_modules=None
+                    )
+                    logger.warning(
+                        "No full training state found for step %s; falling back to weights-only resume",
+                        self.completed_steps,
+                    )
                 logger.info(
                     f"Resuming training from checkpoint: {self.resume_from_checkpoint}, steps: {self.completed_steps}"
                 )
@@ -245,8 +283,8 @@ class VLATrainer(TrainerUtils):
             self.completed_steps = 0
 
     def _adjust_lr_scheduler_for_resume(self):
-        """Adjust LR scheduler state after resuming from non-zero steps."""
-        if self.completed_steps > 0:
+        """Advance the scheduler only for legacy weights-only resumes."""
+        if self.completed_steps > 0 and not self.resume_training_state:
             logger.info(f"Adjusting LR scheduler for resume from step {self.completed_steps}")
             for _ in range(self.completed_steps):
                 self.lr_scheduler.step()
@@ -259,11 +297,29 @@ class VLATrainer(TrainerUtils):
         self.accelerator.load_state(checkpoint_path)
         self.accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
 
+    def _repair_lr_scheduler_after_resume(self):
+        """Rewind scheduler states saved with Accelerate's per-process stepping."""
+        repair_scheduler = bool(
+            getattr(self.config.trainer, "repair_lr_scheduler_on_resume", False)
+        )
+        if not repair_scheduler:
+            return
+
+        scheduler = getattr(self.lr_scheduler, "scheduler", self.lr_scheduler)
+        scheduler.step(self.completed_steps)
+        if hasattr(scheduler, "_step_count"):
+            scheduler._step_count = self.completed_steps + 1
+        logger.warning(
+            "Repaired LR scheduler to external step %s; current LR: %s",
+            self.completed_steps,
+            scheduler.get_last_lr(),
+        )
+
     def _save_checkpoint(self):
         """Save current training state."""
+        checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
         if self.accelerator.is_main_process:
             save_format = getattr(self.config.trainer, "save_format", "pt")
-            checkpoint_path = os.path.join(self.checkpoint_dir, f"steps_{self.completed_steps}")
 
             state_dict = self.accelerator.get_state_dict(self.model)
             if save_format == "safetensors":
@@ -287,6 +343,10 @@ class VLATrainer(TrainerUtils):
                 logger.info("✅ Configuration files saved")
 
         self.accelerator.wait_for_everyone()
+        training_state_path = checkpoint_path + "_training_state"
+        self.accelerator.save_state(training_state_path)
+        self.accelerator.wait_for_everyone()
+        self.accelerator.print(f"✅ Full training state saved at {training_state_path}")
 
     def _log_metrics(self, metrics):
         """Record training metrics."""
@@ -296,6 +356,23 @@ class VLATrainer(TrainerUtils):
                 group_name = group.get("name", str(i))
                 metrics[f"learning_rate/{group_name}"] = last_lrs[i] if i < len(last_lrs) else last_lrs[-1]
             metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
+            # Keep a local, dependency-free metric history even when W&B is
+            # disabled or misconfigured. This is especially important for
+            # staged runs whose checkpoint should be gated on loss quality.
+            local_record = {"step": self.completed_steps, **metrics}
+            non_finite = {
+                key: value
+                for key, value in local_record.items()
+                if isinstance(value, (float, np.floating))
+                and not np.isfinite(value)
+            }
+            if non_finite:
+                raise FloatingPointError(
+                    f"Non-finite metrics at step {self.completed_steps}: {non_finite}"
+                )
+            metrics_path = os.path.join(self.config.output_dir, "metrics.jsonl")
+            with open(metrics_path, "a", encoding="utf-8") as metrics_file:
+                metrics_file.write(json.dumps(local_record, allow_nan=False) + "\n")
             if getattr(self, "_wandb_enabled", False):
                 try:
                     wandb.log(metrics, step=self.completed_steps)
@@ -343,9 +420,14 @@ class VLATrainer(TrainerUtils):
             step_metrics = self._train_step(batch_vla)
             t_end_model = time.perf_counter()
 
-            if self.accelerator.sync_gradients:
-                progress_bar.update(1)
-                self.completed_steps += 1
+            # DeepSpeed receives every micro-batch, but optimizer-step
+            # counters, evaluation, metrics, and checkpoints must advance only
+            # at the configured accumulation boundary.
+            if not self.accelerator.sync_gradients:
+                continue
+
+            progress_bar.update(1)
+            self.completed_steps += 1
 
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(
@@ -423,12 +505,60 @@ class VLATrainer(TrainerUtils):
                 self.lr_scheduler.step()
 
         step_log = {"action_dit_loss": action_loss.item()}
-        # Surface any auxiliary scalar losses the framework reports (e.g. the
-        # world-model flow_latent_loss / flow_action_loss for LeWM-OFT).
-        for k in ("l1_action_loss", "flow_latent_loss", "flow_action_loss", "state_loss"):
+        # Surface any auxiliary scalar losses the framework reports.
+        for k in (
+            "l1_action_loss",
+            "continuous_action_l1",
+            "gripper_action_l1",
+            "gripper_action_accuracy",
+            "first_action_l1",
+            "valid_action_fraction",
+            "latent_loss",
+            "latent_cosine_loss",
+            "delta_scale",
+            "delta_target_rms",
+            "delta_pred_rms",
+            "delta_copy_mse",
+            "delta_pred_mse",
+            "delta_mean_baseline_mse",
+            "delta_to_copy_ratio",
+            "delta_direction_cosine",
+            "visual_token_diversity_loss",
+            "visual_token_variance_loss",
+            "visual_token_mean_cosine",
+        ):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):
                 step_log[k] = v.item()
+        if isinstance(output_dict, dict):
+            for k, v in output_dict.items():
+                if (
+                    k.startswith("latent_loss_horizon_")
+                ) and torch.is_tensor(v):
+                    step_log[k] = v.item()
+        robot_tags = {
+            str(example.get("robot_tag"))
+            for example in batch_vla
+            if example.get("robot_tag") is not None
+        }
+        if len(robot_tags) == 1:
+            robot_tag = next(iter(robot_tags))
+            for metric_name in (
+                "action_dit_loss",
+                "l1_action_loss",
+                "continuous_action_l1",
+                "gripper_action_l1",
+                "gripper_action_accuracy",
+                "first_action_l1",
+                "valid_action_fraction",
+                "latent_loss",
+                "latent_cosine_loss",
+                "delta_to_copy_ratio",
+                "delta_direction_cosine",
+                "visual_token_mean_cosine",
+            ):
+                if metric_name in step_log:
+                    step_log[f"{metric_name}/{robot_tag}"] = step_log[metric_name]
         return step_log
 
     def _finalize_training(self):
@@ -458,10 +588,19 @@ class VLATrainer(TrainerUtils):
 
 
 def main(cfg) -> None:
+    accelerator = build_accelerator(cfg)
+    accelerator.print(accelerator.state)
     logger.info("VLA Training :: Warming Up")
 
     cfg = wrap_config(cfg)
     logger.info("✅ Configuration wrapped for access tracking")
+
+    # Model construction initializes experiment-specific branches (for
+    # example the predictable-innovation basis). Seed before construction so
+    # the YAML seed governs those parameters, not only the later train loop.
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    construction_seed = cfg.seed + rank if hasattr(cfg, "seed") else rank + 3047
+    set_seed(construction_seed)
 
     output_dir = setup_directories(cfg=cfg)
     vla = build_framework(cfg)

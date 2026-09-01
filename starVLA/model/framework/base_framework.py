@@ -246,24 +246,27 @@ class baseframework(PreTrainedModel):
             model_state_dict = load_file(str(pretrained_checkpoint))
         else:
             model_state_dict = torch.load(pretrained_checkpoint, map_location="cpu")
+        model_state_dict = FrameworkModel.remap_checkpoint_state_dict(model_state_dict)
         # logger.info(f"Loading model weights from `{pretrained_checkpoint}`")
-        model_keys = set(FrameworkModel.state_dict().keys())
-        checkpoint_keys = set(model_state_dict.keys())
-        try:
-            FrameworkModel.load_state_dict(model_state_dict, strict=True)
-        except RuntimeError as e:
-            # must keep all keys matched
-            common_keys = model_keys.intersection(checkpoint_keys)
-            missing_keys = model_keys - common_keys
-            unexpected_keys = checkpoint_keys - common_keys
-            if missing_keys:
-                logger.warning(f"Missing keys in state_dict: {missing_keys}")
-            if unexpected_keys:
-                logger.warning(f"Unexpected keys in state_dict: {unexpected_keys}")
-
-            raise e
+        model_state = FrameworkModel.state_dict()
+        compatible_state_dict = {
+            key: value
+            for key, value in model_state_dict.items()
+            if key in model_state and model_state[key].shape == value.shape
+        }
+        missing_keys = set(model_state) - set(compatible_state_dict)
+        unexpected_keys = set(model_state_dict) - set(compatible_state_dict)
+        if missing_keys:
+            logger.warning(f"Missing or incompatible keys in state_dict: {missing_keys}")
+        if unexpected_keys:
+            logger.warning(f"Unexpected or incompatible keys in state_dict: {unexpected_keys}")
+        FrameworkModel.load_state_dict(compatible_state_dict, strict=False)
 
         # **ensure model is on GPU**
         FrameworkModel = FrameworkModel
         return FrameworkModel
+
+    def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
+        """Translate legacy checkpoint keys before compatibility filtering."""
+        return state_dict
 

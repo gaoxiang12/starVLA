@@ -10,6 +10,8 @@ from starVLA.dataloader.gr00t_lerobot.embodiment_tags import EmbodimentTag
 # DataConfig — Agilex (RobotWin, action_indices=16)
 # ---------------------------------------------------------------------------
 class AgilexDataConfig:
+    # Keep the legacy tag for archived RoboTwin checkpoints. Unified pretraining
+    # overrides this to ALOHA in its dedicated DataConfig.
     embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     video_keys = ["video.cam_high", "video.cam_left_wrist", "video.cam_right_wrist"]
     state_keys = ["state.left_joints", "state.right_joints", "state.left_gripper", "state.right_gripper"]
@@ -48,6 +50,26 @@ class AgilexDataConfig:
                 },
             ),
         ])
+
+
+class AgilexWMDataConfig(AgilexDataConfig):
+    """RoboTwin schema with future camera frames for GAWM training.
+
+    The action horizon is 16 environment steps and GAWM predicts two future
+    latents, so load the midpoint and horizon-end frames in addition to the
+    current observation.  State remains current-only because this recipe uses
+    it for action conditioning rather than future-state supervision.
+    """
+
+    video_indices = [0, 8, 16]
+
+    def modality_config(self):
+        config = super().modality_config()
+        config["video"] = ModalityConfig(
+            delta_indices=self.video_indices,
+            modality_keys=self.video_keys,
+        )
+        return config
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +144,7 @@ class ArxX5DataConfig:
 
 ROBOT_TYPE_CONFIG_MAP = {
     "robotwin": AgilexDataConfig(),
+    "robotwin_wm": AgilexWMDataConfig(),
     "robotwin50": AgilexData50Config(),
     "arx_x5": ArxX5DataConfig(),
 }
@@ -296,3 +319,40 @@ DATASET_NAMED_MIXTURES = {
     "robotwin_task2": [("place_a2b_left", 1.0, "robotwin"), ("place_a2b_right", 1.0, "robotwin")],
     "arx_x5": [("arx_x5", 1.0, "arx_x5")],
 }
+
+# Clean-50 protocol: all 50 Aloha-AgileX tasks, using only the official
+# 50-trajectory Clean split for each task. Derive it from the canonical list so
+# task additions/order cannot silently diverge between the all-data and
+# Clean-only recipes.
+DATASET_NAMED_MIXTURES["robotwin_clean"] = [
+    item
+    for item in DATASET_NAMED_MIXTURES["robotwin_all"]
+    if item[0].startswith("Clean/")
+]
+
+# World-model runs use a robot type whose video modality loads current,
+# midpoint, and horizon-end frames. The dataset packer exposes the latter two
+# as ``future_images`` when ``future_obs_frames`` is enabled.
+DATASET_NAMED_MIXTURES["robotwin_all_wm"] = [
+    (dataset, weight, "robotwin_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_all"]
+]
+DATASET_NAMED_MIXTURES["robotwin_all_50_wm"] = DATASET_NAMED_MIXTURES["robotwin_all_50"]
+DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
+    (dataset, weight, "robotwin_wm")
+    for dataset, weight, _robot_type in DATASET_NAMED_MIXTURES["robotwin_clean"]
+]
+# Local 500-success Clean generation uses the same per-task schema but lives
+# under a separate data root so it can be audited before replacing any
+# official-data recipe.
+DATASET_NAMED_MIXTURES["robotwin_generated_clean500_wm"] = list(
+    DATASET_NAMED_MIXTURES["robotwin_clean_wm"]
+)
+
+# Locally collected Clean click_bell demonstrations.  This mixture expects
+# data_root_dir=playground/Datasets/RoboTwinClickBellClean1000 and intentionally
+# contains no original Clean-50 episodes, so targeted fine-tuning sees exactly
+# the 1,000 newly collected trajectories.
+DATASET_NAMED_MIXTURES["robotwin_click_bell_clean1000_wm"] = [
+    ("click_bell", 1.0, "robotwin_wm"),
+]

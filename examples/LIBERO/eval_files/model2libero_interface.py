@@ -22,7 +22,8 @@ import numpy as np
 from PIL import Image
 
 from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
-from examples.SimplerEnv.eval_files.adaptive_ensemble import AdaptiveEnsembler
+from examples.SimplerEnv.eval_files.adaptive_ensemble import ChunkedAdaptiveEnsembler
+from starVLA.task_language import configured_task_language_mode
 
 
 class ModelClient:
@@ -31,11 +32,11 @@ class ModelClient:
         unnorm_key: Optional[str] = None,
         policy_setup: str = "franka",
         horizon: int = 0,
-        action_ensemble: bool = True,
-        action_ensemble_horizon: Optional[int] = 3,
+        action_ensemble: bool = False,
         use_ddim: bool = True,
         num_ddim_steps: int = 10,
         adaptive_ensemble_alpha: float = 0.1,
+        execute_horizon: Optional[int] = None,
         host: str = "0.0.0.0",
         port: int = 10095,
         image_size: Sequence[int] = (224, 224),
@@ -43,7 +44,20 @@ class ModelClient:
         # Connect & receive handshake metadata (action_chunk_size, etc.)
         self.client = WebsocketClientPolicy(host, port)
         meta = self.client.get_server_metadata()
-        self.action_chunk_size = int(meta["action_chunk_size"])
+        per_embodiment_horizons = meta.get("action_chunk_sizes", {})
+        self.action_chunk_size = int(
+            per_embodiment_horizons.get(unnorm_key, meta["action_chunk_size"])
+        )
+        self.visual_context_length = int(meta.get("visual_context_length", 1))
+        self.task_language_mode = configured_task_language_mode(meta, unnorm_key)
+        self.execute_horizon = (
+            self.action_chunk_size if execute_horizon is None else int(execute_horizon)
+        )
+        if not 1 <= self.execute_horizon <= self.action_chunk_size:
+            raise ValueError(
+                "execute_horizon must be between 1 and the model action chunk size "
+                f"({self.action_chunk_size}), got {self.execute_horizon}"
+            )
         self._server_metadata = meta
 
         self.image_size: tuple = tuple(image_size)
@@ -52,6 +66,8 @@ class ModelClient:
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_chunk_size: {self.action_chunk_size}, "
+            f"visual_context_length: {self.visual_context_length}, "
+            f"execute_horizon: {self.execute_horizon}, "
             f"server_meta: {meta} ***"
         )
 
@@ -60,7 +76,6 @@ class ModelClient:
         self.horizon = horizon
         self.action_ensemble = action_ensemble
         self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
-        self.action_ensemble_horizon = action_ensemble_horizon
 
         # Gripper sticky state (kept for parity with the previous client; not
         # currently consumed by LIBERO but other policy_setup paths use it).
@@ -70,21 +85,24 @@ class ModelClient:
         self.previous_gripper_action = None
 
         self.task_description = None
-        self.image_history = deque(maxlen=self.horizon)
+        self.image_history = deque(maxlen=self.visual_context_length)
         if self.action_ensemble:
-            self.action_ensembler = AdaptiveEnsembler(
-                self.action_ensemble_horizon, self.adaptive_ensemble_alpha
+            self.action_ensembler = ChunkedAdaptiveEnsembler(
+                self.adaptive_ensemble_alpha
             )
         else:
             self.action_ensembler = None
         self.num_image_history = 0
 
-        # Cached unnormalized chunk; refreshed every `action_chunk_size` steps.
+        # Cached unnormalized chunk; only its first `execute_horizon` actions
+        # are executed before incorporating a fresh observation.
         self.raw_actions: Optional[np.ndarray] = None
 
     def _add_image_to_history(self, image: np.ndarray) -> None:
         self.image_history.append(image)
-        self.num_image_history = min(self.num_image_history + 1, self.horizon)
+        self.num_image_history = min(
+            self.num_image_history + 1, self.visual_context_length
+        )
 
     def reset(self, task_description: str) -> None:
         self.task_description = task_description
@@ -127,10 +145,25 @@ class ModelClient:
                 resized.append(arr)
             example = {**example, "image": resized}
 
+        self._add_image_to_history(example["image"])
+
         # Refresh chunk if needed.
-        if step % self.action_chunk_size == 0 or self.raw_actions is None:
+        chunk_offset = step % self.execute_horizon
+        refreshed = chunk_offset == 0 or self.raw_actions is None
+        if refreshed:
+            context_frames = list(self.image_history)
+            if len(context_frames) < self.visual_context_length:
+                context_frames = [context_frames[0]] * (
+                    self.visual_context_length - len(context_frames)
+                ) + context_frames
             vla_input = {
-                "examples": [example],
+                "examples": [
+                    {
+                        **example,
+                        "image_history": context_frames,
+                        "episode_start": step == 0,
+                    }
+                ],
                 "unnorm_key": self.unnorm_key,
                 "do_sample": False,
                 "use_ddim": self.use_ddim,
@@ -145,8 +178,13 @@ class ModelClient:
                     f"full response={response}"
                 )
             self.raw_actions = np.asarray(actions_batch)[0]  # (T, D)
+            if self.action_ensemble:
+                self.action_ensembler.add_chunk(self.raw_actions)
 
-        raw_actions = self.raw_actions[step % self.action_chunk_size][None]
+        if self.action_ensemble:
+            raw_actions = self.action_ensembler.step()[None]
+        else:
+            raw_actions = self.raw_actions[chunk_offset][None]
         raw_action = {
             "world_vector": np.array(raw_actions[0, :3]),
             "rotation_delta": np.array(raw_actions[0, 3:6]),

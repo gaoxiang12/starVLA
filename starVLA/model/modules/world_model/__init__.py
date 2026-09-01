@@ -1,9 +1,8 @@
 def get_world_model(config):
     """Factory for world model backends.
 
-    Routes to the correct world-model wrapper based on
-    ``config.framework.world_model.base_wm`` (or falls back to
-    ``config.framework.qwenvl.base_vlm`` for backward compatibility).
+    GAWM is routed by ``framework.name`` and constructed from
+    ``world_model.encoder_spec``. Other backends are routed by ``base_wm``.
 
     Every world-model wrapper exposes:
       - ``forward(**kwargs)`` → model outputs with hidden_states
@@ -11,12 +10,25 @@ def get_world_model(config):
       - ``generate(**kwargs)`` → generation (optional)
     """
 
-    # Prefer explicit world_model config; fall back to qwenvl for compat
+    # Every WM4A framework provides a world_model section. GAWM embeds its
+    # encoder weights in the unified checkpoint; generative backends still use
+    # an external base_wm path.
     wm_cfg = config.framework.get("world_model", None)
-    if wm_cfg is not None:
-        wm_name = wm_cfg.get("base_wm", "")
-    else:
-        wm_name = config.framework.qwenvl.base_vlm
+    if wm_cfg is None:
+        raise ValueError(
+            "framework.world_model is required"
+        )
+    framework_name = str(config.framework.get("name", "")).strip().lower()
+    wm_name = wm_cfg.get("base_wm", "")
+    if framework_name == "gawm":
+        from .GAWM import _GAWM_Interface
+
+        return _GAWM_Interface(config)
+    if not wm_name:
+        raise ValueError(
+            "framework.world_model.base_wm is required "
+            "(e.g. facebook/dinov2-base or a DINOv3 .pth)"
+        )
 
     if "cosmos-reason2" in wm_name.lower():
         from ..vlm.CosmosReason2 import _CosmosReason2_Interface
@@ -30,9 +42,13 @@ def get_world_model(config):
         from .Wan2 import _Wan2_Interface
 
         return _Wan2_Interface(config)
-    elif "lewm" in wm_name.lower() or "le-wm" in wm_name.lower() or "vit-tiny" in wm_name.lower():
-        from .LeWM import _LeWM_Interface
+    elif "taesd" in wm_name.lower():
+        from .TAESD import _TAESD_Interface
 
-        return _LeWM_Interface(config)
+        return _TAESD_Interface(config)
+    elif "gawm" in wm_name.lower() or "dino" in wm_name.lower():
+        from .GAWM import _GAWM_Interface
+
+        return _GAWM_Interface(config)
     else:
         raise NotImplementedError(f"World model {wm_name} not implemented")

@@ -30,6 +30,7 @@ from libero.libero.envs import OffScreenRenderEnv
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from examples.LIBERO.eval_files.model2libero_interface import ModelClient
+from starVLA.task_language import resolve_task_language
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -55,12 +56,14 @@ class Args:
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
+    start_task: int = 0  # First task index to evaluate (useful for resuming an interrupted suite).
     max_tasks: int = -1  # If > 0, limit the number of tasks evaluated (smoke / quick check). -1 = run all.
 
     #################################################################################################################
     # Utils
     #################################################################################################################
     video_out_path: str = "experiments/libero/logs"  # Path to save videos
+    save_video: bool = False
 
     seed: int = 7  # Random Seed (for reproducibility)
 
@@ -70,6 +73,12 @@ class Args:
     unnorm_key: str | None = None
 
     post_process_action: bool = True
+
+    # Number of predicted actions to execute before replanning. None uses the
+    # model's full action chunk (8 for the current LIBERO policy).
+    execute_horizon: int | None = None
+    temporal_action_ensemble: bool = False
+    adaptive_ensemble_alpha: float = 0.0
 
     job_name: str = "test"
 
@@ -107,15 +116,27 @@ def eval_libero(args: Args) -> None:
         host=args.host,
         port=args.port,
         unnorm_key=args.unnorm_key,
+        execute_horizon=args.execute_horizon,
+        action_ensemble=args.temporal_action_ensemble,
+        adaptive_ensemble_alpha=args.adaptive_ensemble_alpha,
     )
 
-    # Optional smoke-test cap (still useful for quick verification with -1 = full run).
-    n_eval_tasks = num_tasks_in_suite if args.max_tasks <= 0 else min(args.max_tasks, num_tasks_in_suite)
-    logging.info(f"Evaluating {n_eval_tasks} of {num_tasks_in_suite} tasks (max_tasks={args.max_tasks})")
+    if not 0 <= args.start_task < num_tasks_in_suite:
+        raise ValueError(
+            f"start_task must be in [0, {num_tasks_in_suite}), got {args.start_task}"
+        )
+    stop_task = num_tasks_in_suite
+    if args.max_tasks > 0:
+        stop_task = min(args.start_task + args.max_tasks, num_tasks_in_suite)
+    task_ids = range(args.start_task, stop_task)
+    logging.info(
+        f"Evaluating tasks [{args.start_task}, {stop_task}) of {num_tasks_in_suite} "
+        f"(max_tasks={args.max_tasks})"
+    )
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(n_eval_tasks)):
+    for task_id in tqdm.tqdm(task_ids):
         # Get task
         task = task_suite.get_task(task_id)
 
@@ -125,13 +146,21 @@ def eval_libero(args: Args) -> None:
         # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
+        # Match the training-time language resolution (e.g. dataset_name mode
+        # maps every episode to the canonical task string).
+        task_language = resolve_task_language(
+            task_description,
+            getattr(task, "name", task_description),
+            getattr(client_model, "task_language_mode", "metadata"),
+        )
+
         # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             logging.info(f"\nTask: {task_description}")
 
             # Reset environment
-            client_model.reset(task_description=task_description)  # Reset the client connection
+            client_model.reset(task_description=task_language)  # Reset the client connection
             env.reset()
 
             # Set initial states
@@ -139,8 +168,7 @@ def eval_libero(args: Args) -> None:
 
             # Setup
             t = 0
-            replay_images = []
-            full_actions = []
+            replay_images = [] if args.save_video else None
 
             logging.info(f"Starting episode {task_episodes + 1}...")
             step = 0
@@ -160,8 +188,8 @@ def eval_libero(args: Args) -> None:
                 img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                 wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
-                # Save preprocessed image for replay video
-                replay_images.append(img)
+                if replay_images is not None:
+                    replay_images.append(img)
 
                 state = np.concatenate(
                     (
@@ -181,13 +209,13 @@ def eval_libero(args: Args) -> None:
                 # align key with model API --> two images provided here --> check training
                 example_dict = {
                     "image": [observation["observation.primary"][0], observation["observation.wrist_image"][0]],
-                    "lang": observation["instruction"][0],
+                    "lang": task_language,
+                    "state": observation["observation.state"][0],
                 }
 
                 start_time = time.time()
 
                 response = client_model.step(example=example_dict, step=step)
-
                 end_time = time.time()
                 # print(f"time: {end_time - start_time}")
 
@@ -212,8 +240,6 @@ def eval_libero(args: Args) -> None:
                 else:
                     delta_action = np.concatenate([world_vector_delta, rotation_delta, gripper], axis=0)
 
-                full_actions.append(delta_action)
-
                 # __import__("ipdb").set_trace()
                 # see ../robosuite/controllers/controller_factory.py
                 obs, reward, done, info = env.step(delta_action.tolist())
@@ -227,21 +253,17 @@ def eval_libero(args: Args) -> None:
             task_episodes += 1
             total_episodes += 1
 
-            # Save a replay video of the episode
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
-            imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
-                fps=10,
-                format="FFMPEG",
-                macro_block_size=1,
-            )
-
-            full_actions = np.stack(full_actions)
-            # np.save(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.npy", full_actions)
-
-            # print(pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4")
+            if replay_images is not None:
+                imageio.mimwrite(
+                    pathlib.Path(args.video_out_path)
+                    / f"rollout_{task_segment}_episode{episode_idx}_{suffix}.mp4",
+                    [np.asarray(x) for x in replay_images],
+                    fps=10,
+                    format="FFMPEG",
+                    macro_block_size=1,
+                )
             # Log current results
             logging.info(f"Success: {done}")
             logging.info(f"# episodes completed so far: {total_episodes}")

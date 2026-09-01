@@ -5,6 +5,7 @@ Utility classes defining a Metrics container and multiple Trackers to enable mod
 endpoints (e.g., JSONL local logs, Weights & Biases).
 """
 
+from collections.abc import Mapping
 from typing import Tuple
 import re
 import json
@@ -110,6 +111,14 @@ def build_param_lr_groups(model, cfg):
     frozen_params = set()
     param_groups = []
 
+    def iter_module_lrs(mapping, prefix=""):
+        for name, value in mapping.items():
+            module_name = f"{prefix}.{name}" if prefix else name
+            if isinstance(value, Mapping) or hasattr(value, "items"):
+                yield from iter_module_lrs(value, module_name)
+            else:
+                yield module_name, value
+
     for freeze_path in freeze_patterns:
         module = model
         try:
@@ -120,7 +129,7 @@ def build_param_lr_groups(model, cfg):
             print(f"⚠️ freeze module path does not exist: {freeze_path}")
             continue
 
-    for module_name, lr in lr_cfg.items():
+    for module_name, lr in iter_module_lrs(lr_cfg):
         if module_name == "base":
             continue
         # try to find the module under vla by module_name (support nested paths)
@@ -129,7 +138,11 @@ def build_param_lr_groups(model, cfg):
             for attr in module_name.split("."):
                 module = getattr(module, attr)
             # filter out frozen parameters
-            params = [p for p in module.parameters() if id(p) not in frozen_params]
+            params = [
+                p
+                for p in module.parameters()
+                if p.requires_grad and id(p) not in frozen_params
+            ]
             if params:  # only add param group if there are trainable parameters
                 param_groups.append({"params": params, "lr": lr, "name": module_name})
                 used_params.update(id(p) for p in params)
@@ -137,7 +150,13 @@ def build_param_lr_groups(model, cfg):
             ReferenceError(f"⚠️ module path `{module_name}` not found in vla")
 
     # assign base learning rate to the remaining unused parameters (exclude frozen ones)
-    other_params = [p for p in model.parameters() if id(p) not in used_params and id(p) not in frozen_params]
+    other_params = [
+        p
+        for p in model.parameters()
+        if p.requires_grad
+        and id(p) not in used_params
+        and id(p) not in frozen_params
+    ]
     if other_params:
         param_groups.append({"params": other_params, "lr": base_lr, "name": "base"})
 
@@ -269,6 +288,10 @@ class TrainerUtils:
         except Exception as e:
             raise RuntimeError(f"❌ loading checkpoint failed: {e}")
 
+        remap_checkpoint = getattr(model, "remap_checkpoint_state_dict", None)
+        if remap_checkpoint is not None:
+            checkpoint = remap_checkpoint(checkpoint)
+
         loaded_modules = []
 
         if reload_modules:  # partial load
@@ -292,9 +315,23 @@ class TrainerUtils:
                     print(f"❌ cannot find module path: {path}")
         else:  # full load
             try:
-                model.load_state_dict(checkpoint, strict=False)
+                model_state = model.state_dict()
+                compatible_checkpoint = {}
+                skipped = []
+                for name, value in checkpoint.items():
+                    target = model_state.get(name)
+                    if target is not None and target.shape == value.shape:
+                        compatible_checkpoint[name] = value
+                    else:
+                        skipped.append((name, tuple(value.shape), None if target is None else tuple(target.shape)))
+
+                model.load_state_dict(compatible_checkpoint, strict=False)
                 if dist.get_rank() == 0:
                     print("✅ loaded <full_model> model parameters")
+                    if skipped:
+                        print(f"⚠️ skipped {len(skipped)} incompatible or unexpected checkpoint parameters")
+                        for name, source_shape, target_shape in skipped[:12]:
+                            print(f"   - {name}: checkpoint={source_shape}, model={target_shape}")
                 loaded_modules = ["<full_model>"]
             except Exception as e:
                 raise RuntimeError(f"❌ loading full model failed: {e}")
@@ -319,6 +356,36 @@ class TrainerUtils:
         :return: prepared distributed components (in the same order as input)
         """
 
+        # A DataLoader created with ``batch_sampler=...`` intentionally exposes
+        # ``batch_size=None`` even though the batch sampler has a concrete
+        # batch size. Accelerate cannot resolve DeepSpeed's ``auto`` micro
+        # batch size in that case, so mirror its inference using the sampler.
+        deepspeed_plugin = getattr(accelerator.state, "deepspeed_plugin", None)
+        if deepspeed_plugin is not None and deepspeed_plugin.is_auto(
+            "train_micro_batch_size_per_gpu"
+        ):
+            dataloaders = [
+                component
+                for component in components
+                if isinstance(component, torch.utils.data.DataLoader)
+            ]
+            batch_sizes = []
+            for dataloader in dataloaders:
+                batch_size = dataloader.batch_size
+                if batch_size is None:
+                    batch_size = getattr(dataloader.batch_sampler, "batch_size", None)
+                if batch_size is None:
+                    break
+                if accelerator.split_batches:
+                    batch_size //= accelerator.num_processes
+                batch_sizes.append(int(batch_size))
+
+            if dataloaders and len(batch_sizes) == len(dataloaders):
+                reducer = min if deepspeed_plugin.is_train_batch_min else max
+                deepspeed_plugin.deepspeed_config[
+                    "train_micro_batch_size_per_gpu"
+                ] = reducer(batch_sizes)
+
         # use accelerator.prepare method to wrap components
         prepared_components = accelerator.prepare(*components)
         return prepared_components
@@ -334,8 +401,11 @@ class TrainerUtils:
         epoch_counter += 1
 
         # 2. set new epoch (distributed core)
-        if hasattr(dataloader, "sampler") and callable(getattr(dataloader.sampler, "set_epoch", None)):
-            dataloader.sampler.set_epoch(epoch_counter)
+        sampler = getattr(dataloader, "batch_sampler", None)
+        if not callable(getattr(sampler, "set_epoch", None)):
+            sampler = getattr(dataloader, "sampler", None)
+        if callable(getattr(sampler, "set_epoch", None)):
+            sampler.set_epoch(epoch_counter)
 
         # 3. create new iterator
         return iter(dataloader), epoch_counter

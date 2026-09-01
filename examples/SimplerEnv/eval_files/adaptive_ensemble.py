@@ -43,3 +43,49 @@ class AdaptiveEnsembler:
         cur_action = np.sum(weights[:, None] * curr_act_preds, axis=0)
 
         return cur_action
+
+
+class ChunkedAdaptiveEnsembler:
+    """Ensemble overlapping action chunks at their shared environment step."""
+
+    def __init__(self, adaptive_ensemble_alpha=0.0):
+        self.adaptive_ensemble_alpha = adaptive_ensemble_alpha
+        self.action_history = []
+        self.current_step = 0
+
+    def reset(self):
+        self.action_history.clear()
+        self.current_step = 0
+
+    def add_chunk(self, actions):
+        actions = np.asarray(actions)
+        if actions.ndim != 2:
+            raise ValueError(f"action chunk must have shape (T, D), got {actions.shape}")
+        self.action_history.append(
+            {"start_step": self.current_step, "actions": actions}
+        )
+
+    def step(self):
+        self.action_history = [
+            item
+            for item in self.action_history
+            if item["start_step"] + len(item["actions"]) > self.current_step
+        ]
+        predictions = []
+        for item in self.action_history:
+            offset = self.current_step - item["start_step"]
+            if 0 <= offset < len(item["actions"]):
+                predictions.append(item["actions"][offset])
+        if not predictions:
+            raise ValueError(f"no action prediction available at step {self.current_step}")
+
+        predictions = np.stack(predictions)
+        reference = predictions[-1]
+        cosine = np.sum(predictions * reference, axis=1) / (
+            np.linalg.norm(predictions, axis=1) * np.linalg.norm(reference) + 1e-7
+        )
+        weights = np.exp(self.adaptive_ensemble_alpha * cosine)
+        weights /= weights.sum()
+        action = np.sum(weights[:, None] * predictions, axis=0)
+        self.current_step += 1
+        return action

@@ -51,6 +51,7 @@ from starVLA.dataloader.gr00t_lerobot.schema import (
 )
 from starVLA.dataloader.gr00t_lerobot.transform import ComposedModalityTransform
 from starVLA.dataloader.gr00t_lerobot.transform.state_action import StateActionTransform
+from starVLA.task_language import configured_task_language_mode, resolve_task_language
 
 from functools import partial
 from typing import Tuple, List
@@ -577,6 +578,9 @@ class LeRobotSingleDataset(Dataset):
         transforms: ComposedModalityTransform | None = None,
         delete_pause_frame: bool = False,
         data_cfg = None,
+        task_language_mode: str | None = None,
+        episode_blacklist_path: Path | str | None = None,
+        episode_blacklist: Sequence[int] | None = None,
         **kwargs,
     ):
         """
@@ -593,10 +597,14 @@ class LeRobotSingleDataset(Dataset):
         """
         # first check if the path directory exists
         self.data_cfg = data_cfg
+        self.task_language_mode = task_language_mode
         if not Path(dataset_path).exists():
             raise FileNotFoundError(f"Dataset path {dataset_path} does not exist")
         # indict letobot version
-        self._lerobot_version =  self.data_cfg.get("lerobot_version", "v2.0") #self._indict_lerobot_version(**kwargs)
+        configured_version = kwargs.pop("lerobot_version", None)
+        if configured_version is None and self.data_cfg is not None:
+            configured_version = self.data_cfg.get("lerobot_version", None)
+        self._lerobot_version = configured_version or "v2.0"
 
         self._action_mode = None
         self._action_mode_state_map = {}
@@ -613,6 +621,11 @@ class LeRobotSingleDataset(Dataset):
 
         self._dataset_path = Path(dataset_path)
         self._dataset_name = self._dataset_path.name
+        self.episode_blacklist_path = episode_blacklist_path
+        self._episode_blacklist = {
+            int(episode_index) for episode_index in (episode_blacklist or ())
+        }
+        self._episode_blacklist.update(self._load_episode_blacklist())
         if isinstance(embodiment_tag, EmbodimentTag):
             self.tag = embodiment_tag.value
         else:
@@ -907,6 +920,8 @@ class LeRobotSingleDataset(Dataset):
             trajectory_ids = []
             trajectory_lengths = []
             for episode in episode_metadata:
+                if int(episode["episode_index"]) in self._episode_blacklist:
+                    continue
                 trajectory_ids.append(episode["episode_index"])
                 trajectory_lengths.append(episode["length"])
             return np.array(trajectory_ids), np.array(trajectory_lengths)
@@ -927,6 +942,8 @@ class LeRobotSingleDataset(Dataset):
                     if str(c).startswith("videos/") and str(c).endswith("/from_timestamp")
                 ]
                 for index, episode in episodes_data.iterrows():
+                    if int(episode["episode_index"]) in self._episode_blacklist:
+                        continue
                     trajectory_ids.append(episode["episode_index"])
                     trajectory_lengths.append(episode["length"])
 
@@ -952,7 +969,6 @@ class LeRobotSingleDataset(Dataset):
                                 "chunk_index": int(episode[chunk_col]),
                                 "file_index": int(episode[file_col]),
                             }
-                    print(video_file_indices)
                     episode_meta = {
                         "data/chunk_index": episode["data/chunk_index"],
                         "data/file_index": episode["data/file_index"],
@@ -989,7 +1005,7 @@ class LeRobotSingleDataset(Dataset):
             try:
                 with open(steps_path, "rb") as f:
                     cached_data = pickle.load(f)
-                return cached_data["steps"]
+                return self._filter_blacklisted_steps(cached_data["steps"])
             except Exception as e:
                 # include EOFError / PickleError / KeyError
                 print(
@@ -1027,7 +1043,42 @@ class LeRobotSingleDataset(Dataset):
         with open(steps_path, "rb") as f:
             cached_data = pickle.load(f)
     
-        return cached_data["steps"]
+        return self._filter_blacklisted_steps(cached_data["steps"])
+
+    def _load_episode_blacklist(self) -> set[int]:
+        """Load an optional JSONL episode blacklist without mutating metadata."""
+        if not self.episode_blacklist_path:
+            return set()
+        path = Path(self.episode_blacklist_path)
+        if not path.is_absolute():
+            path = self.dataset_path / path
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Configured episode blacklist does not exist: {path}"
+            )
+
+        episode_ids: set[int] = set()
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                    episode_ids.add(int(record["episode_index"]))
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"Invalid episode blacklist row at {path}:{line_number}"
+                    ) from error
+        if int(os.environ.get("RANK", "0")) == 0:
+            print(f"Loaded {len(episode_ids)} blacklisted episodes from {path}")
+        return episode_ids
+
+    def _filter_blacklisted_steps(
+        self, steps: list[tuple[int, int]]
+    ) -> list[tuple[int, int]]:
+        if not self._episode_blacklist:
+            return steps
+        return [step for step in steps if int(step[0]) not in self._episode_blacklist]
 
     def _get_steps_config_key(self) -> str:
         """Generate a configuration key for steps caching."""
@@ -1312,15 +1363,31 @@ class LeRobotSingleDataset(Dataset):
             with open(tasks_path, "r") as f:
                 tasks = [json.loads(line) for line in f]
             df = pd.DataFrame(tasks)
+            language_mode = getattr(
+                self, "task_language_mode", None
+            ) or configured_task_language_mode(self.data_cfg, getattr(self, "tag", None))
+            df["task"] = [
+                resolve_task_language(task, self.dataset_name, language_mode)
+                for task in df["task"]
+            ]
             return df.set_index("task_index")
         
         elif self._lerobot_version == "v3.0":
             tasks_path = self.dataset_path / LE_ROBOT3_TASKS_FILENAME
             df = pd.read_parquet(tasks_path)
-            df = df.reset_index()  # convert index to a column, typically named 'index'
-            df = df.rename(columns={'index': 'task'})  # rename 'index' column to 'task'
-            df = df[['task_index', 'task']]  # reorder columns
-            return df
+            if "task" not in df.columns:
+                df = df.reset_index()
+            if "task" not in df.columns and "index" in df.columns:
+                df = df.rename(columns={"index": "task"})
+            df = df[["task_index", "task"]]
+            language_mode = getattr(
+                self, "task_language_mode", None
+            ) or configured_task_language_mode(self.data_cfg, getattr(self, "tag", None))
+            df["task"] = [
+                resolve_task_language(task, self.dataset_name, language_mode)
+                for task in df["task"]
+            ]
+            return df.set_index("task_index")
     def _check_integrity(self):
         """Use the config to check if the keys are valid and detect silent data corruption."""
         ERROR_MSG_HEADER = f"Error occurred in initializing dataset {self.dataset_name}:\n"
@@ -1374,7 +1441,12 @@ class LeRobotSingleDataset(Dataset):
         trajectory_id, base_index = self.all_steps[index]
         raw_data = self.get_step_data(trajectory_id, base_index)
         data = self.transforms(raw_data)
-        return self._pack_sample(data)
+        sample = self._pack_sample(data)
+        sample = self._attach_action_validity(sample, trajectory_id, base_index)
+        sample = self._attach_future_frame_validity(
+            sample, trajectory_id, base_index
+        )
+        return sample
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
@@ -1383,6 +1455,25 @@ class LeRobotSingleDataset(Dataset):
             image = data[video_key][0]
             image = Image.fromarray(image).resize((224, 224))
             step_images.append(image)
+
+        target_num_views = (
+            int(self.data_cfg.get("target_num_views", len(step_images)))
+            if self.data_cfg is not None
+            else len(step_images)
+        )
+        if len(step_images) > target_num_views:
+            raise ValueError(
+                f"dataset {self.dataset_name} provides {len(step_images)} views, "
+                f"more than target_num_views={target_num_views}"
+            )
+        view_valid_mask = [True] * len(step_images) + [False] * (
+            target_num_views - len(step_images)
+        )
+        if step_images:
+            blank_view = Image.new("RGB", step_images[0].size)
+            step_images.extend(
+                blank_view.copy() for _ in range(target_num_views - len(step_images))
+            )
 
         language = data[self.modality_keys["language"][0]][0]
         action = []
@@ -1394,8 +1485,16 @@ class LeRobotSingleDataset(Dataset):
             "action": action,
             "image": step_images,
             "lang": language,
-            "robot_tag": self.tag
+            "robot_tag": self.tag,
+            "robot_type": getattr(self, "robot_type", self.tag),
+            "action_spec_id": getattr(self, "action_spec_id", self.tag),
+            "state_spec_id": getattr(self, "state_spec_id", self.tag),
+            "view_valid_mask": view_valid_mask,
         }
+        if getattr(self, "control_hz", None) is not None:
+            sample["control_hz"] = float(self.control_hz)
+        if getattr(self, "future_time_offsets_s", None) is not None:
+            sample["future_time_offsets_s"] = list(self.future_time_offsets_s)
 
         # Optional future-frame packing (for latent world-model training). When
         # the video modality loads multiple frames (delta_indices = [0, k, ...])
@@ -1414,10 +1513,17 @@ class LeRobotSingleDataset(Dataset):
                 future_per_view.append(fut)
             n_future = len(future_per_view[0]) if future_per_view else 0
             if n_future > 0:
-                sample["future_images"] = [
+                future_images = [
                     [future_per_view[v][t] for v in range(len(future_per_view))]
                     for t in range(n_future)
                 ]
+                for frames in future_images:
+                    blank_view = Image.new("RGB", frames[0].size)
+                    frames.extend(
+                        blank_view.copy()
+                        for _ in range(target_num_views - len(frames))
+                    )
+                sample["future_images"] = future_images
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []
@@ -1435,6 +1541,85 @@ class LeRobotSingleDataset(Dataset):
                 state = np.concatenate(state, axis=1).astype(np.float16)
                 sample["state"] = state
 
+        return sample
+
+    def _attach_action_validity(
+        self, sample: dict, trajectory_id: int, base_index: int
+    ) -> dict:
+        """Expose which requested action offsets are real rather than padding."""
+
+        enabled = (
+            self.data_cfg is not None
+            and self.data_cfg.get("action_valid_mask", False) not in ["False", False]
+        )
+        if not enabled:
+            return sample
+        action_keys = self.modality_keys.get("action", [])
+        if not action_keys:
+            raise ValueError("action_valid_mask requires an action modality")
+        offsets = np.asarray(self.delta_indices[action_keys[0]], dtype=np.int64)
+        for action_key in action_keys[1:]:
+            key_offsets = np.asarray(self.delta_indices[action_key], dtype=np.int64)
+            if not np.array_equal(key_offsets, offsets):
+                raise ValueError(
+                    "action_valid_mask requires identical offsets for every action key; "
+                    f"got {action_keys[0]}={offsets.tolist()} and "
+                    f"{action_key}={key_offsets.tolist()}"
+                )
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        trajectory_length = int(self.trajectory_lengths[trajectory_index])
+        absolute_steps = offsets + int(base_index)
+        valid_mask = np.logical_and(
+            absolute_steps >= 0, absolute_steps < trajectory_length
+        )
+        action_horizon = np.asarray(sample["action"]).shape[0]
+        if len(valid_mask) != action_horizon:
+            raise ValueError(
+                "action validity length does not match packed action horizon: "
+                f"{len(valid_mask)} vs {action_horizon}"
+            )
+        sample["action_valid_mask"] = valid_mask
+        return sample
+
+    def _attach_future_frame_validity(
+        self, sample: dict, trajectory_id: int, base_index: int
+    ) -> dict:
+        """Expose which requested video offsets are real rather than padding.
+
+        Video loading clamps out-of-range offsets to the first/last frame.  A
+        temporal representation loss must not treat those repeated frames as
+        evidence of smooth dynamics, so this opt-in mask is computed from the
+        unclamped offsets.
+        """
+
+        enabled = (
+            self.data_cfg is not None
+            and self.data_cfg.get("future_obs_valid_mask", False)
+            not in ["False", False]
+        )
+        if not enabled:
+            return sample
+        video_keys = self.modality_keys.get("video", [])
+        if not video_keys:
+            raise ValueError("future_obs_valid_mask requires a video modality")
+        offsets = np.asarray(self.delta_indices[video_keys[0]], dtype=np.int64)
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        trajectory_length = int(self.trajectory_lengths[trajectory_index])
+        absolute_steps = offsets + int(base_index)
+        valid_mask = np.logical_and(
+            absolute_steps >= 0, absolute_steps < trajectory_length
+        )
+        # A low-rate dataset can map two requested real-time horizons to the
+        # same nearest frame (for example 3 Hz at +0.2 s and +0.4 s). Keep the
+        # frame for batch alignment, but never count the duplicate as a second
+        # supervision target.
+        seen_offsets: set[int] = set()
+        for position, offset in enumerate(offsets.tolist()):
+            if offset in seen_offsets:
+                valid_mask[position] = False
+            else:
+                seen_offsets.add(offset)
+        sample["future_frame_valid_mask"] = valid_mask
         return sample
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
@@ -1465,7 +1650,11 @@ class LeRobotSingleDataset(Dataset):
         """
         data = {}
         # Get the data for all modalities # just for action base data
+        # curr_traj_id must be updated together with curr_traj_data, otherwise
+        # get_trajectory_data's cache-hit check (curr_traj_id == trajectory_id)
+        # never passes and every sample re-reads the parquet file from disk.
         self.curr_traj_data = self.get_trajectory_data(trajectory_id)
+        self.curr_traj_id = trajectory_id
         # TODO @JinhuiYE The logic below is poorly implemented. Data reading should be directly based on curr_traj_data.
         for modality in self.modality_keys:
             # Get the data corresponding to each key in the modality
@@ -1613,8 +1802,8 @@ class LeRobotSingleDataset(Dataset):
                 video_file_index = episode_meta["data/file_index"]
             video_filename = self.video_path_pattern.format(
                 video_key=original_key,
-                chunk_index=episode_meta["data/chunk_index"],
-                file_index=episode_meta["data/file_index"],
+                chunk_index=video_chunk_index,
+                file_index=video_file_index,
             )
         return self.dataset_path / video_filename
 
@@ -2024,6 +2213,7 @@ class CachedLeRobotSingleDataset(LeRobotSingleDataset):
         """
         data = {}
         self.curr_traj_data = self.get_trajectory_data(trajectory_id)
+        self.curr_traj_id = trajectory_id
         # Get the data for all modalities
         for modality in self.modality_keys:
             # Get the data corresponding to each key in the modality
@@ -2227,6 +2417,19 @@ class LeRobotMixtureDataset(Dataset):
         self.seed = seed
         self.mode = mode
         self.data_cfg = kwargs["data_cfg"] if "data_cfg" in kwargs else None
+        self._active_cached_dataset = None
+        self._clear_inactive_trajectory_cache = bool(
+            self.data_cfg.get("clear_inactive_trajectory_cache", False)
+            if self.data_cfg is not None
+            else False
+        )
+        self._worker_memory_release_interval = int(
+            self.data_cfg.get("worker_memory_release_interval", 0)
+            if self.data_cfg is not None
+            else 0
+        )
+        if self._worker_memory_release_interval < 0:
+            raise ValueError("worker_memory_release_interval must be non-negative")
 
         # Set properties for sampling
 
@@ -2298,6 +2501,13 @@ class LeRobotMixtureDataset(Dataset):
         self.set_epoch(0)
 
         self.update_metadata(metadata_config)
+        normalization_statistics_path = (
+            self.data_cfg.get("normalization_statistics_path", None)
+            if self.data_cfg is not None
+            else None
+        )
+        if normalization_statistics_path:
+            self.apply_normalization_statistics(normalization_statistics_path)
 
     @property
     def dataset_lengths(self) -> np.ndarray:
@@ -2338,7 +2548,9 @@ class LeRobotMixtureDataset(Dataset):
         self.epoch = epoch
         # self.sampled_steps = self.sample_epoch()
 
-    def sample_step(self, index: int) -> tuple[LeRobotSingleDataset, int, int]:
+    def sample_step(
+        self, index: int, dataset_index: int | None = None
+    ) -> tuple[LeRobotSingleDataset, int, int]:
         """Sample a single step from the dataset."""
         # return self.sampled_steps[index]
 
@@ -2347,7 +2559,12 @@ class LeRobotMixtureDataset(Dataset):
         rng = np.random.default_rng(seed)
 
         # Sample dataset
-        dataset_index = rng.choice(len(self.datasets), p=self.dataset_sampling_weights)
+        if dataset_index is None:
+            dataset_index = int(
+                rng.choice(len(self.datasets), p=self.dataset_sampling_weights)
+            )
+        elif dataset_index < 0 or dataset_index >= len(self.datasets):
+            raise IndexError(f"dataset index out of range: {dataset_index}")
         dataset = self.datasets[dataset_index]
 
         # Sample trajectory
@@ -2371,9 +2588,20 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             dict: The data for the trajectory and start index.
         """
+        forced_dataset_index = None
+        if isinstance(index, tuple):
+            if len(index) != 2:
+                raise ValueError(
+                    "mixture tuple indices must be (dataset_index, sample_index)"
+                )
+            forced_dataset_index, index = (int(index[0]), int(index[1]))
+
         self._getitem_count += 1
-        if self._getitem_count % 1000 == 0:
-            gc.collect()
+        if (
+            self._worker_memory_release_interval > 0
+            and self._getitem_count % self._worker_memory_release_interval == 0
+        ):
+            self._release_unused_worker_memory()
 
         max_retries = 10
         last_exception = None
@@ -2390,7 +2618,9 @@ class LeRobotMixtureDataset(Dataset):
                             f"dataset={self.datasets[0].dataset_name if len(self.datasets)>0 else 'unknown'}"
                         )
 
-                    dataset, trajectory_id, step = self.sample_step(index)
+                    dataset, trajectory_id, step = self.sample_step(
+                        index, dataset_index=forced_dataset_index
+                    )
                     # If dataset has no physical videos (e.g., image frames in parquet
                     # for VLA-Arena), do not gate sampling on mp4 existence.
                     total_videos = int(dataset.lerobot_info_meta.get("total_videos", 0))
@@ -2403,10 +2633,16 @@ class LeRobotMixtureDataset(Dataset):
                         break
                     index = random.randint(0, len(self) - 1)
                     
+                self._activate_dataset_cache(dataset)
                 raw_data = dataset.get_step_data(trajectory_id, step)    
                 data = dataset.transforms(raw_data)
                 sample = dataset._pack_sample(data)
-                
+                sample = dataset._attach_action_validity(
+                    sample, trajectory_id, step
+                )
+                sample = dataset._attach_future_frame_validity(
+                    sample, trajectory_id, step
+                )
                 return sample
                 
             except Exception as e:
@@ -2424,6 +2660,31 @@ class LeRobotMixtureDataset(Dataset):
                     print(f"Last error: {last_exception}")
                     # Return a dummy sample or re-raise the exception
                     raise last_exception
+
+    def _activate_dataset_cache(self, dataset: LeRobotSingleDataset) -> None:
+        """Keep at most one trajectory DataFrame cached per mixture worker."""
+
+        if not self._clear_inactive_trajectory_cache:
+            return
+        previous = self._active_cached_dataset
+        if previous is dataset:
+            return
+        if previous is not None:
+            previous.curr_traj_data = None
+            previous.curr_traj_id = None
+        self._active_cached_dataset = dataset
+
+    @staticmethod
+    def _release_unused_worker_memory() -> None:
+        """Return unused Python and Arrow allocations to the operating system."""
+
+        gc.collect()
+        try:
+            import pyarrow as pa
+
+            pa.default_memory_pool().release_unused()
+        except (ImportError, AttributeError):
+            pass
 
     def __len__(self) -> int:
         """Get the length of a single epoch in the mixture.
@@ -2670,19 +2931,133 @@ class LeRobotMixtureDataset(Dataset):
         self.tag = EmbodimentTag.NEW_EMBODIMENT.value
         self.merged_metadata: dict[str, DatasetMetadata] = {}
         # Group metadata by tag
-        all_metadatas: dict[str, list[DatasetMetadata]] = {}
-        for dataset in self.datasets:
-            if dataset.tag not in all_metadatas:
-                all_metadatas[dataset.tag] = []
-            all_metadatas[dataset.tag].append(dataset.metadata)
-        for tag, metadatas in all_metadatas.items():
+        grouped: dict[str, list[tuple[DatasetMetadata, float]]] = {}
+        for dataset, weight in zip(self.datasets, self.dataset_sampling_weights):
+            grouped.setdefault(dataset.tag, []).append((dataset.metadata, float(weight)))
+        for tag, metadata_and_weights in grouped.items():
+            metadatas = [item[0] for item in metadata_and_weights]
+            weights = np.asarray(
+                [item[1] for item in metadata_and_weights], dtype=np.float64
+            )
+            weights /= weights.sum()
             self.merged_metadata[tag] = self.merge_metadata(
                 metadatas=metadatas,
-                dataset_sampling_weights=self.dataset_sampling_weights.tolist(),
+                dataset_sampling_weights=weights.tolist(),
                 percentile_mixing_method=metadata_config["percentile_mixing_method"],
             )
         for dataset in self.datasets:
             dataset.set_transforms_metadata(self.merged_metadata[dataset.tag])
+
+    @staticmethod
+    def _split_flat_modality_statistics(
+        flat_statistics: dict,
+        modality_metadata: dict,
+        ordered_keys: list[str],
+        *,
+        modality: str,
+        source_path: Path,
+    ) -> dict:
+        """Split deployment-format statistics back into per-key training metadata."""
+        required_statistics = ("mean", "std", "max", "min", "q01", "q99")
+        missing_statistics = [
+            statistic for statistic in required_statistics if statistic not in flat_statistics
+        ]
+        if missing_statistics:
+            raise ValueError(
+                f"Normalization statistics {source_path} are missing {modality} fields: "
+                f"{missing_statistics}"
+            )
+
+        unknown_keys = [key for key in ordered_keys if key not in modality_metadata]
+        if unknown_keys:
+            raise ValueError(
+                f"Current {modality} metadata are missing configured keys: {unknown_keys}"
+            )
+
+        key_dimensions = {
+            key: int(np.prod(modality_metadata[key].shape)) for key in ordered_keys
+        }
+        expected_dimension = sum(key_dimensions.values())
+        for statistic in required_statistics:
+            values = np.asarray(flat_statistics[statistic])
+            if values.ndim != 1 or len(values) != expected_dimension:
+                raise ValueError(
+                    f"Normalization statistics {source_path} have {modality}.{statistic} "
+                    f"shape {tuple(values.shape)}, expected ({expected_dimension},) for "
+                    f"ordered keys {ordered_keys}"
+                )
+
+        split_statistics = {key: {} for key in ordered_keys}
+        start = 0
+        for key in ordered_keys:
+            end = start + key_dimensions[key]
+            for statistic in required_statistics:
+                split_statistics[key][statistic] = flat_statistics[statistic][start:end]
+            start = end
+        return split_statistics
+
+    def apply_normalization_statistics(self, source_path: Path | str) -> None:
+        """Strictly override train-time normalization with saved run statistics.
+
+        Training runs save flattened state/action statistics for deployment.  Warm-start
+        fine-tuning must split those arrays back into the current modality keys before
+        installing them on ``StateActionTransform``.  This path deliberately fails on
+        any schema mismatch instead of silently recomputing statistics from new data.
+        """
+        source_path = Path(source_path).expanduser()
+        source_statistics = self.load_merged_statistics(source_path)
+        source_tags = {key for key in source_statistics if key != "metadata"}
+        current_tags = set(self.merged_metadata)
+        if source_tags != current_tags:
+            raise ValueError(
+                f"Normalization statistics {source_path} contain embodiment tags "
+                f"{sorted(source_tags)}, expected {sorted(current_tags)}"
+            )
+
+        overridden_metadata = {}
+        for tag, current_metadata in self.merged_metadata.items():
+            tag_statistics = source_statistics[tag]
+            metadata_dict = current_metadata.model_dump(mode="json")
+
+            tag_datasets = [dataset for dataset in self.datasets if dataset.tag == tag]
+            if not tag_datasets:
+                raise ValueError(f"No current dataset found for embodiment tag {tag!r}")
+
+            reference_key_order = None
+            for dataset in tag_datasets:
+                action_keys, state_keys = get_used_modality_keys(dataset.modality_keys)
+                dataset_key_order = {"action": action_keys, "state": state_keys}
+                if reference_key_order is None:
+                    reference_key_order = dataset_key_order
+                elif dataset_key_order != reference_key_order:
+                    raise ValueError(
+                        "Normalization-statistics override requires identical state/action "
+                        f"key order within embodiment {tag!r}; got {reference_key_order} and "
+                        f"{dataset_key_order}"
+                    )
+
+            for modality in ("action", "state"):
+                if modality not in tag_statistics:
+                    raise ValueError(
+                        f"Normalization statistics {source_path} have no {tag}.{modality}"
+                    )
+                ordered_keys = reference_key_order[modality]
+                modality_metadata = getattr(current_metadata.modalities, modality)
+                metadata_dict["statistics"][modality] = self._split_flat_modality_statistics(
+                    tag_statistics[modality],
+                    modality_metadata,
+                    ordered_keys,
+                    modality=modality,
+                    source_path=source_path,
+                )
+
+            overridden_metadata[tag] = DatasetMetadata.model_validate(metadata_dict)
+
+        self.merged_metadata = overridden_metadata
+        for dataset in self.datasets:
+            dataset.set_transforms_metadata(self.merged_metadata[dataset.tag])
+
+        print(f"Applied normalization statistics override from: {source_path}")
 
     def save_dataset_statistics(self, save_path: Path | str, format: str = "json") -> None:
         """

@@ -29,6 +29,12 @@ import torch
 
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import read_mode_config
+from starVLA.task_language import (
+    TASK_LANGUAGE_DATASET_NAME,
+    configured_task_language_mode,
+    normalize_task_language_mode,
+    resolve_task_language,
+)
 
 from deployment.model_server.policy_norm_processor import PolicyNormProcessor
 
@@ -55,9 +61,34 @@ class PolicyServerWrapper:
         # Co-located metadata.
         model_cfg, _ = read_mode_config(self._ckpt_path)
         self._model_cfg = model_cfg
+        vla_data_cfg = model_cfg.get("datasets", {}).get("vla_data", {})
+        self._task_language_mode = normalize_task_language_mode(
+            vla_data_cfg.get("task_language_mode", "metadata")
+        )
+        raw_task_language_modes = vla_data_cfg.get("task_language_modes", {}) or {}
+        self._task_language_modes = {
+            str(key): normalize_task_language_mode(mode)
+            for key, mode in raw_task_language_modes.items()
+        }
 
         # action_chunk_size = future_action_window_size + 1 (matches old client).
         action_model_cfg = model_cfg["framework"]["action_model"]
+        embodiment_heads = action_model_cfg.get("embodiment_heads", {}) or {}
+        self._action_chunk_sizes = {
+            str(tag): int(spec["action_horizon"])
+            for tag, spec in embodiment_heads.items()
+        }
+        self._action_specs = {
+            str(tag): {
+                "action_spec_id": spec.get("action_spec_id"),
+                "action_dim": int(spec["action_dim"]),
+                "action_horizon": int(spec["action_horizon"]),
+                "state_dim": int(spec.get("state_dim", 0)),
+            }
+            for tag, spec in embodiment_heads.items()
+        }
+        world_model_cfg = model_cfg["framework"].get("world_model", {})
+        self._visual_context_length = int(world_model_cfg.get("ctx_len", 1))
         
         if "action_horizon" in action_model_cfg:
             self._action_chunk_size = int(action_model_cfg["action_horizon"])
@@ -113,8 +144,13 @@ class PolicyServerWrapper:
             "env": "starvla_policy_server",
             "ckpt_path": self._ckpt_path,
             "action_chunk_size": self._action_chunk_size,
+            "action_chunk_sizes": self._action_chunk_sizes,
+            "action_specs": self._action_specs,
+            "visual_context_length": self._visual_context_length,
             "available_unnorm_keys": self._available_unnorm_keys,
             "default_unnorm_key": self._default_unnorm_key,
+            "task_language_mode": self._task_language_mode,
+            "task_language_modes": self._task_language_modes,
         }
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
@@ -151,6 +187,48 @@ class PolicyServerWrapper:
                     f"Pass one of {self._available_unnorm_keys}."
                 )
         proc = self._get_processor(effective_key)
+
+        language_mode = configured_task_language_mode(
+            {
+                "task_language_mode": self._task_language_mode,
+                "task_language_modes": self._task_language_modes,
+            },
+            effective_key,
+        )
+
+        # Multi-head frameworks route on the same embodiment key used to choose
+        # normalization statistics. Preserve an explicit caller tag so the
+        # framework can reject inconsistent requests instead of silently
+        # selecting a different head.
+        routed_examples = []
+        for example in examples:
+            explicit_tag = example.get("robot_tag")
+            if explicit_tag is not None and str(explicit_tag) != str(effective_key):
+                raise ValueError(
+                    f"example robot_tag={explicit_tag!r} does not match "
+                    f"unnorm_key={effective_key!r}"
+                )
+            routed = dict(example)
+            routed.setdefault("robot_tag", effective_key)
+            # Text-only canonicalization is reproducible on the server and is
+            # idempotent. dataset_name needs the environment task identity, so
+            # that mode remains an explicit client responsibility.
+            if language_mode != TASK_LANGUAGE_DATASET_NAME:
+                routed["lang"] = resolve_task_language(
+                    routed.get("lang"), str(effective_key), language_mode
+                )
+            routed_examples.append(routed)
+        examples = routed_examples
+
+        if getattr(self._framework, "expects_normalized_state", False):
+            normalized_examples = []
+            for example in examples:
+                if example.get("state") is None:
+                    raise KeyError("This policy requires proprio state in every example")
+                normalized = dict(example)
+                normalized["state"] = proc.apply_state(example["state"])
+                normalized_examples.append(normalized)
+            examples = normalized_examples
 
         out = self._framework.predict_action(examples=examples, **kwargs)
         normalized = np.asarray(out["normalized_actions"])  # (B, T, D)
