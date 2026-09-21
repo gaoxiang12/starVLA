@@ -592,24 +592,32 @@ class VLATrainer(TrainerUtils):
         self._finalize_training()
 
     def eval_action_model(self, step_metrics: dict = None) -> float:
-        """Run simple action-eval on current batch and attach score to metrics."""
-        if self.config.datasets.vla_data.get('sampling_mode') == 'frame_epoch':
-            raise ValueError('Frame-epoch validation requires a separate held-out split; '
-                             'it must not consume training frames')
-        examples = self._get_next_batch()
-        actions = [example["action"] for example in examples]
-        output_dict = self.accelerator.unwrap_model(self.model).predict_action(
-            examples=examples, use_ddim=True, num_ddim_steps=20
+        """Evaluate without dropout; optionally use disjoint per-task episodes."""
+        from starVLA.training.trainer_utils.action_validation import (
+            HeldOutActionEvaluator,
+            evaluate_action_batch,
         )
-
-        if self.accelerator.is_main_process:
-            normalized_actions = output_dict["normalized_actions"]
-            actions = np.array(actions)
-            num_pots = np.prod(actions.shape)
-            score = TrainerUtils.euclidean_distance(normalized_actions, actions)
-            step_metrics["mse_score"] = score / num_pots
-
-        del examples
+        step_metrics = {} if step_metrics is None else step_metrics
+        held_out = int(self.config.datasets.vla_data.get("validation_episode_stride", 0)) > 0
+        if held_out:
+            # Dataset construction synchronizes metadata caches across ranks.
+            # Every rank must participate, even though only rank 0 evaluates.
+            if not hasattr(self, "action_evaluator"):
+                self.action_evaluator = HeldOutActionEvaluator(self.config)
+            if self.accelerator.is_main_process:
+                scores = self.action_evaluator.evaluate(
+                    self.accelerator.unwrap_model(self.model), self.completed_steps
+                )
+                step_metrics.update(scores)
+                step_metrics["mse_score"] = scores["validation/mse_score"]
+        else:
+            if self.config.datasets.vla_data.get('sampling_mode') == 'frame_epoch':
+                raise ValueError('Frame-epoch validation requires a separate held-out split; '
+                                 'it must not consume training frames')
+            examples = self._get_next_batch()
+            scores = evaluate_action_batch(self.accelerator.unwrap_model(self.model), examples)
+            if self.accelerator.is_main_process:
+                step_metrics["mse_score"] = scores["mse_score"]
         self.accelerator.wait_for_everyone()
         return step_metrics
 
@@ -626,7 +634,10 @@ class VLATrainer(TrainerUtils):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
             with self.accelerator.autocast():
-                output_dict = self.model.forward(batch_vla)
+                if self.config.framework.name in {"GAWM", "GAWMObjectFusion", "GAWMCartesian", "GAWMCompactExpert"}:
+                    output_dict = self.model.forward(batch_vla, optimizer_step=self.completed_steps)
+                else:
+                    output_dict = self.model.forward(batch_vla)
                 action_loss = output_dict["action_loss"]
                 total_loss = action_loss
 
@@ -655,6 +666,7 @@ class VLATrainer(TrainerUtils):
             "continuous_action_l1",
             "gripper_action_l1",
             "gripper_action_accuracy",
+            "gripper_position_accuracy",
             "first_action_l1",
             "valid_action_fraction",
             "latent_loss",
@@ -677,7 +689,8 @@ class VLATrainer(TrainerUtils):
         if isinstance(output_dict, dict):
             for k, v in output_dict.items():
                 if (
-                    k.startswith("latent_loss_horizon_")
+                    k.startswith(("latent_loss_horizon_", "spatial_", "object_", "tcp_", "contact_", "cartesian_", "compact_"))
+                    or k == "gripper_transition_l1"
                 ) and torch.is_tensor(v):
                     step_log[k] = v.item()
         robot_tags = {
@@ -693,6 +706,7 @@ class VLATrainer(TrainerUtils):
                 "continuous_action_l1",
                 "gripper_action_l1",
                 "gripper_action_accuracy",
+                "gripper_position_accuracy",
                 "first_action_l1",
                 "valid_action_fraction",
                 "latent_loss",
@@ -700,6 +714,22 @@ class VLATrainer(TrainerUtils):
                 "delta_to_copy_ratio",
                 "delta_direction_cosine",
                 "visual_token_mean_cosine",
+                "tcp_position_loss_m",
+                "tcp_contact_error_mm",
+                "gripper_transition_l1",
+                "contact_fraction",
+                "contact_objective_loss",
+                "cartesian_target_error_mm",
+                "cartesian_coarse_target_error_mm",
+                "cartesian_actual_target_error_mm",
+                "cartesian_rotation_error_deg",
+                "cartesian_ik_residual_mm",
+                "cartesian_ik_converged_fraction",
+                "cartesian_geometry_loss",
+                "cartesian_action_correction_l1",
+                "compact_flow_velocity_loss",
+                "compact_regression_loss",
+                "compact_context_tokens",
             ):
                 if metric_name in step_log:
                     step_log[f"{metric_name}/{robot_tag}"] = step_log[metric_name]

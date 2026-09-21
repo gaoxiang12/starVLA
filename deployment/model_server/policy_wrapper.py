@@ -152,6 +152,11 @@ class PolicyServerWrapper:
             "task_language_mode": self._task_language_mode,
             "task_language_modes": self._task_language_modes,
         }
+        for key in ('image_resize_resample', 'normalized_continuous_action_clip',
+                    'image_size', 'action_execution_horizon'):
+            value = getattr(self._framework, key, None)
+            if value is not None:
+                base[key] = value
         # Enrich with per-embodiment keys when a default processor already exists.
         if self._default_unnorm_key is not None:
             proc = self._get_processor(self._default_unnorm_key)
@@ -237,4 +242,7 @@ class PolicyServerWrapper:
             [proc.unapply_actions(normalized[b]) for b in range(normalized.shape[0])],
             axis=0,
         )
+        postprocess = getattr(self._framework, 'postprocess_actions', None)
+        if postprocess is not None:
+            unnorm = postprocess(unnorm)
         return {"actions": unnorm}

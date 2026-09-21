@@ -107,4 +107,8 @@ def action_l1_diagnostics(
         metrics["gripper_action_accuracy"] = (
             correct * gripper_mask
         ).sum() / denominator
+        metrics["gripper_position_accuracy"] = (
+            ((pred_gripper - target_gripper).abs() <= 0.05).to(pred_actions.dtype)
+            * gripper_mask
+        ).sum() / denominator
     return metrics

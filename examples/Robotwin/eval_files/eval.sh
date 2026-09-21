@@ -70,7 +70,7 @@ echo "policy_port: ${policy_port}"
 
 PYTHONWARNINGS=ignore::UserWarning \
 PYTHONNOUSERSITE=1 \
-"${robotwin_python}" "${SCRIPT_DIR}/robotwin_eval_runner.py" --config "${runtime_deploy_policy}" \
+"${robotwin_python}" "${ROBOTWIN_EVAL_RUNNER_PATH:-${SCRIPT_DIR}/robotwin_eval_runner.py}" --config "${runtime_deploy_policy}" \
     --overrides \
     --task_name "${task_name}" \
     --task_config "${task_config}" \

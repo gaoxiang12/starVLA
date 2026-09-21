@@ -29,4 +29,6 @@ echo "[INFO] port: ${port}"
 exec env CUDA_VISIBLE_DEVICES="${gpu_id}" "${star_vla_python}" "${REPO_ROOT}/deployment/model_server/server_policy.py" \
     --ckpt_path "${your_ckpt}" \
     --port "${port}" \
+    --idle_timeout "${ROBOTWIN_SERVER_IDLE_TIMEOUT:--1}" \
+    --spatial-ablation "${ROBOTWIN_SPATIAL_ABLATION:-full}" \
     "${use_bf16_flag[@]}"

@@ -1,0 +1,199 @@
+common:
+  action_dim: 14
+  state_dim: 16
+  action_chunk_size: 32
+  proprio_len: 1
+  action_execution_horizon: 16
+dataset:
+  type: robotwin
+  dataset_dir: /data/gaoxiang/LiLaWAM_RoboTwin_Official/data
+  data_mode: both
+  camera_names:
+  - head_camera
+  image_size:
+  - 320
+  - 240
+  task_cond_dir: /data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source/data-500-taskcond
+  image_aug: false
+  future_frame_offset: null
+  indices_config:
+    state_indices:
+    - 0
+    camera_indices:
+    - 0
+    action_indices:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+model:
+  vision_encoder:
+    checkpoint_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+  use_task_cond: false
+  future_feat:
+    enabled: false
+training:
+  batch_size: 128
+  learning_rate: 0.0002
+  lr_min: 5.0e-05
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.99
+  grad_clip_norm: 1.0
+  epochs: 40
+  grad_accum_steps: 1
+inference:
+  smooth_actions: true
+system:
+  num_workers: 8
+  pin_memory: true
+experiment:
+  model_kind: gawm
+  name: C
+  future_recorded_offsets:
+  - 0
+  - 16
+  - 32
+  milestone_steps:
+  - 117000
+  - 316000
+  tail_supervision: upstream_endpoint_clamp_including_repeated_targets
+  task_condition: native_GAWM_text_with_canonical_task_ID
+  precision: bf16_trainable_parameters_and_Adam_states; fp32_EMA_statistics
+  trainer: starVLA VLATrainer
+framework:
+  name: GAWM
+  world_model:
+    encoder_spec: vitl16
+    train_encoder: false
+    num_views: 1
+    n_future: 2
+    ctx_len: 1
+    future_time_offsets_s: null
+    loss_latent_weight: 1.0
+    latent_cosine_weight: 0.1
+    detach_wm_input: true
+    latent_stats_momentum: 0.9
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    visual_tokens_per_view: 64
+    visual_token_dim: 384
+    visual_token_diversity_weight: 0.02
+    visual_token_variance_weight: 0.02
+    visual_token_min_std: 0.1
+    use_state_cond: true
+    state_cond_hidden_dim: 256
+    vision_encoder_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+    input_grid_shape:
+    - 15
+    - 20
+    imagenet_normalized_inputs: true
+    encoder_batch_size: 8
+    sync_latent_stats: true
+  action_model:
+    action_model_type: ACT
+    action_horizon: 32
+    action_hidden_dim: 384
+    act_num_heads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_mlp_hidden_dim: 512
+    act_dropout: 0.1
+    act_num_state_tokens: 2
+    embodiment_heads:
+      aloha:
+        action_dim: 14
+        state_dim: 16
+        action_horizon: 32
+        gripper_indices:
+        - 6
+        - 13
+        output_activation: tanh
+        action_spec_id: robotwin_official_absolute_dual_joint_native_14
+        state_spec_id: robotwin_official_endpose_native_16
+  lang_cond:
+    type: text
+    embed_dim: 384
+    text_hidden_dim: 256
+    text_depth: 2
+    text_heads: 4
+    text_ffn_dim: 512
+    text_max_length: 128
+    text_dropout: 0.1
+datasets:
+  vla_data:
+    data_mix: gawm_official_hdf5_control
+    sampling_mode: frame_epoch
+    per_device_batch_size: 16
+seed: 42
+run_id: gawm_official_C_stage1
+run_root_dir: /data/gaoxiang/ckpts/lila_starvla/gawm_official_C_20260919
+output_dir: /data/gaoxiang/ckpts/lila_starvla/gawm_official_C_20260919/stage1
+wandb_project: starVLA_GAWM_control
+wandb_entity: disabled
+official_source: /data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source
+official_stats: /data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source/utils/stat-500-all.json
+dataset_audit: /data/gaoxiang/LiLaWAM_RoboTwin_Official/dataset_audit.json
+baseline_provenance: /data/gaoxiang/ckpts/lila_starvla/gawm_official_B_20260917/stage1/provenance.json
+trainer:
+  max_train_steps: 573840
+  num_warmup_steps: 0
+  save_interval: 1000
+  eval_interval: 1000000000
+  logging_frequency: 20
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  freeze_modules: policy.backbone.encoder
+  is_resume: false
+  pretrained_checkpoint: null
+  learning_rate:
+    base: 0.0002
+  optimizer:
+    betas:
+    - 0.9
+    - 0.99
+    eps: 1.0e-08
+    weight_decay: 0.01
+    fused: false
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-05
+  distributed_backend: ddp
+  expected_global_batch_size: 128
+  sync_with_dataloader: false
+  lr_scheduler_total_steps: 1912800
+  ddp_kwargs:
+    broadcast_buffers: false
+    gradient_as_bucket_view: true
+    static_graph: true

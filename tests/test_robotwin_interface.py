@@ -67,6 +67,8 @@ class RobotwinInterfaceTest(unittest.TestCase):
         model.client = _FakePolicyClient()
         model.task_description = "test instruction"
         model.image_size = [224, 224]
+        model.image_resize_resample = "opencv_area"
+        model.native_joint_order = False
         model.use_ddim = True
         model.num_ddim_steps = 10
         model.unnorm_key = "new_embodiment"

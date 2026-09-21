@@ -1,0 +1,7 @@
+Source: https://github.com/teee000/LiLa-WAM
+
+Local revision: 65a320397faae07f311680fcb32f6c2f27dca1a0
+
+Source file SHA256: 6c7d1effa72c2d52fb2349f0af843231d26f9a26d930e972922acd3e70364659
+
+The vendored primitives retain the upstream implementation. Padding masks, camera-conditioned future queries, and native-MHA bypass for ZeRO bf16 inference alignment are added. The multi-camera shared DiT and embodiment-specific projections are implemented in core.py. The existing official-checkpoint inference adapter is unchanged. No LICENSE file was present in the source checkout; retain this provenance when distributing.

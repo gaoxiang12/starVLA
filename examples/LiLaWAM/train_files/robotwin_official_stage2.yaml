@@ -1,0 +1,116 @@
+common:
+  action_dim: 14
+  state_dim: 16
+  action_chunk_size: 32
+  proprio_len: 1
+  num_inference_steps: 10
+  action_execution_horizon: 16
+dataset:
+  type: robotwin
+  dataset_dir: /data/gaoxiang/LiLaWAM_RoboTwin_Official/data
+  data_mode: both
+  camera_names:
+  - head_camera
+  image_size:
+  - 320
+  - 240
+  task_cond_dir: /data/gaoxiang/Code/LiLa-WAM/data-500-taskcond
+  image_aug: false
+  future_frame_offset: null
+  indices_config:
+    state_indices:
+    - 0
+    camera_indices:
+    - 0
+    action_indices:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+model:
+  num_registers: 2
+  use_task_cond: true
+  vision_encoder:
+    checkpoint_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+    feat_layers:
+    - -12
+    - -8
+    - -4
+    include_cls_register: true
+    fusion_mode: concat
+    concat:
+      proj_type: linear
+      pre_norm: true
+      out_dim: null
+  future_feat:
+    enabled: true
+    attach: cond_tokens
+    target_layer: -4
+    num_decoder_layers: 4
+    num_heads: 4
+  use_ig: false
+  ig_layer: 4
+  action_expert:
+    depth: 12
+    hidden_size: 768
+    num_heads: 8
+    vlm_adapter_num_queries: 64
+    adapter_depth: 4
+training:
+  batch_size: 128
+  time_sampler: logit_normal
+  time_mu: 0.0
+  time_sigma: 1.0
+  learning_rate: 4.0e-05
+  lr_min: 1.0e-05
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.99
+  grad_clip_norm: 1.0
+  epochs: 40
+  grad_accum_steps: 1
+  save_interval_epoch: 1
+  ig_lambda: 0.0
+  use_next_chunk_pred: false
+  lambda_next_chunk: 0.5
+  lambda_future_feat: 0.5
+  use_vel_weight: false
+  vel_weight_alpha: 0.2
+  vel_weight_sigma: 0.01
+inference:
+  ig_scale: 1.0
+  ig_stop_step: 10
+  smooth_actions: true
+  smooth_sigma: 1.0
+system:
+  num_workers: 8
+  pin_memory: true

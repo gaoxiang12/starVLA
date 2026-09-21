@@ -1,0 +1,8 @@
+policy_name: lila_wam_interface
+task_name: null
+task_config: null
+ckpt_setting: null
+seed: null
+instruction_type: unseen
+host: "127.0.0.1"
+port: 5794

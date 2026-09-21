@@ -36,6 +36,8 @@ from starVLA.model.modules.action_model.action_loss import (
     masked_action_l1_loss,
 )
 from starVLA.model.modules.world_model import get_world_model
+from starVLA.model.modules.spatial_checkpoint import resize_spatial_checkpoint
+from starVLA.model.modules.spatial_focus import SpatialFocus, native_crops
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
 )
@@ -52,11 +54,13 @@ class VisualTokenPooler(nn.Module):
         token_dim: int,
         num_views: int,
         tokens_per_view: int,
+        input_grid_shape=None,
     ) -> None:
         super().__init__()
         self.num_views = int(num_views)
         self.tokens_per_view = int(tokens_per_view)
         self.token_dim = int(token_dim)
+        self.input_grid_shape = tuple(input_grid_shape) if input_grid_shape is not None else None
         self.grid_size = math.isqrt(self.tokens_per_view)
         if self.grid_size * self.grid_size != self.tokens_per_view:
             raise ValueError(
@@ -126,16 +130,17 @@ class VisualTokenPooler(nn.Module):
         if view_count != self.num_views:
             raise ValueError(f"expected {self.num_views} views, got {view_count}")
         patch_grid = math.isqrt(patch_count)
-        if patch_grid * patch_grid != patch_count:
-            raise ValueError(f"expected a square patch grid, got {patch_count} tokens")
+        grid_h, grid_w = self.input_grid_shape or (patch_grid, patch_grid)
+        if grid_h * grid_w != patch_count:
+            raise ValueError(f"patch grid {(grid_h, grid_w)} does not match {patch_count} tokens")
 
         content = self.patch_norm(patches).reshape(
             batch_size * frame_count * view_count,
-            patch_grid,
-            patch_grid,
+            grid_h,
+            grid_w,
             patch_dim,
         ).permute(0, 3, 1, 2)
-        if self.grid_size != patch_grid:
+        if (self.grid_size, self.grid_size) != (grid_h, grid_w):
             content = F.adaptive_avg_pool2d(
                 content, (self.grid_size, self.grid_size)
             )
@@ -392,6 +397,7 @@ class GAWM(baseframework):
             token_dim=self.visual_token_dim,
             num_views=self.num_views,
             tokens_per_view=self.visual_tokens_per_view,
+            input_grid_shape=wm_cfg.get("input_grid_shape"),
         )
         self.num_visual_tokens = self.visual_token_pooler.num_tokens
         self.world_model = VisualTokenLatentWorldModel(
@@ -406,8 +412,18 @@ class GAWM(baseframework):
             stats_momentum=float(wm_cfg.latent_stats_momentum),
             detach_input=bool(wm_cfg.detach_wm_input),
         )
+        self.world_model.sync_stats = bool(wm_cfg.get("sync_latent_stats", False))
 
         self.visual_action_head = None
+        self.focus_cfg = self.config.framework.get("spatial_focus", {})
+        self.spatial_focus = None
+        if self.focus_cfg.get("enabled", False):
+            self.focus_robot_tag = str(self.focus_cfg.get("robot_tag", "aloha"))
+            self.spatial_focus = SpatialFocus(
+                int(patch_dim), self.action_hidden_dim,
+                int(self.embodiment_head_specs[self.focus_robot_tag]["state_dim"]),
+                self.task_emb_dim, self.num_views, self.focus_cfg,
+            )
         self.action_models = nn.ModuleDict()
         for tag, spec in self.embodiment_head_specs.items():
             self.action_models[tag] = TurboStyleACTActionHead(
@@ -425,6 +441,26 @@ class GAWM(baseframework):
                 state_dim=int(spec["state_dim"]),
                 state_hidden_dim=int(wm_cfg.state_cond_hidden_dim),
                 num_state_tokens=int(action_cfg.act_num_state_tokens),
+                output_activation=str(spec.get("output_activation", "tanh")),
+                gripper_indices=tuple(int(i) for i in spec.get("gripper_indices", ())),
+            )
+        self.contact_objective = None
+        contact_cfg = self.config.framework.get("contact_objective", {})
+        if contact_cfg.get("enabled", False):
+            self.contact_robot_tag = str(contact_cfg.get("robot_tag", "aloha"))
+            spec = self.embodiment_head_specs[self.contact_robot_tag]
+            if (self.contact_robot_tag != "aloha" or int(spec["action_dim"]) != 14
+                    or int(spec["state_dim"]) != 14
+                    or spec.get("action_spec_id") != "aloha_dual_joint_contgrip_next_recorded_14"
+                    or tuple(spec.get("gripper_indices", ())) != (12, 13)):
+                raise ValueError("Contact objective requires continuous next-recorded Aloha joint semantics")
+            from starVLA.model.modules.robotwin_contact_objective import RoboTwinContactObjective
+            self.contact_objective = RoboTwinContactObjective(
+                contact_cfg["urdf_path"], self.config.datasets.vla_data.normalization_statistics_path,
+                position_weight=float(contact_cfg.get("position_weight", .1)),
+                gripper_weight=float(contact_cfg.get("gripper_weight", .02)),
+                contact_boost=float(contact_cfg.get("contact_boost", 4.)),
+                transition_radius=int(contact_cfg.get("transition_radius", 3)),
             )
 
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
@@ -438,6 +474,12 @@ class GAWM(baseframework):
                     key.replace(legacy_marker, current_marker), remapped[key]
                 )
                 del remapped[key]
+
+        if hasattr(self,"config") and self.config.framework.world_model.get("resize_spatial_embeddings_on_load", False):
+            remapped = resize_spatial_checkpoint(
+                remapped, num_views=self.visual_token_pooler.num_views,
+                grid_size=self.visual_token_pooler.grid_size,
+            )
 
         embedding_key = "embodiment_embedding.weight"
         source_embedding = remapped.get(embedding_key)
@@ -525,6 +567,15 @@ class GAWM(baseframework):
         action_model: nn.Module,
     ) -> torch.Tensor:
         return action_model.decode_action_queries(visual_tokens, state=state)
+
+    def _predict_action_chunk(self, action_model, visual_tokens, state, memories,
+                              actions=None, action_valid_mask=None):
+        """Default ACT path; alternative experts may return their own loss."""
+        queries = self._pool_visual_tokens_to_action_queries(
+            visual_tokens, state=state, action_model=action_model)
+        if memories is not None:
+            queries = self.spatial_focus.refine_queries(queries, memories)
+        return action_model.predict_action(queries), None, {}
 
     def _action_gripper_indices(self, robot_tag: str) -> tuple[int, ...]:
         return tuple(
@@ -639,6 +690,10 @@ class GAWM(baseframework):
 
     def _pad_inference_views(self, frame) -> tuple[list, list[bool]]:
         views = list(frame) if isinstance(frame, (list, tuple)) else [frame]
+        if self.config.framework.world_model.get("imagenet_normalized_inputs", False):
+            if len(views) != self.num_views or not all(isinstance(v, torch.Tensor) for v in views):
+                raise ValueError("Normalized tensor inference requires every configured camera")
+            return views, [True] * len(views)
         views = [to_pil_preserve(view) for view in views]
         if not views:
             raise ValueError("inference requires at least one camera view")
@@ -694,6 +749,47 @@ class GAWM(baseframework):
     ) -> torch.Tensor:
         return self.task_embedding(instructions, device=device)
 
+    def _focus_memory(self, patches, state, task, views, examples, robot_tag, step=0, supervision=False):
+        if self.spatial_focus is None:
+            return None, None, patches.new_zeros(()), {}, None
+        if robot_tag != self.focus_robot_tag:
+            raise ValueError("Spatial focus experiment only supports its configured embodiment")
+        focus = self.spatial_focus
+        dense, logits, xy = focus.locate(patches[:,0], state, task)
+        memory, valid = focus.pack_dense(dense, views)
+        memories = {"dense": (memory,valid)}
+        if focus.goal_readout is not None:
+            # Always predicted, including during teacher-crop training. No
+            # detach: action loss can now train waypoint selection directly.
+            memories["goal"] = focus.goal_readout.pack(dense, logits, xy, views)
+        loss, metrics = patches.new_zeros(()), {}
+        target, target_valid = xy.detach(), torch.zeros_like(xy[...,0],dtype=torch.bool)
+        if supervision and self.focus_cfg.get("use_local", False):
+            loss, target, target_valid, metrics = focus.supervision(logits, xy, examples)
+        if self.focus_cfg.get("use_local", False):
+            centers, teacher_probability = focus.crop_centers(xy,target,target_valid,step)
+            native = [x.get("native_images") for x in examples]
+            if any(x is None for x in native):
+                raise ValueError("Local branch requires native_images before resizing, in training AND deployment")
+            crops, boxes = native_crops(native,centers,float(self.focus_cfg.get("crop_fraction",.4)))
+            with torch.autocast("cuda",dtype=torch.bfloat16):
+                local_patches = self.backbone.encode_patch_frames(crops)[:,0]
+            local_memory, local_valid = focus.pack_local(local_patches,boxes,views)
+            memories["local"] = (local_memory,local_valid)
+            metrics["spatial_teacher_probability"] = xy.new_tensor(teacher_probability)
+        metrics["spatial_dense_gate"] = focus.residual_scales()[0].detach()
+        metrics["spatial_local_gate"] = focus.residual_scales()[1].detach()
+        if focus.object_readout is not None:
+            head_valid = views[:, 0]
+            images, arrays = focus.object_readout.head_images(examples, head_valid, patches.device)
+            memories['objects'], object_prediction = focus.object_readout.encode(images, head_valid)
+            if supervision:
+                object_loss, object_metrics = focus.object_readout.supervision(
+                    object_prediction, arrays, head_valid, self.focus_cfg)
+                loss = loss + object_loss
+                metrics.update(object_metrics)
+        return memories, None, loss, metrics, xy
+
     def forward(self, examples: List[dict] = None, **kwargs) -> dict[str, torch.Tensor]:
         if not examples:
             raise ValueError("GAWM.forward requires a non-empty example batch")
@@ -734,12 +830,13 @@ class GAWM(baseframework):
         if patch_tokens.shape[1] != 3:
             raise ValueError(f"expected three temporal frames, got {patch_tokens.shape[1]}")
 
-        with torch.autocast("cuda", dtype=torch.float32):
+        core_dtype = next(self.visual_token_pooler.parameters()).dtype
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=core_dtype == torch.bfloat16):
             view_valid_mask = self._view_valid_mask_tensor(
                 examples, patch_tokens.device
             )
             latent, content_latent = self.visual_token_pooler(
-                patch_tokens.float(),
+                patch_tokens.to(dtype=core_dtype),
                 return_content=True,
                 view_valid_mask=view_valid_mask,
             )
@@ -773,10 +870,15 @@ class GAWM(baseframework):
             variance_loss = 0.5 * (source_var + pred_var)
             mean_cosine = 0.5 * (source_cos + pred_cos)
 
-            action_queries = self._pool_visual_tokens_to_action_queries(
-                head_tokens, state=current_state, action_model=action_model
+            extra, extra_valid, focus_loss, focus_metrics, _ = self._focus_memory(
+                patch_tokens.float(),current_state,task_emb,view_valid_mask,examples,robot_tag,
+                step=int(kwargs.get("optimizer_step",0)),supervision=True,
             )
-            pred_actions = action_model.predict_action(action_queries)
+            if self.spatial_focus is not None and not self.focus_cfg.get("use_future_context",True):
+                head_tokens = head_tokens[:,:1]
+            pred_actions, expert_loss, expert_metrics = self._predict_action_chunk(
+                action_model, head_tokens, current_state, extra,
+                actions=actions, action_valid_mask=action_valid_mask)
             l1_action_loss = masked_action_l1_loss(
                 pred_actions, actions, action_valid_mask
             )
@@ -786,12 +888,20 @@ class GAWM(baseframework):
                 action_valid_mask,
                 gripper_indices=gripper_indices,
             )
+            contact_loss = l1_action_loss.new_zeros(())
+            contact_metrics = {}
+            if self.contact_objective is not None and robot_tag == self.contact_robot_tag:
+                contact_loss, contact_metrics = self.contact_objective(
+                    pred_actions, actions, current_state, action_valid_mask
+                )
             total_loss = (
-                l1_action_loss
+                (l1_action_loss if expert_loss is None else expert_loss)
                 + self.loss_latent_weight * wm_out["latent_loss"]
                 + self.latent_cosine_weight * wm_out["latent_cosine_loss"]
                 + self.visual_token_diversity_weight * diversity_loss
                 + self.visual_token_variance_weight * variance_loss
+                + focus_loss
+                + contact_loss
             )
 
         output = {
@@ -805,6 +915,9 @@ class GAWM(baseframework):
             "visual_token_mean_cosine": mean_cosine.detach(),
         }
         output.update({name: value.detach() for name, value in action_metrics.items()})
+        output.update({name: value.detach() for name, value in focus_metrics.items()})
+        output.update({name: value.detach() for name, value in contact_metrics.items()})
+        output.update({name: value.detach() for name, value in expert_metrics.items()})
         for name, value in wm_out.items():
             if name.startswith("latent_loss_horizon_") or name.startswith("delta_"):
                 output[name] = value.detach()
@@ -834,14 +947,15 @@ class GAWM(baseframework):
             )
         with torch.autocast("cuda", dtype=torch.bfloat16):
             patch_tokens = self.backbone.encode_patch_frames(frames_per_example)
-        with torch.autocast("cuda", dtype=torch.float32):
+        core_dtype = next(self.visual_token_pooler.parameters()).dtype
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=core_dtype == torch.bfloat16):
             view_valid_mask = torch.as_tensor(
                 inference_view_masks,
                 device=patch_tokens.device,
                 dtype=torch.bool,
             )
             latent = self.visual_token_pooler(
-                patch_tokens.float(), view_valid_mask=view_valid_mask
+                patch_tokens.to(dtype=core_dtype), view_valid_mask=view_valid_mask
             )
             task_emb = self._condition_task_on_embodiment(
                 self._embed_task(instructions, device=latent.device), robot_tag
@@ -852,10 +966,14 @@ class GAWM(baseframework):
             predicted_future = self.world_model.regress_future(
                 latent, goal=task_emb
             )
-            action_queries = self._pool_visual_tokens_to_action_queries(
-                torch.cat([latent, predicted_future], dim=1),
-                state=current_state,
-                action_model=action_model,
-            )
-            pred_actions = action_model.predict_action(action_queries)
-        return {"normalized_actions": pred_actions.detach().cpu().numpy()}
+            extra, extra_valid, _, _, focus_xy = self._focus_memory(
+                patch_tokens.float(),current_state,task_emb,view_valid_mask,examples,robot_tag)
+            head_tokens = torch.cat([latent,predicted_future],dim=1)
+            if self.spatial_focus is not None and not self.focus_cfg.get("use_future_context",True):
+                head_tokens = latent
+            pred_actions, _, _ = self._predict_action_chunk(
+                action_model, head_tokens, current_state, extra)
+        result = {"normalized_actions": pred_actions.detach().float().cpu().numpy()}
+        if focus_xy is not None and self.focus_cfg.get("use_local",False):
+            result["spatial_predicted_xy"] = focus_xy.detach().cpu().numpy()
+        return result

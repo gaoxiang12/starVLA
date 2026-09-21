@@ -215,6 +215,48 @@ class EmbodimentBatchSampler(Sampler[list[tuple[int, int]]]):
             ]
             sample_cursor += current_batch_size
 
+def episode_split_blacklist(dataset_path: Path, data_cfg) -> list[int]:
+    """Deterministic episode split, opt-in for v2 datasets; never split frames."""
+    manifest_path = data_cfg.get("episode_split_manifest") if data_cfg else None
+    if manifest_path:
+        manifest = json.loads(Path(manifest_path).read_text())
+        if Path(manifest["dataset"]).resolve() != dataset_path.resolve():
+            raise ValueError("Episode split manifest belongs to a different dataset")
+        split = data_cfg.get("episode_split", "train")
+        if split not in {"train", "validation"}:
+            raise ValueError(f"Invalid episode_split={split!r}")
+        ids = {int(json.loads(line)["episode_index"]) for line in (dataset_path / "meta/episodes.jsonl").read_text().splitlines() if line.strip()}
+        partitions = []
+        for key in ("train_episode_ids", "validation_episode_ids", "excluded_episode_ids"):
+            values = [int(i) for i in manifest[key]]
+            if len(values) != len(set(values)):
+                raise ValueError(f"Duplicate episode IDs in {key}")
+            partitions.append(set(values))
+        train, validation, excluded = partitions
+        if not train or not validation or any(partitions[i] & partitions[j] for i in range(3) for j in range(i+1, 3)):
+            raise ValueError("Episode split partitions must be nonempty for train/validation and disjoint")
+        if train | validation | excluded != ids:
+            raise ValueError("Episode split manifest must partition exactly the dataset episodes")
+        selected = train if split == "train" else validation
+        return sorted(ids - selected)
+    stride = int(data_cfg.get("validation_episode_stride", 0)) if data_cfg else 0
+    if not stride:
+        return []
+    if stride < 2:
+        raise ValueError("validation_episode_stride must be >= 2")
+    split = data_cfg.get("episode_split", "train")
+    if split not in {"train", "validation"}:
+        raise ValueError(f"Invalid episode_split={split!r}")
+    metadata_path = dataset_path / "meta/episodes.jsonl"
+    if not metadata_path.is_file():
+        raise ValueError("Episode splitting currently requires meta/episodes.jsonl")
+    ids = [int(json.loads(line)["episode_index"]) for line in metadata_path.read_text().splitlines() if line.strip()]
+    excluded = [i for i in ids if (i % stride == 0) == (split == "train")]
+    if not excluded or len(excluded) == len(ids):
+        raise ValueError(f"Empty train or validation episode split for {dataset_path}")
+    return excluded
+
+
 def make_LeRobotSingleDataset(
     data_root_dir: Path | str,
     data_name: str,
@@ -236,6 +278,7 @@ def make_LeRobotSingleDataset(
     modality_config = data_config.modality_config()
     transforms = data_config.transform()
     dataset_path = data_root_dir / data_name
+    split_blacklist = episode_split_blacklist(dataset_path, data_cfg)
     embodiment_tag = getattr(data_config, "embodiment_tag", None)
     if embodiment_tag is None:
         print(f"Warning: DataConfig for robot_type={robot_type!r} has no embodiment_tag, using {EmbodimentTag.NEW_EMBODIMENT} as default")
@@ -261,6 +304,7 @@ def make_LeRobotSingleDataset(
             dataset_name=data_name,
             task_language_mode=task_language_mode,
             episode_blacklist_path=episode_blacklist_path,
+            episode_blacklist=split_blacklist,
             lerobot_version=lerobot_version,
         )
 
@@ -275,6 +319,7 @@ def make_LeRobotSingleDataset(
             data_cfg=data_cfg,
             task_language_mode=task_language_mode,
             episode_blacklist_path=episode_blacklist_path,
+            episode_blacklist=split_blacklist,
             lerobot_version=lerobot_version,
         )
 
@@ -288,6 +333,20 @@ def make_LeRobotSingleDataset(
     dataset.future_time_offsets_s = getattr(
         data_config, "future_time_offsets_s", None
     )
+    # Future-only actions leave the terminal observation without a target.
+    # Exclude it from both indexed access and random mixture sampling.
+    first_action_offset = min(modality_config["action"].delta_indices)
+    dataset.minimum_action_offset = max(0, int(first_action_offset))
+    if dataset.minimum_action_offset:
+        lengths = dict(zip(dataset.trajectory_ids, dataset.trajectory_lengths))
+        if any(n <= dataset.minimum_action_offset for n in lengths.values()):
+            raise ValueError(f"Episode too short for future-only actions: {data_name}")
+        dataset._all_steps = [
+            (episode, step) for episode, step in dataset.all_steps
+            if step + dataset.minimum_action_offset < lengths[episode]
+        ]
+    from starVLA.dataloader.training_anchor_bounds import attach_training_anchor_bounds
+    attach_training_anchor_bounds(dataset, data_cfg)
     action_absolute_overrides = getattr(
         data_config, "action_absolute_overrides", {}
     )
@@ -319,6 +378,10 @@ def get_vla_dataset(
     mixture_spec = _expand_dataset_manifest_entries(
         DATASET_NAMED_MIXTURES[data_mix], data_cfg, Path(data_root_dir)
     )
+    options = data_cfg.get("dataset_options", {})
+    unknown_datasets = set(options) - {name for name, _, _ in mixture_spec}
+    if unknown_datasets:
+        raise ValueError(f"dataset_options refers to datasets outside this mixture: {sorted(unknown_datasets)}")
     logger.info(f"[dataloader] Using mixture '{data_mix}': {[(d, w, r) for d, w, r in mixture_spec]}")
     included_datasets, filtered_mixture_spec = set(), []
     for d_name, d_weight, robot_type in mixture_spec:  
@@ -332,7 +395,12 @@ def get_vla_dataset(
 
     dataset_mixture = []
     for d_name, d_weight, robot_type in filtered_mixture_spec:
-        dataset_mixture.append((make_LeRobotSingleDataset(Path(data_root_dir), d_name, robot_type, delete_pause_frame=delete_pause_frame, data_cfg=data_cfg), d_weight))
+        child_cfg = _dataset_config_for_split(data_cfg, d_name)
+        if child_cfg is None:
+            continue
+        dataset_mixture.append((make_LeRobotSingleDataset(Path(data_root_dir), d_name, robot_type, delete_pause_frame=delete_pause_frame, data_cfg=child_cfg), d_weight))
+    if not dataset_mixture:
+        raise ValueError("No datasets enabled for the requested episode split")
 
     if data_cfg.get('sampling_mode') == 'auto':
         tags = {child.tag for child, _ in dataset_mixture}
@@ -358,6 +426,40 @@ def get_vla_dataset(
         data_cfg=data_cfg,
         **kwargs,
     )
+
+
+def _dataset_config_for_split(data_cfg, dataset_name):
+    """Keep train-only supplements and their sidecars separate from held-out data.
+
+    This only selects data partitions/sidecars. Action semantics, normalization,
+    views, and routing remain shared with the parent configuration.
+    """
+    options = data_cfg.get("dataset_options", {}).get(dataset_name)
+    if options is None:
+        return data_cfg
+    allowed = {"splits", "episode_split_manifest", "validation_episode_stride",
+               "spatial_supervision_dir", "event_sampling_probability", "priority_sampling_probability",
+               "training_anchor_manifest"}
+    unknown = set(options) - allowed
+    if unknown:
+        raise ValueError(f"Unsupported dataset options for {dataset_name}: {sorted(unknown)}")
+    splits = options.get("splits", ["train", "validation"])
+    if isinstance(splits, str) or not splits or not set(splits) <= {"train", "validation"}:
+        raise ValueError(f"Invalid dataset splits for {dataset_name}: {splits}")
+    # The sampling mode may be 'validation' for a deterministic train-data audit;
+    # dataset membership must follow the explicitly requested episode partition.
+    split = data_cfg.get("episode_split", "train")
+    if split not in {"train", "validation"}:
+        raise ValueError(f"Invalid episode_split={split!r}")
+    if split not in splits:
+        return None
+    from starVLA.training.trainer_utils.config_tracker import unwrap_config
+    base = unwrap_config(data_cfg)
+    child = OmegaConf.create(OmegaConf.to_container(base, resolve=True))
+    for key, value in options.items():
+        if key != "splits":
+            child[key] = value
+    return child
 
 
 

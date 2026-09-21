@@ -1,0 +1,156 @@
+common:
+  action_dim: 14
+  state_dim: 16
+  action_chunk_size: 32
+  proprio_len: 1
+  action_execution_horizon: 16
+dataset:
+  type: robotwin
+  dataset_dir: /data/gaoxiang/LiLaWAM_RoboTwin_Official/data
+  data_mode: both
+  camera_names:
+  - head_camera
+  image_size:
+  - 320
+  - 240
+  task_cond_dir: /data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source/data-500-taskcond
+  image_aug: false
+  future_frame_offset: null
+  indices_config:
+    state_indices:
+    - 0
+    camera_indices:
+    - 0
+    action_indices:
+    - 0
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 17
+    - 18
+    - 19
+    - 20
+    - 21
+    - 22
+    - 23
+    - 24
+    - 25
+    - 26
+    - 27
+    - 28
+    - 29
+    - 30
+    - 31
+model:
+  vision_encoder:
+    checkpoint_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+  use_task_cond: false
+  future_feat:
+    enabled: false
+training:
+  batch_size: 128
+  learning_rate: 0.0002
+  lr_min: 5.0e-05
+  weight_decay: 0.01
+  betas:
+  - 0.9
+  - 0.99
+  grad_clip_norm: 1.0
+  epochs: 40
+  grad_accum_steps: 1
+inference:
+  smooth_actions: true
+system:
+  num_workers: 8
+  pin_memory: true
+experiment:
+  model_kind: gawm
+  name: B
+  future_recorded_offsets:
+  - 0
+  - 16
+  - 32
+  milestone_steps:
+  - 117000
+  tail_supervision: upstream_endpoint_clamp_including_repeated_targets
+  task_condition: native_GAWM_text_with_canonical_task_ID
+  precision: bf16_trainable_parameters_and_Adam_states; fp32_EMA_statistics
+framework:
+  name: GAWM
+  world_model:
+    encoder_spec: vitl16
+    train_encoder: false
+    num_views: 1
+    n_future: 2
+    ctx_len: 1
+    future_time_offsets_s: null
+    loss_latent_weight: 1.0
+    latent_cosine_weight: 0.1
+    detach_wm_input: true
+    latent_stats_momentum: 0.9
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    visual_tokens_per_view: 64
+    visual_token_dim: 384
+    visual_token_diversity_weight: 0.02
+    visual_token_variance_weight: 0.02
+    visual_token_min_std: 0.1
+    use_state_cond: true
+    state_cond_hidden_dim: 256
+    vision_encoder_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+    input_grid_shape:
+    - 15
+    - 20
+    imagenet_normalized_inputs: true
+    encoder_batch_size: 8
+    sync_latent_stats: true
+  action_model:
+    action_model_type: ACT
+    action_horizon: 32
+    action_hidden_dim: 384
+    act_num_heads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_mlp_hidden_dim: 512
+    act_dropout: 0.1
+    act_num_state_tokens: 2
+    embodiment_heads:
+      aloha:
+        action_dim: 14
+        state_dim: 16
+        action_horizon: 32
+        gripper_indices:
+        - 6
+        - 13
+        output_activation: tanh
+        action_spec_id: robotwin_official_absolute_dual_joint_native_14
+        state_spec_id: robotwin_official_endpose_native_16
+  lang_cond:
+    type: text
+    embed_dim: 384
+    text_hidden_dim: 256
+    text_depth: 2
+    text_heads: 4
+    text_ffn_dim: 512
+    text_max_length: 128
+    text_dropout: 0.1
+datasets:
+  vla_data:
+    obs_image_size: null
+    task_language_modes:
+      aloha: dataset_name

@@ -61,6 +61,12 @@ class ModelClient:
         self._server_metadata = meta
 
         self.image_size: tuple = tuple(image_size)
+        resample_name = meta.get('image_resize_resample', 'bilinear')
+        resample_modes = {'bilinear': Image.Resampling.BILINEAR,
+                          'bicubic': Image.Resampling.BICUBIC}
+        if resample_name not in resample_modes:
+            raise ValueError(f'Unsupported policy image resize mode: {resample_name}')
+        self.image_resample = resample_modes[resample_name]
         self.policy_setup = policy_setup
         self.unnorm_key = unnorm_key
         print(
@@ -139,7 +145,7 @@ class ModelClient:
                 if arr.shape[:2] != target_hw:
                     arr = np.asarray(
                         Image.fromarray(arr).resize(
-                            (target_hw[1], target_hw[0]), Image.BILINEAR
+                            (target_hw[1], target_hw[0]), self.image_resample
                         )
                     )
                 resized.append(arr)

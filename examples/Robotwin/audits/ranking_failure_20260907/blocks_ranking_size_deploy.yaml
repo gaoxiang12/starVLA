@@ -1,0 +1,11 @@
+action_mode: abs
+ckpt_setting: null
+host: 127.0.0.1
+instruction_type: unseen
+normalization_mode: min_max
+policy_name: model2robotwin_interface
+port: 5802
+seed: null
+task_config: null
+task_name: null
+unnorm_key: aloha

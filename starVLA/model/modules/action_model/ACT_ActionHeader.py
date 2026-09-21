@@ -10,6 +10,7 @@ native StarVLA module with no third-party runtime dependency.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 import torch
@@ -102,6 +103,8 @@ class TurboStyleACTActionHead(nn.Module):
         state_dim: int = 0,
         state_hidden_dim: int = 256,
         num_state_tokens: int = 2,
+        output_activation: str = "tanh",
+        gripper_indices: tuple[int, ...] = (),
     ) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
@@ -111,6 +114,10 @@ class TurboStyleACTActionHead(nn.Module):
         self.num_visual_tokens = int(num_visual_tokens)
         self.num_state_tokens = int(num_state_tokens) if state_dim > 0 else 0
         self.state_dim = int(state_dim)
+        if output_activation not in {"tanh", "identity", "tanh_linear_tail"}:
+            raise ValueError(f"Unknown ACT output_activation={output_activation!r}")
+        self.output_activation = output_activation
+        self.gripper_indices = tuple(gripper_indices)
 
         if min(
             self.hidden_dim,
@@ -211,7 +218,19 @@ class TurboStyleACTActionHead(nn.Module):
         return self.decoder(tgt=queries, memory=memory)
 
     def predict_action(self, action_hidden: torch.Tensor) -> torch.Tensor:
-        return torch.tanh(self.action_projection(action_hidden))
+        actions = self.action_projection(action_hidden)
+        if self.output_activation == "tanh_linear_tail":
+            # Preserve the pretrained tanh mapping in its central region, but
+            # extend joint tails with the tangent at +/-3 (C1 continuous).
+            # Simply removing tanh makes saturated pretrained logits produce
+            # large, physically incorrect joint targets at warm start.
+            central = actions.clamp(-3, 3)
+            slope = 1.0 - math.tanh(3.0) ** 2
+            result = central.tanh() + (actions - central) * slope
+            if self.gripper_indices:
+                result[..., self.gripper_indices] = actions[..., self.gripper_indices].tanh()
+            return result
+        return torch.tanh(actions) if self.output_activation == "tanh" else actions
 
     def forward(
         self,

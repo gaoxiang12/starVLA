@@ -1,4 +1,5 @@
 from collections import deque
+import os
 from typing import Dict, Optional
 
 import cv2 as cv
@@ -34,6 +35,7 @@ class ModelClient:
         port=5694,
         action_mode: str = "abs",
         normalization_mode: str = "min_max",
+        execute_horizon: Optional[int] = None,
     ) -> None:
 
         self.client = WebsocketClientPolicy(host, port)
@@ -75,9 +77,19 @@ class ModelClient:
         self.raw_actions = None
 
         server_meta = self.client.get_server_metadata()
+        self.image_size = server_meta.get('image_size', self.image_size)
+        self.image_resize_resample = server_meta.get('image_resize_resample', 'opencv_area')
+        action_keys = server_meta.get('action_keys')
+        native_keys = ['action.left_joints', 'action.left_gripper',
+                       'action.right_joints', 'action.right_gripper']
+        self.native_joint_order = action_keys == native_keys
         self.action_chunk_size = server_meta.get("action_chunk_sizes", {}).get(
             unnorm_key, server_meta["action_chunk_size"]
         )
+        self.execute_horizon = (int(server_meta.get('action_execution_horizon', self.action_chunk_size))
+                                if execute_horizon is None else int(execute_horizon))
+        if not 1 <= self.execute_horizon <= self.action_chunk_size:
+            raise ValueError(f"execute_horizon must be in [1, {self.action_chunk_size}]")
         self.task_language_mode = configured_task_language_mode(
             server_meta, unnorm_key
         )
@@ -86,6 +98,7 @@ class ModelClient:
         print(
             f"*** policy_setup: {policy_setup}, unnorm_key: {unnorm_key}, "
             f"action_mode: {action_mode}, normalization_mode: {normalization_mode}, "
+            f"model_horizon: {self.action_chunk_size}, execute_horizon: {self.execute_horizon}, "
             f"server_meta: {server_meta} ***"
         )
 
@@ -123,6 +136,7 @@ class ModelClient:
                 if self.action_mode in ["delta", "rel"] and state is not None:
                     self.initial_state = np.array(state).copy()
 
+        example["native_images"] = images
         images = [self._resize_image(image) for image in images]
         example["image"] = images
         example_copy = example.copy()
@@ -146,9 +160,10 @@ class ModelClient:
         }
         vla_input["unnorm_key"] = self.unnorm_key
 
-        action_chunk_size = self.action_chunk_size
+        execute_horizon = getattr(self, "execute_horizon", self.action_chunk_size)
+        action_idx = step % execute_horizon
 
-        if step % action_chunk_size == 0 or self.raw_actions is None:
+        if action_idx == 0 or self.raw_actions is None:
             response = self.client.predict_action(vla_input)
             # server already un-normalized via training-time transform
             raw_actions = np.array(response["data"]["actions"][0])  # (chunk, D)
@@ -161,9 +176,8 @@ class ModelClient:
             else:
                 self.raw_actions = raw_actions
 
-        action_idx = step % action_chunk_size
         if action_idx >= len(self.raw_actions):
-            pass
+            raise ValueError("Policy returned fewer actions than the execution horizon requires")
 
         current_action = self.raw_actions[action_idx]
 
@@ -171,7 +185,8 @@ class ModelClient:
         if self.action_mode == "delta":
             self.prev_action = current_action.copy()
 
-        current_action = current_action[MODEL_TO_ROBOTWIN_JOINT_ORDER]
+        if not self.native_joint_order:
+            current_action = current_action[MODEL_TO_ROBOTWIN_JOINT_ORDER]
         return current_action
 
     def _delta_to_absolute(self, delta_actions: np.ndarray, current_state: np.ndarray) -> np.ndarray:
@@ -188,6 +203,9 @@ class ModelClient:
         return rel_actions + self.initial_state
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
+        if self.image_resize_resample != 'opencv_area':
+            from starVLA.model.modules.lila.image_processing import resize_rgb
+            return np.asarray(resize_rgb(image, self.image_size, self.image_resize_resample))
         image = cv.resize(image, tuple(self.image_size), interpolation=cv.INTER_AREA)
         return image
 
@@ -213,6 +231,7 @@ def get_model(usr_args):
         unnorm_key=unnorm_key,
         action_mode=action_mode,
         normalization_mode=normalization_mode,
+        execute_horizon=usr_args.get("execute_horizon", os.environ.get("ROBOTWIN_EXECUTE_HORIZON")),
     )
 
 
@@ -241,7 +260,8 @@ def eval(TASK_ENV, model, observation):
         raise ValueError(f"Expected RoboTwin joint state shape (14,), got {state.shape}")
     # RoboTwin uses [L joints, L grip, R joints, R grip], while StarVLA's
     # training transform concatenates [L joints, R joints, L grip, R grip].
-    state = state[ROBOTWIN_TO_MODEL_JOINT_ORDER]
+    if not getattr(model, 'native_joint_order', False):
+        state = state[ROBOTWIN_TO_MODEL_JOINT_ORDER]
     example = {
         "lang": str(instruction),
         "image": images,

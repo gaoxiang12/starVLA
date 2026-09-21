@@ -344,10 +344,15 @@ DATASET_NAMED_MIXTURES["robotwin_clean_wm"] = [
 ]
 # Local 500-success Clean generation uses the same per-task schema but lives
 # under a separate data root so it can be audited before replacing any
-# official-data recipe.
-DATASET_NAMED_MIXTURES["robotwin_generated_clean500_wm"] = list(
-    DATASET_NAMED_MIXTURES["robotwin_clean_wm"]
-)
+# official-data recipe. ``open_laptop`` is intentionally excluded from this
+# generated dataset because its collection was stopped before reaching the
+# 500-success acceptance threshold. Keep official/evaluation recipes intact.
+ROBOTWIN_GENERATED_CLEAN500_EXCLUDED_TASKS = {"open_laptop"}
+DATASET_NAMED_MIXTURES["robotwin_generated_clean500_wm"] = [
+    item
+    for item in DATASET_NAMED_MIXTURES["robotwin_clean_wm"]
+    if item[0].removeprefix("Clean/") not in ROBOTWIN_GENERATED_CLEAN500_EXCLUDED_TASKS
+]
 
 # Locally collected Clean click_bell demonstrations.  This mixture expects
 # data_root_dir=playground/Datasets/RoboTwinClickBellClean1000 and intentionally

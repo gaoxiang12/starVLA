@@ -46,10 +46,26 @@ class _GAWM_Interface(nn.Module):
         self.train_encoder = bool(wm_cfg.get("train_encoder", False))
         encoder_spec = str(wm_cfg.get("encoder_spec", "vitb16")).strip().lower()
         model_name = wm_cfg.get("base_wm")
+        hf_path = wm_cfg.get("vision_encoder_path")
+        self.normalized_pixels = bool(wm_cfg.get("imagenet_normalized_inputs", False))
+        self.encoder_batch_size = int(wm_cfg.get("encoder_batch_size", 0))
 
         from .dinov3_loader import build_dinov3, load_dinov3, spec_from_filename
 
-        if model_name:
+        if hf_path:
+            if model_name:
+                raise ValueError("Choose either vision_encoder_path or base_wm")
+            from transformers import AutoModel
+            self.encoder = AutoModel.from_pretrained(hf_path, local_files_only=True, torch_dtype=torch.bfloat16)
+            if self.encoder.config.model_type != "dinov3_vit":
+                raise ValueError("Expected a DINOv3 ViT checkpoint")
+            from .dinov3_loader import SPECS
+            spec = SPECS[encoder_spec]
+            if (self.encoder.config.hidden_size, self.encoder.config.num_hidden_layers) != (spec['hidden'], spec['layers']):
+                raise ValueError("HF checkpoint does not match encoder_spec")
+            self.processor = None
+            num_register = self.encoder.config.num_register_tokens
+        elif model_name:
             model_path = Path(model_name).expanduser()
             if not model_path.is_absolute() and not model_path.exists():
                 repo_relative = Path(__file__).resolve().parents[4] / model_path
@@ -101,6 +117,11 @@ class _GAWM_Interface(nn.Module):
 
     def _to_pixel_values(self, flat: List, device=None) -> torch.Tensor:
         """Preprocess a flat list of PIL images into a (N, C, H, W) tensor."""
+        if self.normalized_pixels:
+            values = torch.stack(list(flat))
+            if values.ndim != 4 or values.shape[1] != 3 or not values.is_floating_point():
+                raise ValueError("Expected ImageNet-normalized CHW float tensors")
+            return values
         if self.processor is not None:
             # Run resize/normalize on the encoder's device (GPU) when possible to
             # avoid a CPU-bound bottleneck (worsened by OMP_NUM_THREADS=1) when
@@ -260,10 +281,14 @@ class _GAWM_Interface(nn.Module):
         num_views: int,
     ) -> torch.Tensor:
         """Run DINOv3 on already preprocessed pixels and restore B/T/V axes."""
-
+        if self.normalized_pixels:
+            pixel_values = pixel_values.to(dtype=next(self.encoder.parameters()).dtype)
         with torch.set_grad_enabled(self.train_encoder):
-            out = self.encoder(pixel_values=pixel_values)
-            patches = out.last_hidden_state[:, self.num_prefix_tokens:]  # (B*T*V, N, D)
+            chunk_size = self.encoder_batch_size or len(pixel_values)
+            patches = torch.cat([
+                self.encoder(pixel_values=chunk).last_hidden_state[:, self.num_prefix_tokens:]
+                for chunk in pixel_values.split(chunk_size)
+            ])
 
         return patches.view(
             batch_size,

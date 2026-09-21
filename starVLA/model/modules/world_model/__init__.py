@@ -20,7 +20,7 @@ def get_world_model(config):
         )
     framework_name = str(config.framework.get("name", "")).strip().lower()
     wm_name = wm_cfg.get("base_wm", "")
-    if framework_name == "gawm":
+    if framework_name in {"gawm", "gawmobjectfusion", "gawmcartesian", "gawmcompactexpert", "gawmoft"}:
         from .GAWM import _GAWM_Interface
 
         return _GAWM_Interface(config)

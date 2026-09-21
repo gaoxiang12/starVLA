@@ -1,0 +1,162 @@
+datasets:
+  vla_data:
+    action_valid_mask: true
+    balance_dataset_weights: false
+    balance_trajectory_weights: false
+    data_mix: robotwin_ranking_rgb_continuous_next_wm
+    data_root_dir: /data/gaoxiang
+    dataset_py: lerobot_datasets
+    drop_last: true
+    embodiment_sampling_weights:
+      aloha: 1.0
+    episode_split: train
+    future_obs_frames: true
+    future_obs_valid_mask: true
+    homogeneous_embodiment_batches: true
+    include_state: true
+    normalization_statistics_path: examples/Robotwin/train_files/gawm_s_base_aloha_statistics.json
+    num_workers: 4
+    obs_image_size:
+    - 224
+    - 224
+    per_device_batch_size: 4
+    persistent_workers: true
+    pin_memory: true
+    prefetch_factor: 2
+    sequential_step_sampling: false
+    target_num_views: 3
+    task_language_mode: metadata
+    task_language_modes:
+      aloha: dataset_name
+    validation_episode_stride: 20
+    video_backend: pyav
+    preserve_native_images: true
+    spatial_supervision_dir: /data/gaoxiang/Code/starVLA/playground/Checkpoints/gawm_rgb_focus_20260907/labels
+    event_sampling_probability: 0.35
+    video_channel_order: bgr
+    episode_split_manifest: /data/gaoxiang/Code/starVLA/examples/Robotwin/audits/rgb_scene_safe_validation_20260907.json
+framework:
+  action_model:
+    act_dim_feedforward: 2048
+    act_dropout: 0.1
+    act_mlp_hidden_dim: 512
+    act_num_heads: 8
+    act_num_layers: 3
+    act_num_state_tokens: 2
+    action_hidden_dim: 384
+    action_horizon: 8
+    action_model_type: ACT
+    embodiment_heads:
+      aloha:
+        action_dim: 14
+        action_horizon: 16
+        action_spec_id: aloha_dual_joint_contgrip_next_recorded_14
+        gripper_indices:
+        - 12
+        - 13
+        output_activation: tanh_linear_tail
+        state_dim: 14
+      franka:
+        action_dim: 7
+        action_horizon: 8
+        action_spec_id: franka_eef_delta_7
+        gripper_indices:
+        - 6
+        state_dim: 8
+      oxe_bridge:
+        action_dim: 7
+        action_horizon: 3
+        action_spec_id: bridge_eef_delta_7
+        gripper_indices:
+        - 6
+        state_dim: 8
+  lang_cond:
+    embed_dim: 384
+    text_depth: 2
+    text_dropout: 0.1
+    text_ffn_dim: 512
+    text_heads: 4
+    text_hidden_dim: 256
+    text_max_length: 128
+    type: text
+  name: GAWM
+  world_model:
+    ctx_len: 1
+    detach_wm_input: true
+    encoder_spec: vitb16
+    future_time_offsets_s: null
+    latent_cosine_weight: 0.1
+    latent_stats_momentum: 0.9
+    loss_latent_weight: 1.0
+    n_future: 2
+    num_views: 3
+    residual_predictor_depth: 4
+    residual_predictor_dim: 384
+    residual_predictor_ffn: 1024
+    residual_predictor_heads: 6
+    state_cond_hidden_dim: 256
+    train_encoder: true
+    use_state_cond: true
+    visual_token_dim: 384
+    visual_token_diversity_weight: 0.02
+    visual_token_min_std: 0.1
+    visual_token_variance_weight: 0.02
+    visual_tokens_per_view: 16
+    resize_spatial_embeddings_on_load: true
+  spatial_focus:
+    enabled: true
+    robot_tag: aloha
+    use_local: true
+    use_future_context: true
+    crop_fraction: 0.4
+    crop_dropout: 0.15
+    crop_jitter: 0.025
+    teacher_warmup_steps: 0
+    teacher_end_steps: 0
+    heatmap_loss_weight: 0.002
+    coordinate_loss_weight: 0.02
+    view_conditioned_query: true
+    residual_mode: zero_projection
+  contact_objective:
+    enabled: true
+    robot_tag: aloha
+    urdf_path: /data/gaoxiang/Code/RoboTwin/assets/embodiments/aloha-agilex/urdf/arx5_description_isaac.urdf
+    position_weight: 0.1
+    gripper_weight: 0.02
+    contact_boost: 4.0
+    transition_radius: 3
+is_debug: false
+run_id: gawm_rgb_focus_refine_contact_2k_20260907
+run_root_dir: playground/Checkpoints
+seed: 42
+trainer:
+  eval_interval: 500
+  freeze_modules: action_models.franka,action_models.oxe_bridge
+  gradient_accumulation_steps: 8
+  gradient_clipping: 1.0
+  is_resume: false
+  learning_rate:
+    base: 1.0e-05
+    action_models: 3.0e-05
+    backbone:
+      encoder: 1.0e-06
+    spatial_focus: 0.0001
+  logging_frequency: 20
+  lr_scheduler_type: cosine_with_min_lr
+  max_train_steps: 2000
+  num_warmup_steps: 100
+  optimizer:
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+  pretrained_checkpoint: playground/Checkpoints/gawm_rgb_focus_local_v2_5k_20260907/final_model/pytorch_model.pt
+  save_interval: 500
+  scheduler_specific_kwargs:
+    min_lr: 1.0e-06
+  validation_batch_size: 4
+  validation_samples_per_task: 64
+version_id: '0.21'
+wandb_entity: your_wandb_entity
+wandb_project: starVLA_RoboTwin

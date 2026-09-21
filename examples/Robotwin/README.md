@@ -245,8 +245,10 @@ bash ../setup-envs.sh starVLA
 Launch the end-to-end pipeline detached. Each selected free GPU processes its
 assigned task jobs sequentially, while each job resumes from its existing
 `seed.txt` and HDF5 files after interruption. The pipeline also resumes a
-stopped collector, converts all completed raw jobs, and deeply validates all
-25,000 episodes before writing `pipeline.complete.json`:
+stopped collector, converts all completed raw jobs, and deeply validates the
+selected dataset scope before writing `pipeline.complete.json`. The current
+local Clean-500 scope explicitly excludes `open_laptop`, leaving 49 tasks and
+24,500 successful episodes:
 
 ```bash
 DATA_ROOT=/home/gaoxiang/data/gaoxiang
@@ -256,8 +258,9 @@ nohup setsid bash examples/Robotwin/run_clean500_generation.sh \
 echo $! > "${DATA_ROOT}/RoboTwinGenerated_raw/pipeline.pid"
 ```
 
-The launcher defaults to GPUs 3–7 and, only after the deep audit completes,
-synchronizes the converted dataset to
+The launcher defaults to GPUs 3–7 and excludes `open_laptop`. Override the
+exclusion list with `ROBOTWIN_EXCLUDED_TASKS`. Only after the deep audit
+completes, it synchronizes the converted dataset to
 `36.212.196.90:/data/gaoxiang/RoboTwinGenerated/` over SSH port 1227. Override
 the GPU list with `ROBOTWIN_GENERATION_GPUS` when host allocation changes.
 

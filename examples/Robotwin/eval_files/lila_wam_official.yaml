@@ -1,0 +1,11 @@
+framework:
+  name: LiLaWAM
+  lila_wam:
+    source_root: /data/gaoxiang/Code/LiLa-WAM
+    config_path: /data/gaoxiang/ckpts/LiLa-WAM_RoboTwin2_0/config.yaml
+    checkpoint_path: /data/gaoxiang/ckpts/LiLa-WAM_RoboTwin2_0/checkpoint.pt
+    vision_encoder_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+    task_cond_dir: /data/gaoxiang/Code/LiLa-WAM/data-500-taskcond
+    norm_stats_path: /data/gaoxiang/Code/LiLa-WAM/utils/stat-500-all.json
+    device: cuda
+    use_bf16: true

@@ -96,19 +96,19 @@ class RotationTransform:
 
 
 class Normalizer:
-    valid_modes = ["q99", "mean_std", "min_max", "binary"]
+    valid_modes = ["q99", "mean_std", "min_max", "min_max_safe", "binary", "unit_interval"]
 
     def __init__(
         self,
         mode: str,
         statistics: dict,
         binary_threshold: float = 0.5,
-        q99_clip: float = 2.2,
+        q99_clip: float | None = 2.2,
     ):
         self.mode = mode
         self.statistics = statistics
         self.binary_threshold = binary_threshold
-        self.q99_clip = float(q99_clip)
+        self.q99_clip = None if q99_clip is None else float(q99_clip)
         for key, value in self.statistics.items():
             self.statistics[key] = torch.tensor(value)
 
@@ -139,7 +139,8 @@ class Normalizer:
             normalized[..., ~mask] = x[..., ~mask].to(x.dtype)
 
             # Clip to the range accepted by the downstream consumer.
-            normalized = torch.clamp(normalized, -self.q99_clip, self.q99_clip)
+            if self.q99_clip is not None:
+                normalized = torch.clamp(normalized, -self.q99_clip, self.q99_clip)
 
         elif self.mode == "mean_std":
             # Range of mean_std is not fixed, but can be positive or negative
@@ -158,6 +159,11 @@ class Normalizer:
             # Set the normalized values to the original values where std == 0
             normalized[..., ~mask] = x[..., ~mask].to(x.dtype)
 
+        elif self.mode == 'min_max_safe':
+            low, high = self.statistics['min'].to(x), self.statistics['max'].to(x)
+            span = high - low
+            span = torch.where(span < 1e-6, torch.ones_like(span), span)
+            normalized = 2 * (x - low) / span - 1
         elif self.mode == "min_max":
             # Range of min_max is [-1, 1]
             min = self.statistics["min"].to(x.dtype)
@@ -193,6 +199,9 @@ class Normalizer:
         elif self.mode == "binary":
             # Range of binary is [0, 1]
             normalized = (x > self.binary_threshold).to(x.dtype)
+        elif self.mode == "unit_interval":
+            # Continuous gripper command: retain partial opening positions.
+            normalized = x.clamp(0, 1)
         else:
             raise ValueError(f"Invalid normalization mode: {self.mode}")
 
@@ -210,12 +219,19 @@ class Normalizer:
             mean = self.statistics["mean"].to(x.dtype)
             std = self.statistics["std"].to(x.dtype)
             return x * std + mean
+        elif self.mode == 'min_max_safe':
+            low, high = self.statistics['min'].to(x), self.statistics['max'].to(x)
+            span = high - low
+            span = torch.where(span < 1e-6, torch.ones_like(span), span)
+            return (x + 1) / 2 * span + low
         elif self.mode == "min_max":
             min = self.statistics["min"].to(x.dtype)
             max = self.statistics["max"].to(x.dtype)
             return (x + 1) / 2 * (max - min) + min
         elif self.mode == "binary":
             return (x > self.binary_threshold).to(x.dtype)
+        elif self.mode == "unit_interval":
+            return x.clamp(0, 1)
         else:
             raise ValueError(f"Invalid normalization mode: {self.mode}")
 
@@ -307,10 +323,10 @@ class StateActionTransform(InvertibleModalityTransform):
     binary_threshold: float = Field(
         default=0.5, description="Threshold for binary normalization mode."
     )
-    q99_clip: float = Field(
+    q99_clip: float | None = Field(
         default=2.2,
         gt=0,
-        description="Symmetric clipping bound after q01/q99 normalization.",
+        description="Symmetric q01/q99 clipping bound; null preserves joint tails.",
     )
     modality_metadata: dict[str, StateActionMetadata] = Field(
         default_factory=dict, description="The modality metadata for each state key."
@@ -372,7 +388,7 @@ class StateActionTransform(InvertibleModalityTransform):
         for modality_key, normalization_statistics in self.normalization_statistics.items():
             if modality_key in self.normalization_modes:
                 normalization_mode = self.normalization_modes[modality_key]
-                if normalization_mode == "min_max":
+                if normalization_mode in ("min_max", "min_max_safe"):
                     assert (
                         "min" in normalization_statistics and "max" in normalization_statistics
                     ), f"Min and max statistics are required for min_max normalization, but got {normalization_statistics}"
@@ -393,6 +409,8 @@ class StateActionTransform(InvertibleModalityTransform):
                     assert len(normalization_statistics["q01"]) == len(
                         normalization_statistics["q99"]
                     ), f"q01 and q99 statistics must have the same length, but got {normalization_statistics['q01']} and {normalization_statistics['q99']}"
+                elif normalization_mode == "unit_interval":
+                    pass  # Physical [0,1] commands need no estimated scale.
                 elif normalization_mode == "binary":
                     assert (
                         len(normalization_statistics) == 1

@@ -1,0 +1,150 @@
+schema_version: 1
+production_registration: false
+future_time_offsets_s: [0.0, 0.2, 0.4]
+target_num_views: 3
+normalization: q99
+
+candidates:
+  fastumi_single:
+    source: IPEC-COMMUNITY/FastUMI_100k_lerobot
+    staging_path: /data/gaoxiang/vla_dataset_staging/FastUMI_100k_lerobot/single_arm/Prepare_tableware
+    source_format: lerobot_v2.1
+    robot_tag: fastumi_single
+    action_spec_id: fastumi_single_absolute_next_state_7_20hz
+    state_spec_id: fastumi_single_state_7
+    control_hz: 20
+    action_dim: 7
+    state_dim: 7
+    views: [camera_rgb_image]
+    action_semantics: absolute_next_state_command
+    gripper_indices: [6]
+    gripper_treatment: continuous
+    readiness: staging_only
+
+  fastumi_dual:
+    source: IPEC-COMMUNITY/FastUMI_100k_lerobot
+    staging_path: /data/gaoxiang/vla_dataset_staging/FastUMI_100k_lerobot/dual_arm/Add_Rice_to_Rice_Cooker
+    source_format: lerobot_v2.1
+    robot_tag: fastumi_dual
+    action_spec_id: fastumi_dual_absolute_next_state_14_20hz
+    state_spec_id: fastumi_dual_state_14
+    control_hz: 20
+    action_dim: 14
+    state_dim: 14
+    views: [left_camera_rgb_image, right_camera_rgb_image]
+    action_semantics: absolute_next_state_command
+    gripper_indices: [6, 13]
+    gripper_treatment: continuous
+    readiness: staging_only
+
+  molmo_yam:
+    source: allenai/MolmoAct2-BimanualYAM-Dataset
+    staging_path: /data/gaoxiang/vla_dataset_staging/MolmoAct2-BimanualYAM-Dataset
+    source_format: lerobot_v3.0_requires_conversion
+    robot_tag: yam_molmo
+    action_spec_id: yam_molmo_joint_position_target_14_30hz
+    state_spec_id: yam_molmo_joint_position_state_14
+    control_hz: 30
+    action_dim: 14
+    state_dim: 14
+    action_horizon: 16
+    action_field: action
+    state_field: observation.state
+    views: [left, right, top]
+    action_semantics: absolute_commanded_joint_and_gripper_position
+    joint_order: [left_joints_0_5, left_gripper, right_joints_0_5, right_gripper]
+    gripper_indices: [6, 13]
+    gripper_treatment: continuous_position
+    task_language_mode: canonical_metadata
+    task_language_note: merge Spell_out_Ai2 case-only aliases into one canonical task ID
+    readiness: metadata_and_sample_only
+
+  abc_yam_joint:
+    source: huzheyuan/abc130k_v3_train
+    staging_path: /data/gaoxiang/vla_dataset_staging/abc130k_v3_train_fullframe
+    source_format: lerobot_v3.0_requires_conversion
+    robot_tag: yam_abc
+    action_spec_id: yam_abc_joint_command_14_30hz
+    state_spec_id: yam_abc_joint_state_14
+    control_hz: 30
+    action_dim: 14
+    state_dim: 14
+    action_horizon: 16
+    action_field: joint_action
+    state_field: joint_state
+    views: [left_wrist, right_wrist, top]
+    action_semantics: absolute_commanded_joint_and_gripper_target
+    joint_order: [left_joints_0_5, left_gripper, right_joints_0_5, right_gripper]
+    joint_units: radians
+    gripper_indices: [6, 13]
+    gripper_treatment: continuous_fraction_open
+    compatibility_gate: prove_equivalence_before_merging_with_yam_molmo
+    task_language_mode: canonical_metadata
+    readiness: metadata_and_sample_only
+
+  abc_yam_cartesian_optional:
+    source: huzheyuan/abc130k_v3_train
+    robot_tag: yam_abc_cartesian
+    action_spec_id: yam_abc_dual_flange_pose6d_command_20_30hz
+    state_spec_id: yam_abc_dual_flange_pose6d_state_20
+    control_hz: 30
+    action_dim: 20
+    state_dim: 20
+    action_field: action
+    state_field: observation.state
+    per_arm_layout: [xyz_3, rotation_6d_6, gripper_1]
+    rotation: first_two_rotation_matrix_columns
+    coordinate_frame: per_arm_base_REP_103
+    gripper_indices: [9, 19]
+    gripper_treatment: continuous_fraction_open
+    readiness: optional_separate_head
+
+  hiw_unitree_g1:
+    source: BitRobot/HIW-500-LeRobot
+    staging_path: /data/gaoxiang/vla_dataset_staging/HIW-500-LeRobot
+    source_format: lerobot_v3.0_requires_conversion
+    robot_tag: unitree_g1_hiw
+    action_spec_id: unitree_g1_hiw_wbc_mixed_23_30hz
+    state_spec_id: unitree_g1_hiw_wbc_state_23
+    control_hz: 30
+    action_dim: 23
+    state_dim: 23
+    action_horizon: 16
+    action_field: action
+    state_field: observation.state.wbc
+    auxiliary_state_field: observation.state
+    auxiliary_state_dim: 29
+    views: [head, left_wrist, right_wrist]
+    layout: [pivot_velocity_3, pivot_rpy_height_4, left_eef_xyz_rpy_6, right_eef_xyz_rpy_6, hand_controls_4]
+    rotation: euler_rpy
+    action_semantics: mixed_wbc_command_requires_source_verification
+    gripper_indices: []
+    hand_control_indices: [19, 20, 21, 22]
+    hand_control_ranges:
+      trigger: [0.0, 10.0]
+      squeeze: [0.0, 1.0]
+    task_language_mode: canonical_metadata
+    readiness: metadata_and_sample_only
+
+head_candidates:
+  yam_molmo:
+    action_spec_id: yam_molmo_joint_position_target_14_30hz
+    action_dim: 14
+    action_horizon: 16
+    state_dim: 14
+    gripper_indices: [6, 13]
+    random_execution_horizons: [1, 2, 4, 8, 16]
+  yam_abc:
+    action_spec_id: yam_abc_joint_command_14_30hz
+    action_dim: 14
+    action_horizon: 16
+    state_dim: 14
+    gripper_indices: [6, 13]
+    random_execution_horizons: [1, 2, 4, 8, 16]
+  unitree_g1_hiw:
+    action_spec_id: unitree_g1_hiw_wbc_mixed_23_30hz
+    action_dim: 23
+    action_horizon: 16
+    state_dim: 23
+    gripper_indices: []
+    random_execution_horizons: [1, 2, 4, 8, 16]

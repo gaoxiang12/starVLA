@@ -43,6 +43,37 @@ from starVLA.model.framework.share_tools import read_mode_config
 logger = logging.getLogger(__name__)
 
 
+def _shared_normalization_alias(robot_types: List[str]) -> Optional[str]:
+    """Resolve an explicitly declared alias only for identical command semantics.
+
+    Independent dataset registrations may share one embodiment and the exact
+    same inherited normalization implementation. Merely sharing an embodiment
+    or action dimension is insufficient and must remain an error.
+    """
+    canonical = {getattr(ROBOT_TYPE_CONFIG_MAP[name], 'normalization_robot_type', name)
+                 for name in robot_types}
+    if len(canonical) != 1:
+        return None
+    name = next(iter(canonical))
+    if name not in robot_types:
+        raise ValueError('Normalization alias must resolve directly to a DataConfig in the mixture')
+    target = ROBOT_TYPE_CONFIG_MAP[name]
+    fields = ('embodiment_tag','action_spec_id','state_spec_id','action_keys','state_keys',
+              'action_key_dims','state_key_dims','action_indices','state_indices',
+              'gripper_action_keys','gripper_state_keys','gripper_indices',
+              'action_absolute_overrides','control_hz','future_time_offsets_s')
+    for candidate_name in robot_types:
+        candidate = ROBOT_TYPE_CONFIG_MAP[candidate_name]
+        if any(getattr(candidate,key,None) != getattr(target,key,None) for key in fields):
+            raise ValueError(f'Normalization alias has incompatible semantics: {candidate_name} -> {name}')
+        if type(candidate).transform is not type(target).transform:
+            raise ValueError(f'Normalization alias must share the inherited transform: {candidate_name}')
+        a,b = candidate.transform(),target.transform()
+        if a.model_dump_json(serialize_as_any=True) != b.model_dump_json(serialize_as_any=True):
+            raise ValueError(f'Normalization alias transform configuration differs: {candidate_name}')
+    return name
+
+
 def _resolve_robot_type(
     model_cfg: dict,
     unnorm_key: Optional[str] = None,
@@ -98,6 +129,10 @@ def _resolve_robot_type(
         if len(matching_robot_types) == 1:
             return matching_robot_types[0]
         if len(matching_robot_types) > 1:
+            alias = _shared_normalization_alias(matching_robot_types)
+            if alias is not None:
+                logger.info('Using verified shared normalization %s for %s', alias, matching_robot_types)
+                return alias
             raise ValueError(
                 f"unnorm_key={unnorm_key!r} matches multiple robot_types "
                 f"{matching_robot_types}; use distinct embodiment tags or an "

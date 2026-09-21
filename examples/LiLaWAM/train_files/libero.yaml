@@ -1,0 +1,102 @@
+run_id: lila_3view_libero
+run_root_dir: /data/gaoxiang/ckpts/lila_starvla
+seed: 42
+wandb_entity: your_wandb_entity
+wandb_project: starVLA_LiLa
+is_debug: false
+version_id: '0.21'
+framework:
+  name: LiLaWAMTrain
+  lila:
+    vision_encoder_path: /data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m
+    num_views: 3
+    image_size:
+    - 224
+    - 224
+    feat_layers:
+    - -12
+    - -8
+    - -4
+    future_target_layer: -4
+    hidden_dim: 768
+    depth: 12
+    num_heads: 8
+    adapter_depth: 4
+    queries_per_view: 64
+    future_depth: 4
+    future_heads: 4
+    lambda_future_feat: 0.5
+    num_inference_steps: 10
+    encoder_batch_size: 3
+    task_vectors_path: /data/gaoxiang/Checkpoints/lila_starvla_assets/libero/task_vectors.json
+  action_model:
+    action_model_type: LiLaFlow
+    action_horizon: 32
+    future_action_window_size: 31
+    embodiment_heads:
+      franka:
+        action_spec_id: franka_eef_delta_7
+        state_spec_id: franka_state_8
+        action_dim: 7
+        state_dim: 8
+        action_horizon: 32
+        gripper_indices:
+        - 6
+        num_observed_views: 2
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: /data/gaoxiang
+    data_mix: lila_libero
+    task_language_mode: canonical_metadata
+    task_language_modes:
+      aloha: dataset_name
+      franka: canonical_metadata
+    future_obs_frames: true
+    future_obs_valid_mask: true
+    action_valid_mask: true
+    include_state: true
+    target_num_views: 3
+    homogeneous_embodiment_batches: true
+    embodiment_sampling_weights:
+      franka: 1.0
+    balance_dataset_weights: true
+    balance_trajectory_weights: false
+    sequential_step_sampling: false
+    normalization_statistics_path: /data/gaoxiang/Checkpoints/lila_starvla_assets/libero/statistics.json
+    per_device_batch_size: 2
+    obs_image_size:
+    - 224
+    - 224
+    video_backend: pyav
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+    drop_last: true
+    validation_episode_stride: 20
+    episode_split: train
+trainer:
+  max_train_steps: 20000
+  num_warmup_steps: 0
+  save_interval: 2000
+  eval_interval: 2000
+  logging_frequency: 20
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 64
+  freeze_modules: encoder
+  is_resume: false
+  pretrained_checkpoint: null
+  learning_rate:
+    base: 0.0002
+  optimizer:
+    betas:
+    - 0.9
+    - 0.99
+    eps: 1.0e-08
+    weight_decay: 0.01
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-05
+  validation_samples_per_task: 8
+  validation_batch_size: 2

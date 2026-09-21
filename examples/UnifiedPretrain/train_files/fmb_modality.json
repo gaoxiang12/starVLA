@@ -1,0 +1,20 @@
+{
+  "state": {
+    "eef_position": {"start": 0, "end": 3, "absolute": true, "dtype": "float32", "original_key": "observation.state"},
+    "eef_quaternion_xyzw": {"start": 3, "end": 7, "rotation_type": "quaternion", "absolute": true, "dtype": "float32", "original_key": "observation.state"},
+    "gripper_position": {"start": 7, "end": 8, "absolute": true, "dtype": "float32", "original_key": "observation.state"}
+  },
+  "action": {
+    "eef_linear_twist_normalized": {"start": 0, "end": 3, "absolute": false, "dtype": "float32", "original_key": "action"},
+    "eef_angular_twist_normalized": {"start": 3, "end": 6, "rotation_type": "axis_angle", "absolute": false, "dtype": "float32", "original_key": "action"},
+    "gripper_open": {"start": 6, "end": 7, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "action"}
+  },
+  "video": {
+    "image_side_1": {"original_key": "observation.images.image_side_1"},
+    "image_side_2": {"original_key": "observation.images.image_side_2"},
+    "image_wrist_1": {"original_key": "observation.images.image_wrist_1"}
+  },
+  "annotation": {
+    "human.action.task_description": {"original_key": "task_index"}
+  }
+}

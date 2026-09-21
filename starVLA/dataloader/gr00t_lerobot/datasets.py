@@ -652,6 +652,7 @@ class LeRobotSingleDataset(Dataset):
         self.set_transforms_metadata(self.metadata)
         self.set_epoch(0)
 
+
         if int(os.environ.get("RANK", "0")) == 0:
             print(f"Initialized dataset {self.dataset_name} with {embodiment_tag}")
 
@@ -1446,14 +1447,53 @@ class LeRobotSingleDataset(Dataset):
         sample = self._attach_future_frame_validity(
             sample, trajectory_id, base_index
         )
+        return self._attach_spatial_supervision(sample, trajectory_id, base_index)
+
+    def _spatial_episode(self, trajectory_id):
+        directory = self.data_cfg.get("spatial_supervision_dir") if self.data_cfg is not None else None
+        if not directory:
+            return None
+        if not hasattr(self, "_spatial_label_cache"):
+            manifest = json.loads((Path(directory) / "manifest.json").read_text())
+            if Path(manifest["dataset"]).resolve() != Path(self.dataset_path).resolve():
+                raise ValueError("Spatial supervision belongs to a different dataset")
+            self._spatial_label_cache = {}
+        if trajectory_id not in self._spatial_label_cache:
+            with np.load(Path(directory) / f"episode_{int(trajectory_id):06d}.npz", allow_pickle=False) as data:
+                labels = {key: data[key] for key in data.files}
+            if len(self._spatial_label_cache) >= 4:
+                self._spatial_label_cache.pop(next(iter(self._spatial_label_cache)))
+            self._spatial_label_cache[trajectory_id] = labels
+        return self._spatial_label_cache[trajectory_id]
+
+    def _attach_spatial_supervision(self, sample, trajectory_id, base_index):
+        labels = self._spatial_episode(trajectory_id)
+        if labels is not None:
+            sample["spatial_target_xy"] = labels["xy"][base_index].copy()
+            sample["spatial_target_valid"] = labels["valid"][base_index].copy()
+            sample["spatial_target_arm"] = int(labels["arm"][base_index])
+            sample["spatial_target_kind"] = int(labels["kind"][base_index])
         return sample
 
     def _pack_sample(self, data: dict) -> dict:
         """Pack transformed modality data into training sample format."""
+        channel_order = self.data_cfg.get("video_channel_order","rgb") if self.data_cfg is not None else "rgb"
+        if channel_order not in {"rgb","bgr"}:
+            raise ValueError(f"Unsupported decoded video channel order: {channel_order}")
+        def as_rgb(frame):
+            return Image.fromarray(np.ascontiguousarray(frame[...,::-1] if channel_order=="bgr" else frame))
+        def pack_image(frame):
+            if self.data_cfg is not None and self.data_cfg.get('packed_image_size') is not None:
+                from starVLA.model.modules.lila.image_processing import resize_rgb
+                return resize_rgb(as_rgb(frame), self.data_cfg['packed_image_size'],
+                                  self.data_cfg.get('image_resize_resample', 'bicubic'))
+            return as_rgb(frame).resize((224, 224))
+        numeric_dtype = np.dtype(self.data_cfg.get('packed_numeric_dtype', 'float16')
+                                 if self.data_cfg is not None else 'float16')
         step_images = []
         for video_key in self.modality_keys["video"]:
             image = data[video_key][0]
-            image = Image.fromarray(image).resize((224, 224))
+            image = pack_image(image)
             step_images.append(image)
 
         target_num_views = (
@@ -1479,7 +1519,7 @@ class LeRobotSingleDataset(Dataset):
         action = []
         for action_key in self.modality_keys["action"]:
             action.append(data[action_key])
-        action = np.concatenate(action, axis=1).astype(np.float16)
+        action = np.concatenate(action, axis=1).astype(numeric_dtype)
 
         sample = {
             "action": action,
@@ -1491,6 +1531,10 @@ class LeRobotSingleDataset(Dataset):
             "state_spec_id": getattr(self, "state_spec_id", self.tag),
             "view_valid_mask": view_valid_mask,
         }
+        if self.data_cfg is not None and self.data_cfg.get("preserve_native_images", False):
+            native = [as_rgb(data[key][0]) for key in self.modality_keys["video"]]
+            native.extend(Image.new("RGB", native[0].size) for _ in range(target_num_views-len(native)))
+            sample["native_images"] = native
         if getattr(self, "control_hz", None) is not None:
             sample["control_hz"] = float(self.control_hz)
         if getattr(self, "future_time_offsets_s", None) is not None:
@@ -1507,7 +1551,7 @@ class LeRobotSingleDataset(Dataset):
             for video_key in self.modality_keys["video"]:
                 frames = data[video_key]  # (T, H, W, C)
                 fut = [
-                    Image.fromarray(frames[t]).resize((224, 224))
+                    pack_image(frames[t])
                     for t in range(1, len(frames))
                 ]
                 future_per_view.append(fut)
@@ -1538,7 +1582,7 @@ class LeRobotSingleDataset(Dataset):
                     stacklevel=2,
                 )
             else:
-                state = np.concatenate(state, axis=1).astype(np.float16)
+                state = np.concatenate(state, axis=1).astype(numeric_dtype)
                 sample["state"] = state
 
         return sample
@@ -2578,7 +2622,44 @@ class LeRobotMixtureDataset(Dataset):
         trajectory_id = dataset.trajectory_ids[trajectory_index]
 
         # Sample step
-        base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
+        valid_anchors = dataset.trajectory_lengths[trajectory_index] - getattr(
+            dataset, "minimum_action_offset", 0
+        )
+        if hasattr(dataset, "training_anchor_limits"):
+            valid_anchors = min(valid_anchors, dataset.training_anchor_limits[int(trajectory_id)])
+        base_index = rng.choice(valid_anchors)
+        sampling_cfg = getattr(dataset,"data_cfg",None)
+        probability = float(sampling_cfg.get("event_sampling_probability", 0)) if sampling_cfg is not None else 0
+        if not 0 <= probability < 1:
+            raise ValueError("Event sampling must leave a nonzero uniform component")
+        priority_probability = float(sampling_cfg.get("priority_sampling_probability", 0)) if sampling_cfg is not None else 0
+        if not 0 <= priority_probability < 1:
+            raise ValueError("Priority sampling must leave a nonzero uniform component")
+        # Priority selection is an outer mixture: the remaining draws retain the
+        # existing event/uniform policy. Disabled means no extra RNG draws, so old
+        # experiments keep exactly the same sample sequence.
+        if self.mode == "train" and priority_probability > 0:
+            labels = dataset._spatial_episode(trajectory_id)
+            if labels is None or "priority_anchors" not in labels:
+                raise ValueError("Priority sampling requires audited priority_anchors sidecars")
+            priority = np.asarray(labels["priority_anchors"])
+            if priority.ndim != 1 or not np.issubdtype(priority.dtype, np.integer):
+                raise ValueError("Priority anchors must be a one-dimensional integer array")
+            if (priority < 0).any() or (priority >= dataset.trajectory_lengths[trajectory_index]).any():
+                raise ValueError("Priority anchor outside its trajectory")
+            if len(np.unique(priority)) != len(priority):
+                raise ValueError("Duplicate priority anchors would silently change sampling weights")
+            priority = priority[priority < valid_anchors]
+            if len(priority) and rng.random() < priority_probability:
+                return dataset, trajectory_id, rng.choice(priority)
+        if self.mode == "train" and probability > 0 and rng.random() < probability:
+            labels = dataset._spatial_episode(trajectory_id)
+            if labels is None:
+                raise ValueError("Event sampling requires audited spatial sidecars")
+            anchors = labels["event_anchors"]
+            anchors = anchors[anchors < valid_anchors]
+            if len(anchors):
+                base_index = rng.choice(anchors)
         return dataset, trajectory_id, base_index
 
     
@@ -2656,7 +2737,7 @@ class LeRobotMixtureDataset(Dataset):
                 sample = dataset._attach_future_frame_validity(
                     sample, trajectory_id, step
                 )
-                return sample
+                return dataset._attach_spatial_supervision(sample, trajectory_id, step)
                 
             except Exception as e:
                 last_exception = e

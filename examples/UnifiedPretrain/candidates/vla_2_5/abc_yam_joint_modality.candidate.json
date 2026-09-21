@@ -1,0 +1,22 @@
+{
+  "video": {
+    "left_wrist": {"original_key": "observation.images.left_wrist"},
+    "right_wrist": {"original_key": "observation.images.right_wrist"},
+    "top": {"original_key": "observation.images.top"}
+  },
+  "state": {
+    "left_arm": {"start": 0, "end": 6, "absolute": true, "dtype": "float32", "original_key": "joint_state"},
+    "left_gripper": {"start": 6, "end": 7, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "joint_state"},
+    "right_arm": {"start": 7, "end": 13, "absolute": true, "dtype": "float32", "original_key": "joint_state"},
+    "right_gripper": {"start": 13, "end": 14, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "joint_state"}
+  },
+  "action": {
+    "left_arm": {"start": 0, "end": 6, "absolute": true, "dtype": "float32", "original_key": "joint_action"},
+    "left_gripper": {"start": 6, "end": 7, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "joint_action"},
+    "right_arm": {"start": 7, "end": 13, "absolute": true, "dtype": "float32", "original_key": "joint_action"},
+    "right_gripper": {"start": 13, "end": 14, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "joint_action"}
+  },
+  "annotation": {
+    "human.action.task_description": {"original_key": "task_index"}
+  }
+}

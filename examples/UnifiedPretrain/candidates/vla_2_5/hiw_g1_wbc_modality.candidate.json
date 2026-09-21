@@ -1,0 +1,38 @@
+{
+  "video": {
+    "head": {"original_key": "observation.images.head"},
+    "left_wrist": {"original_key": "observation.images.left_wrist"},
+    "right_wrist": {"original_key": "observation.images.right_wrist"}
+  },
+  "state": {
+    "pivot_xy_velocity": {"start": 0, "end": 2, "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "pivot_yaw_velocity": {"start": 2, "end": 3, "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "pivot_rotation": {"start": 3, "end": 6, "rotation_type": "euler_angles_rpy", "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "pivot_height": {"start": 6, "end": 7, "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "left_eef_position": {"start": 7, "end": 10, "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "left_eef_rotation": {"start": 10, "end": 13, "rotation_type": "euler_angles_rpy", "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "right_eef_position": {"start": 13, "end": 16, "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "right_eef_rotation": {"start": 16, "end": 19, "rotation_type": "euler_angles_rpy", "absolute": true, "dtype": "float32", "original_key": "observation.state.wbc"},
+    "left_trigger": {"start": 19, "end": 20, "absolute": true, "dtype": "float32", "range": [0.0, 10.0], "original_key": "observation.state.wbc"},
+    "left_squeeze": {"start": 20, "end": 21, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "observation.state.wbc"},
+    "right_trigger": {"start": 21, "end": 22, "absolute": true, "dtype": "float32", "range": [0.0, 10.0], "original_key": "observation.state.wbc"},
+    "right_squeeze": {"start": 22, "end": 23, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "observation.state.wbc"}
+  },
+  "action": {
+    "pivot_xy_velocity": {"start": 0, "end": 2, "absolute": true, "dtype": "float32", "original_key": "action"},
+    "pivot_yaw_velocity": {"start": 2, "end": 3, "absolute": true, "dtype": "float32", "original_key": "action"},
+    "pivot_rotation": {"start": 3, "end": 6, "rotation_type": "euler_angles_rpy", "absolute": true, "dtype": "float32", "original_key": "action"},
+    "pivot_height": {"start": 6, "end": 7, "absolute": true, "dtype": "float32", "original_key": "action"},
+    "left_eef_position": {"start": 7, "end": 10, "absolute": true, "dtype": "float32", "original_key": "action"},
+    "left_eef_rotation": {"start": 10, "end": 13, "rotation_type": "euler_angles_rpy", "absolute": true, "dtype": "float32", "original_key": "action"},
+    "right_eef_position": {"start": 13, "end": 16, "absolute": true, "dtype": "float32", "original_key": "action"},
+    "right_eef_rotation": {"start": 16, "end": 19, "rotation_type": "euler_angles_rpy", "absolute": true, "dtype": "float32", "original_key": "action"},
+    "left_trigger": {"start": 19, "end": 20, "absolute": true, "dtype": "float32", "range": [0.0, 10.0], "original_key": "action"},
+    "left_squeeze": {"start": 20, "end": 21, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "action"},
+    "right_trigger": {"start": 21, "end": 22, "absolute": true, "dtype": "float32", "range": [0.0, 10.0], "original_key": "action"},
+    "right_squeeze": {"start": 22, "end": 23, "absolute": true, "dtype": "float32", "range": [0.0, 1.0], "original_key": "action"}
+  },
+  "annotation": {
+    "human.action.task_description": {"original_key": "task_index"}
+  }
+}

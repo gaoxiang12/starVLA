@@ -119,6 +119,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--tasks", nargs="+", default=["all"])
     parser.add_argument(
+        "--exclude-tasks",
+        nargs="+",
+        default=[],
+        help="Official task names to omit after resolving --tasks (for reproducible dataset scopes)",
+    )
+    parser.add_argument(
         "--splits",
         nargs="+",
         choices=sorted(SPLIT_CONFIG),
@@ -161,13 +167,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def selected_tasks(values: list[str]) -> list[str]:
+def selected_tasks(values: list[str], excluded_values: list[str] | None = None) -> list[str]:
+    excluded_values = excluded_values or []
+    unknown_excluded = sorted(set(excluded_values) - set(TASKS))
+    if unknown_excluded:
+        raise ValueError(f"Unknown excluded RoboTwin tasks: {', '.join(unknown_excluded)}")
     if "all" in values:
-        return list(TASKS)
-    unknown = sorted(set(values) - set(TASKS))
-    if unknown:
-        raise ValueError(f"Unknown RoboTwin tasks: {', '.join(unknown)}")
-    return values
+        selected = list(TASKS)
+    else:
+        unknown = sorted(set(values) - set(TASKS))
+        if unknown:
+            raise ValueError(f"Unknown RoboTwin tasks: {', '.join(unknown)}")
+        selected = values
+    excluded = set(excluded_values)
+    result = [task for task in selected if task not in excluded]
+    if not result:
+        raise ValueError("No RoboTwin tasks remain after applying --exclude-tasks")
+    return result
 
 
 def roots(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -183,7 +199,7 @@ def jobs(args: argparse.Namespace) -> list[Job]:
         "randomized": 2 if args.smoke else args.randomized_target,
     }
     result = []
-    for task in selected_tasks(args.tasks):
+    for task in selected_tasks(args.tasks, args.exclude_tasks):
         task_index = TASKS.index(task)
         for split in args.splits:
             if targets[split] <= 0:

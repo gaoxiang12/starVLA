@@ -144,7 +144,14 @@ class VisualTokenLatentWorldModel(nn.Module):
         residual: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> None:
-        if mask is not None:
+        if getattr(self, "sync_stats", False) and torch.distributed.is_initialized():
+            weights = torch.ones_like(residual[..., :1]) if mask is None else mask
+            weights = weights.to(device=residual.device, dtype=torch.float32)
+            moments = torch.stack(((residual.float().square() * weights).sum(),
+                                   weights.sum() * residual.shape[-1]))
+            torch.distributed.all_reduce(moments)
+            rms = (moments[0] / moments[1].clamp_min(1)).clamp_min(self._stats_eps).sqrt()
+        elif mask is not None:
             weights = mask.to(device=residual.device, dtype=torch.float32)
             denominator = (weights.sum() * residual.shape[-1]).clamp_min(1.0)
             rms = ((residual.float().square() * weights).sum() / denominator).clamp_min(

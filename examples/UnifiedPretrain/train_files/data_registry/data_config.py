@@ -104,6 +104,50 @@ class UnifiedRoboTwinWMDataConfig(AgilexWMDataConfig):
         return _unified_state_action_transform(self, state_mode="q99")
 
 
+class RoboTwinContinuousNextWMDataConfig(UnifiedRoboTwinWMDataConfig):
+    """Recorded-frame commands, with continuous grippers and future targets.
+
+    Keep legacy registry entries intact for archived checkpoints. The source
+    state stores drive targets, not measured qpos. Encoded video FPS does not
+    establish physical time (collection adds segment-boundary observations).
+    """
+
+    action_spec_id = "aloha_dual_joint_contgrip_next_recorded_14"
+    state_spec_id = "aloha_joint_command_contgrip_14"
+    action_indices = list(range(1, 17))
+    control_hz = None
+    future_time_offsets_s = None
+    gripper_indices = (12, 13)
+
+    def transform(self):
+        transforms = []
+        for keys, gripper_keys in (
+            (self.action_keys, self.gripper_action_keys),
+            (self.state_keys, self.gripper_state_keys),
+        ):
+            transforms.extend([
+                StateActionToTensor(apply_to=keys),
+                StateActionTransform(
+                    apply_to=keys,
+                    normalization_modes={
+                        key: "unit_interval" if key in gripper_keys else "q99"
+                        for key in keys
+                    },
+                    q99_clip=None,
+                ),
+            ])
+        return ComposedModalityTransform(transforms=transforms)
+
+
+class RoboTwinPregraspCorrectionWMDataConfig(RoboTwinContinuousNextWMDataConfig):
+    """Expert perturbed-pregrasp corrections; same next-recorded command units.
+
+    Physical timestamps are irregular and retained in the provenance sidecar.
+    The inherited future indices are recorded-frame offsets, never seconds.
+    """
+    normalization_robot_type = "robotwin_continuous_next_wm"
+
+
 class UnifiedBridgeWMDataConfig(OxeBridgeDataConfig):
     episode_blacklist_path = (
         "meta/task_language/bridge_pretrain_excluded_episodes.jsonl"
@@ -757,6 +801,8 @@ class UnifiedSoFollowerWMDataConfig(_UnifiedSoFamilyWMDataConfig):
 ROBOT_TYPE_CONFIG_MAP = {
     "unified_libero_wm": UnifiedLiberoWMDataConfig(),
     "unified_robotwin_wm": UnifiedRoboTwinWMDataConfig(),
+    "robotwin_continuous_next_wm": RoboTwinContinuousNextWMDataConfig(),
+    "robotwin_pregrasp_correction_wm": RoboTwinPregraspCorrectionWMDataConfig(),
     "unified_bridge_wm": UnifiedBridgeWMDataConfig(),
     "unified_kuka_wm": UnifiedKukaWMDataConfig(),
     "unified_droid_wm": UnifiedDroidWMDataConfig(),
@@ -775,6 +821,34 @@ def _under(prefix, mixture, robot_type):
 
 
 DATASET_NAMED_MIXTURES = {
+    "robotwin_rgb_grasp_precision": [
+        ("RoboTwinGenerated/Clean/blocks_ranking_rgb", .8, "robotwin_continuous_next_wm"),
+        ("RoboTwinPregraspCorrections_20260909/train20_converted/RoboTwinGenerated/Clean/blocks_ranking_rgb",
+         .2, "robotwin_pregrasp_correction_wm"),
+    ],
+    # Recovery experiment supplement; only opted-in single-task configs use this.
+    "robotwin_ranking_rgb_recovery_train20_continuous_next_wm": [
+        ("RoboTwinGenerated/Clean/blocks_ranking_rgb", .9, "robotwin_continuous_next_wm"),
+        ("RoboTwinRecoveryTrain20_20260908/Clean/blocks_ranking_rgb", .1,
+         "robotwin_continuous_next_wm"),
+    ],
+    # Isolated data-path smoke fixture; not enabled by any active training run.
+    "robotwin_ranking_rgb_recovery_pilot_continuous_next_wm": [
+        ("RoboTwinGenerated/Clean/blocks_ranking_rgb", .9, "robotwin_continuous_next_wm"),
+        ("RoboTwinRecoveryPilot_20260908/RoboTwinGenerated/Clean/blocks_ranking_rgb", .1,
+         "robotwin_continuous_next_wm"),
+    ],
+    "robotwin_ranking_rgb_continuous_next_wm": [
+        ("RoboTwinGenerated/Clean/blocks_ranking_rgb", 1.0, "robotwin_continuous_next_wm"),
+    ],
+    "robotwin_ranking_size_continuous_next_wm": [
+        ("RoboTwinGenerated/Clean/blocks_ranking_size", 1.0, "robotwin_continuous_next_wm"),
+    ],
+    "robotwin_generated_clean1000_continuous_next_wm": _under(
+        "RoboTwinGenerated",
+        ROBOTWIN_MIXTURES["robotwin_generated_clean500_wm"],
+        "robotwin_continuous_next_wm",
+    ),
     "unified_robotwin_generated_clean500_wm": _under(
         "RoboTwinGenerated",
         ROBOTWIN_MIXTURES["robotwin_generated_clean500_wm"],
