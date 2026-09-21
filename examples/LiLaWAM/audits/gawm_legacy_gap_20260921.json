@@ -1,0 +1,889 @@
+{
+  "created": "2026-09-21T11:36:30.817728+08:00",
+  "scope": "Archived 49-task 40k run; later Qwen/GAWM run separately identified",
+  "live_jobs_modified": false,
+  "BC_117k": {
+    "B": 63,
+    "C": 63,
+    "trials": 100,
+    "identical_outcomes": 100
+  },
+  "fresh_color_check": [
+    {
+      "episode": 0,
+      "raw": "/data/gaoxiang/RoboTwinGenerated_raw/Clean/blocks_ranking_rgb/demo_clean/video/episode0.mp4",
+      "converted": "/data/gaoxiang/RoboTwinGenerated/Clean/blocks_ranking_rgb/videos/chunk-000/observation.images.cam_high/episode_000000.mp4",
+      "direct_mae": 6.4559550285339355,
+      "swapped_mae": 1.299487829208374
+    },
+    {
+      "episode": 20,
+      "raw": "/data/gaoxiang/RoboTwinGenerated_raw/Clean/blocks_ranking_rgb/demo_clean/video/episode20.mp4",
+      "converted": "/data/gaoxiang/RoboTwinGenerated/Clean/blocks_ranking_rgb/videos/chunk-000/observation.images.cam_high/episode_000020.mp4",
+      "direct_mae": 6.781545162200928,
+      "swapped_mae": 1.2887152433395386
+    },
+    {
+      "episode": 499,
+      "raw": "/data/gaoxiang/RoboTwinGenerated_raw/Clean/blocks_ranking_rgb/demo_clean/video/episode499.mp4",
+      "converted": "/data/gaoxiang/RoboTwinGenerated/Clean/blocks_ranking_rgb/videos/chunk-000/observation.images.cam_high/episode_000499.mp4",
+      "direct_mae": 6.935195446014404,
+      "swapped_mae": 1.3529818058013916
+    }
+  ],
+  "fresh_state_and_action_check": [
+    {
+      "episode": 0,
+      "frames": 474,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.021272855133614627,
+      "copy_state_next16_normalized_l1": 0.04378778624799921,
+      "copy_state_next1_normalized_l1": 0.005233061881854352
+    },
+    {
+      "episode": 52,
+      "frames": 449,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.021529324424647365,
+      "copy_state_next16_normalized_l1": 0.03663390995343689,
+      "copy_state_next1_normalized_l1": 0.004384753528616195
+    },
+    {
+      "episode": 105,
+      "frames": 476,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.04376750700280112,
+      "copy_state_next16_normalized_l1": 0.04430122640559397,
+      "copy_state_next1_normalized_l1": 0.005294796571041236
+    },
+    {
+      "episode": 157,
+      "frames": 476,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.04341736694677871,
+      "copy_state_next16_normalized_l1": 0.04325081329708723,
+      "copy_state_next1_normalized_l1": 0.0051704494614588535
+    },
+    {
+      "episode": 210,
+      "frames": 454,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.0,
+      "copy_state_next16_normalized_l1": 0.038395041999401594,
+      "copy_state_next1_normalized_l1": 0.004608022139794572
+    },
+    {
+      "episode": 262,
+      "frames": 457,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.0,
+      "copy_state_next16_normalized_l1": 0.03879228380993643,
+      "copy_state_next1_normalized_l1": 0.004652371911060776
+    },
+    {
+      "episode": 315,
+      "frames": 481,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.022695772695772696,
+      "copy_state_next16_normalized_l1": 0.044084283804956034,
+      "copy_state_next1_normalized_l1": 0.0052691801182432
+    },
+    {
+      "episode": 368,
+      "frames": 446,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.04801943198804185,
+      "copy_state_next16_normalized_l1": 0.03859963980882966,
+      "copy_state_next1_normalized_l1": 0.004623937544821423
+    },
+    {
+      "episode": 420,
+      "frames": 482,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.018499308437067773,
+      "copy_state_next16_normalized_l1": 0.039337467589404186,
+      "copy_state_next1_normalized_l1": 0.004694290624687545
+    },
+    {
+      "episode": 473,
+      "frames": 457,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.020970094821298323,
+      "copy_state_next16_normalized_l1": 0.03737375842189657,
+      "copy_state_next1_normalized_l1": 0.0044688785909236285
+    },
+    {
+      "episode": 525,
+      "frames": 481,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.0,
+      "copy_state_next16_normalized_l1": 0.03439059702696342,
+      "copy_state_next1_normalized_l1": 0.0041024516232156414
+    },
+    {
+      "episode": 578,
+      "frames": 514,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.019941634241245135,
+      "copy_state_next16_normalized_l1": 0.038337224438552246,
+      "copy_state_next1_normalized_l1": 0.0045682671349066865
+    },
+    {
+      "episode": 630,
+      "frames": 496,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.02217741935483871,
+      "copy_state_next16_normalized_l1": 0.041062103092136266,
+      "copy_state_next1_normalized_l1": 0.004896996142637219
+    },
+    {
+      "episode": 683,
+      "frames": 480,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.023958333333333335,
+      "copy_state_next16_normalized_l1": 0.03382612072264772,
+      "copy_state_next1_normalized_l1": 0.004040358528395751
+    },
+    {
+      "episode": 736,
+      "frames": 484,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.0,
+      "copy_state_next16_normalized_l1": 0.041164675854775935,
+      "copy_state_next1_normalized_l1": 0.004910582477446607
+    },
+    {
+      "episode": 788,
+      "frames": 458,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.09570596797671034,
+      "copy_state_next16_normalized_l1": 0.036660599436821095,
+      "copy_state_next1_normalized_l1": 0.004381791155922906
+    },
+    {
+      "episode": 841,
+      "frames": 477,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.023060796645702306,
+      "copy_state_next16_normalized_l1": 0.03721945304293096,
+      "copy_state_next1_normalized_l1": 0.004452235952702334
+    },
+    {
+      "episode": 893,
+      "frames": 486,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.04801097393689986,
+      "copy_state_next16_normalized_l1": 0.038897919222371,
+      "copy_state_next1_normalized_l1": 0.004663159437306492
+    },
+    {
+      "episode": 946,
+      "frames": 460,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.043115942028985506,
+      "copy_state_next16_normalized_l1": 0.04464660775518811,
+      "copy_state_next1_normalized_l1": 0.005346514501550538
+    },
+    {
+      "episode": 999,
+      "frames": 457,
+      "state_action_max_abs": 0.0,
+      "q99_no_clip_roundtrip_max_abs": 8.881784197001252e-16,
+      "joint_targets_outside_unit_fraction": 0.04923413566739606,
+      "copy_state_next16_normalized_l1": 0.03584884709030921,
+      "copy_state_next1_normalized_l1": 0.004294123421477141
+    }
+  ],
+  "actual_deployment_normalization_roundtrip": {
+    "episode": 999,
+    "samples": 115,
+    "action_keys": [
+      "action.left_joints",
+      "action.right_joints",
+      "action.left_gripper",
+      "action.right_gripper"
+    ],
+    "max_abs_error": 6.854534149169922e-07,
+    "note": "Current deployment transform for archived checkpoint; no forced precision conversion."
+  },
+  "normalization_note": "q99 without input clipping and tanh_linear_tail output in continuous-next run; outside [-1,1] is not proof of clipping. Grippers map [0,1] to [-1,1].",
+  "training": {
+    "old": {
+      "datasets": {
+        "vla_data": {
+          "balance_dataset_weights": false,
+          "balance_trajectory_weights": false,
+          "data_mix": "robotwin_generated_clean1000_continuous_next_wm",
+          "data_root_dir": "/home/gaoxiang/data/gaoxiang",
+          "dataset_py": "lerobot_datasets",
+          "drop_last": true,
+          "embodiment_sampling_weights": {
+            "aloha": 1.0
+          },
+          "episode_split": "train",
+          "homogeneous_embodiment_batches": true,
+          "normalization_statistics_path": "examples/Robotwin/train_files/gawm_s_base_aloha_statistics.json",
+          "num_workers": 8,
+          "obs_image_size": [
+            224,
+            224
+          ],
+          "per_device_batch_size": 8,
+          "persistent_workers": true,
+          "pin_memory": true,
+          "prefetch_factor": 2,
+          "task_language_mode": "metadata",
+          "task_language_modes": {
+            "aloha": "dataset_name"
+          },
+          "validation_episode_stride": 20,
+          "video_backend": "pyav"
+        }
+      },
+      "framework": {
+        "action_model": {
+          "act_dim_feedforward": 2048,
+          "act_dropout": 0.1,
+          "act_mlp_hidden_dim": 512,
+          "act_num_heads": 8,
+          "act_num_layers": 3,
+          "act_num_state_tokens": 2,
+          "action_hidden_dim": 384,
+          "action_horizon": 8,
+          "action_model_type": "ACT",
+          "embodiment_heads": {
+            "aloha": {
+              "action_dim": 14,
+              "action_horizon": 16,
+              "action_spec_id": "aloha_dual_joint_contgrip_next_recorded_14",
+              "gripper_indices": [
+                12,
+                13
+              ],
+              "output_activation": "tanh_linear_tail",
+              "state_dim": 14
+            },
+            "franka": {
+              "action_dim": 7,
+              "action_horizon": 8,
+              "action_spec_id": "franka_eef_delta_7",
+              "gripper_indices": [
+                6
+              ],
+              "state_dim": 8
+            },
+            "oxe_bridge": {
+              "action_dim": 7,
+              "action_horizon": 3,
+              "action_spec_id": "bridge_eef_delta_7",
+              "gripper_indices": [
+                6
+              ],
+              "state_dim": 8
+            }
+          }
+        },
+        "lang_cond": {
+          "embed_dim": 384,
+          "text_depth": 2,
+          "text_dropout": 0.1,
+          "text_ffn_dim": 512,
+          "text_heads": 4,
+          "text_hidden_dim": 256,
+          "text_max_length": 128,
+          "type": "text"
+        },
+        "name": "GAWM",
+        "world_model": {
+          "ctx_len": 1,
+          "detach_wm_input": true,
+          "encoder_spec": "vitb16",
+          "future_time_offsets_s": null,
+          "latent_cosine_weight": 0.1,
+          "latent_stats_momentum": 0.9,
+          "loss_latent_weight": 1.0,
+          "n_future": 2,
+          "num_views": 3,
+          "residual_predictor_depth": 4,
+          "residual_predictor_dim": 384,
+          "residual_predictor_ffn": 1024,
+          "residual_predictor_heads": 6,
+          "state_cond_hidden_dim": 256,
+          "train_encoder": true,
+          "use_state_cond": true,
+          "visual_token_dim": 384,
+          "visual_token_diversity_weight": 0.02,
+          "visual_token_min_std": 0.1,
+          "visual_token_variance_weight": 0.02,
+          "visual_tokens_per_view": 16
+        }
+      },
+      "output_dir": "playground/Checkpoints/gawm_s_robotwin_continuous_next_49tasks_40k_20260905",
+      "run_id": "gawm_s_robotwin_continuous_next_49tasks_40k_20260905",
+      "run_root_dir": "playground/Checkpoints",
+      "seed": 42,
+      "trainer": {
+        "eval_interval": 2000,
+        "freeze_modules": "action_models.franka,action_models.oxe_bridge",
+        "gradient_clipping": 1.0,
+        "is_resume": false,
+        "learning_rate": {
+          "action_models": 0.0001,
+          "backbone": {
+            "encoder": 1e-06
+          },
+          "base": 3e-05
+        },
+        "logging_frequency": 20,
+        "lr_scheduler_type": "cosine_with_min_lr",
+        "max_train_steps": 40000,
+        "num_warmup_steps": 1000,
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.95
+          ],
+          "eps": 1e-08,
+          "weight_decay": 1e-08
+        },
+        "pretrained_checkpoint": "playground/Checkpoints/GAWM-S-base/checkpoints/steps_160000_pytorch_model.pt",
+        "save_interval": 5000,
+        "scheduler_specific_kwargs": {
+          "min_lr": 3e-06
+        },
+        "validation_batch_size": 4,
+        "validation_samples_per_task": 16
+      }
+    },
+    "C": {
+      "common": {
+        "action_dim": 14,
+        "state_dim": 16,
+        "action_chunk_size": 32,
+        "proprio_len": 1,
+        "action_execution_horizon": 16
+      },
+      "dataset": {
+        "type": "robotwin",
+        "dataset_dir": "/data/gaoxiang/LiLaWAM_RoboTwin_Official/data",
+        "data_mode": "both",
+        "camera_names": [
+          "head_camera"
+        ],
+        "image_size": [
+          320,
+          240
+        ],
+        "task_cond_dir": "/data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source/data-500-taskcond",
+        "image_aug": false,
+        "future_frame_offset": null,
+        "indices_config": {
+          "state_indices": [
+            0
+          ],
+          "camera_indices": [
+            0
+          ],
+          "action_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        }
+      },
+      "model": {
+        "vision_encoder": {
+          "checkpoint_path": "/data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m"
+        },
+        "use_task_cond": false,
+        "future_feat": {
+          "enabled": false
+        }
+      },
+      "training": {
+        "batch_size": 128,
+        "learning_rate": 0.0002,
+        "lr_min": 5e-05,
+        "weight_decay": 0.01,
+        "betas": [
+          0.9,
+          0.99
+        ],
+        "grad_clip_norm": 1.0,
+        "epochs": 40,
+        "grad_accum_steps": 1
+      },
+      "inference": {
+        "smooth_actions": true
+      },
+      "system": {
+        "num_workers": 8,
+        "pin_memory": true
+      },
+      "experiment": {
+        "model_kind": "gawm",
+        "name": "C",
+        "future_recorded_offsets": [
+          0,
+          16,
+          32
+        ],
+        "milestone_steps": [
+          117000,
+          316000
+        ],
+        "tail_supervision": "upstream_endpoint_clamp_including_repeated_targets",
+        "task_condition": "native_GAWM_text_with_canonical_task_ID",
+        "precision": "bf16_trainable_parameters_and_Adam_states; fp32_EMA_statistics",
+        "trainer": "starVLA VLATrainer"
+      },
+      "framework": {
+        "name": "GAWM",
+        "world_model": {
+          "encoder_spec": "vitl16",
+          "train_encoder": false,
+          "num_views": 1,
+          "n_future": 2,
+          "ctx_len": 1,
+          "future_time_offsets_s": null,
+          "loss_latent_weight": 1.0,
+          "latent_cosine_weight": 0.1,
+          "detach_wm_input": true,
+          "latent_stats_momentum": 0.9,
+          "residual_predictor_dim": 384,
+          "residual_predictor_depth": 4,
+          "residual_predictor_heads": 6,
+          "residual_predictor_ffn": 1024,
+          "visual_tokens_per_view": 64,
+          "visual_token_dim": 384,
+          "visual_token_diversity_weight": 0.02,
+          "visual_token_variance_weight": 0.02,
+          "visual_token_min_std": 0.1,
+          "use_state_cond": true,
+          "state_cond_hidden_dim": 256,
+          "vision_encoder_path": "/data/gaoxiang/ckpts/dinov3-vitl16-pretrain-lvd1689m",
+          "input_grid_shape": [
+            15,
+            20
+          ],
+          "imagenet_normalized_inputs": true,
+          "encoder_batch_size": 8,
+          "sync_latent_stats": true
+        },
+        "action_model": {
+          "action_model_type": "ACT",
+          "action_horizon": 32,
+          "action_hidden_dim": 384,
+          "act_num_heads": 8,
+          "act_num_layers": 3,
+          "act_dim_feedforward": 2048,
+          "act_mlp_hidden_dim": 512,
+          "act_dropout": 0.1,
+          "act_num_state_tokens": 2,
+          "embodiment_heads": {
+            "aloha": {
+              "action_dim": 14,
+              "state_dim": 16,
+              "action_horizon": 32,
+              "gripper_indices": [
+                6,
+                13
+              ],
+              "output_activation": "tanh",
+              "action_spec_id": "robotwin_official_absolute_dual_joint_native_14",
+              "state_spec_id": "robotwin_official_endpose_native_16"
+            }
+          }
+        },
+        "lang_cond": {
+          "type": "text",
+          "embed_dim": 384,
+          "text_hidden_dim": 256,
+          "text_depth": 2,
+          "text_heads": 4,
+          "text_ffn_dim": 512,
+          "text_max_length": 128,
+          "text_dropout": 0.1
+        }
+      },
+      "datasets": {
+        "vla_data": {
+          "data_mix": "gawm_official_hdf5_control",
+          "sampling_mode": "frame_epoch",
+          "per_device_batch_size": 16
+        }
+      },
+      "seed": 42,
+      "run_id": "gawm_official_C_stage1",
+      "run_root_dir": "/data/gaoxiang/ckpts/lila_starvla/gawm_official_C_20260919",
+      "output_dir": "/data/gaoxiang/ckpts/lila_starvla/gawm_official_C_20260919/stage1",
+      "wandb_project": "starVLA_GAWM_control",
+      "wandb_entity": "disabled",
+      "official_source": "/data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source",
+      "official_stats": "/data/gaoxiang/ckpts/lila_starvla/lila_robotwin_official_ddp8_20260916/upstream_source/utils/stat-500-all.json",
+      "dataset_audit": "/data/gaoxiang/LiLaWAM_RoboTwin_Official/dataset_audit.json",
+      "baseline_provenance": "/data/gaoxiang/ckpts/lila_starvla/gawm_official_B_20260917/stage1/provenance.json",
+      "trainer": {
+        "max_train_steps": 573840,
+        "num_warmup_steps": 0,
+        "save_interval": 1000,
+        "eval_interval": 1000000000,
+        "logging_frequency": 20,
+        "gradient_clipping": 1.0,
+        "gradient_accumulation_steps": 1,
+        "freeze_modules": "policy.backbone.encoder",
+        "is_resume": false,
+        "pretrained_checkpoint": null,
+        "learning_rate": {
+          "base": 0.0002
+        },
+        "optimizer": {
+          "betas": [
+            0.9,
+            0.99
+          ],
+          "eps": 1e-08,
+          "weight_decay": 0.01,
+          "fused": false
+        },
+        "lr_scheduler_type": "cosine_with_min_lr",
+        "scheduler_specific_kwargs": {
+          "min_lr": 5e-05
+        },
+        "distributed_backend": "ddp",
+        "expected_global_batch_size": 128,
+        "sync_with_dataloader": false,
+        "lr_scheduler_total_steps": 1912800,
+        "ddp_kwargs": {
+          "broadcast_buffers": false,
+          "gradient_as_bucket_view": true,
+          "static_graph": true
+        }
+      }
+    },
+    "old_new_robotwin_anchor_draws": 7680000,
+    "BC_117k_anchor_draws": 14976000,
+    "BC_316k_anchor_draws": 40448000,
+    "note": "Anchor draws exclude old 160k pretraining; not unique frames."
+  },
+  "old_logged_rgb_result": {
+    "successes": 0,
+    "trials": 48,
+    "source": "/data/gaoxiang/Code/starVLA/playground/Checkpoints/gawm_s_robotwin_continuous_next_49tasks_40k_20260905/robotwin_eval_logs/gawm_s_continuous_next_49tasks_40k_20260907/evaluation.log",
+    "final_100_episode_result": false
+  },
+  "old_logged_scheduler_checks": [
+    {
+      "step": 1000,
+      "logged": 3e-05,
+      "expected": 2.9999999999999997e-05,
+      "abs_error": 3.3881317890172014e-21
+    },
+    {
+      "step": 10000,
+      "logged": 2.6604895100309863e-05,
+      "expected": 2.6604895100309863e-05,
+      "abs_error": 0.0
+    },
+    {
+      "step": 20000,
+      "logged": 1.7043590191477107e-05,
+      "expected": 1.7043590191477103e-05,
+      "abs_error": 3.3881317890172014e-21
+    },
+    {
+      "step": 30000,
+      "logged": 7.148221227620409e-06,
+      "expected": 7.148221227620408e-06,
+      "abs_error": 8.470329472543003e-22
+    },
+    {
+      "step": 40000,
+      "logged": 3e-06,
+      "expected": 3e-06,
+      "abs_error": 0.0
+    }
+  ],
+  "rgb_scene_and_color_20260907.json": {
+    "dataset": "/data/gaoxiang/RoboTwinGenerated/Clean/blocks_ranking_rgb",
+    "episodes": 1000,
+    "method": "Largest saturated R/G/B components in head-camera first and final frames. Cross-source scene match: each block center within 1.5 px and area ratio 0.8-1.25. These are scene matches, not proof of identical trajectories.",
+    "errors": [],
+    "terminal_order_by_source": [
+      {
+        "source": "original",
+        "bgr": 497,
+        "rgb": 0,
+        "other_or_ambiguous": 3
+      },
+      {
+        "source": "appended",
+        "bgr": 492,
+        "rgb": 0,
+        "other_or_ambiguous": 8
+      }
+    ],
+    "matched_initial_scenes": 494,
+    "cross_split_matches": 30
+  },
+  "rgb_v2_final_failures_20260907/failure_stage_audit.json": {
+    "groups": {
+      "control": {
+        "episodes": 44,
+        "successes": 2,
+        "lift_count_histogram": {
+          "3": 8,
+          "0": 16,
+          "1": 8,
+          "2": 12
+        },
+        "first_attempt_lifted": 17,
+        "per_color_lifted": [
+          19,
+          17,
+          20
+        ]
+      },
+      "dense": {
+        "episodes": 44,
+        "successes": 0,
+        "lift_count_histogram": {
+          "0": 16,
+          "1": 9,
+          "2": 17,
+          "3": 2
+        },
+        "first_attempt_lifted": 16,
+        "per_color_lifted": [
+          17,
+          18,
+          14
+        ]
+      },
+      "local": {
+        "episodes": 44,
+        "successes": 2,
+        "lift_count_histogram": {
+          "0": 11,
+          "1": 17,
+          "3": 8,
+          "2": 8
+        },
+        "first_attempt_lifted": 20,
+        "per_color_lifted": [
+          22,
+          19,
+          16
+        ]
+      },
+      "local_v2": {
+        "episodes": 44,
+        "successes": 3,
+        "lift_count_histogram": {
+          "0": 14,
+          "1": 13,
+          "2": 8,
+          "3": 9
+        },
+        "first_attempt_lifted": 19,
+        "per_color_lifted": [
+          22,
+          18,
+          16
+        ]
+      }
+    },
+    "scope": "First 44 completed trials of each ongoing 100-episode evaluation; not final benchmark.",
+    "video_observations": {
+      "trial28": "Green lifted first at frame74, green placed by150; blue held/placed at250; red held at400; final green-blue-red by550 persists to1199. All three were lifted >4cm.",
+      "trial13": "Red lifted at80, green lifted by250, blue lifted by700; final red-green-blue, environment success at923 actions."
+    },
+    "final_frames": {
+      "wrong_order_visible": [
+        7,
+        28,
+        35,
+        39
+      ],
+      "blue_near_or_in_gripper_needs_trace": [
+        10,
+        38
+      ],
+      "success": [
+        9,
+        13,
+        36
+      ]
+    },
+    "limitation": "Video interpretation is qualitative. Existing runs did not record terminal object coordinates or per-color lift times; do not assign exact failed success predicates from image alone. Clips are 4x speed."
+  },
+  "later_development_comparison": {
+    "state": "complete",
+    "split": "development",
+    "scene_identity_verified": true,
+    "models": {
+      "gawm": {
+        "successes": 3,
+        "total": 20,
+        "success_rate": 0.15,
+        "wilson_95_ci": [
+          0.052368745896216595,
+          0.36041886474075696
+        ],
+        "held_red_green_blue": [
+          11,
+          15,
+          6
+        ],
+        "correct_final_color_order": 10,
+        "action_budget_failures": 17
+      },
+      "qwen_mlp": {
+        "successes": 19,
+        "total": 20,
+        "success_rate": 0.95,
+        "wilson_95_ci": [
+          0.763868806553258,
+          0.9911185511992047
+        ],
+        "held_red_green_blue": [
+          20,
+          20,
+          20
+        ],
+        "correct_final_color_order": 19,
+        "action_budget_failures": 1
+      },
+      "qwen_act": {
+        "successes": 19,
+        "total": 20,
+        "success_rate": 0.95,
+        "wilson_95_ci": [
+          0.763868806553258,
+          0.9911185511992047
+        ],
+        "held_red_green_blue": [
+          20,
+          20,
+          20
+        ],
+        "correct_final_color_order": 20,
+        "action_budget_failures": 1
+      }
+    },
+    "paired_comparisons": {
+      "qwen_act_vs_gawm": {
+        "scenes": 20,
+        "baseline_successes": 3,
+        "candidate_successes": 19,
+        "difference_percentage_points": 80.0,
+        "paired_bootstrap_95_percentile_ci_pp": [
+          60.0,
+          95.0
+        ],
+        "gained": 16,
+        "lost": 0,
+        "exact_mcnemar_p": 3.0517578125e-05,
+        "uncertainty_note": "Scene sampling uncertainty for one training seed; not training-seed variability.",
+        "gained_seeds": [
+          41000000,
+          41000001,
+          41000003,
+          41000004,
+          41000005,
+          41000006,
+          41000007,
+          41000008,
+          41000009,
+          41000010,
+          41000011,
+          41000015,
+          41000016,
+          41000017,
+          41000018,
+          41000019
+        ],
+        "lost_seeds": []
+      },
+      "qwen_act_vs_qwen_mlp": {
+        "scenes": 20,
+        "baseline_successes": 19,
+        "candidate_successes": 19,
+        "difference_percentage_points": 0.0,
+        "paired_bootstrap_95_percentile_ci_pp": [
+          -15.0,
+          15.0
+        ],
+        "gained": 1,
+        "lost": 1,
+        "exact_mcnemar_p": 1.0,
+        "uncertainty_note": "Scene sampling uncertainty for one training seed; not training-seed variability.",
+        "gained_seeds": [
+          41000004
+        ],
+        "lost_seeds": [
+          41000013
+        ]
+      }
+    },
+    "pretraining_overlap": "Public OFT historical training scenes cannot be independently excluded"
+  },
+  "source_sha256": {
+    "/data/gaoxiang/Code/starVLA/playground/Checkpoints/gawm_s_robotwin_continuous_next_49tasks_40k_20260905/config.yaml": "d5febc3bf2ce1f4a80e4ca3d5df85659dd2cfd9563d35a07d5df98673aae39ca",
+    "/data/gaoxiang/Code/starVLA/playground/Checkpoints/gawm_s_robotwin_continuous_next_49tasks_40k_20260905/dataset_statistics.json": "96c0205509c0085766384cf51912226233288f91d404cec23d8d45617e909039",
+    "/data/gaoxiang/Code/starVLA/playground/Checkpoints/gawm_s_robotwin_continuous_next_49tasks_40k_20260905/launch_verified.json": "2f9d52b0912ac0f35d3d0cfd386be528149474b593cf796fd6227c5c74d2af74",
+    "/data/gaoxiang/ckpts/lila_starvla/gawm_official_C_20260919/stage1.yaml": "1c12dbb15937f39af4394a3f5793bb5809b57cffd86bd6af98ee72fc99a45a2e",
+    "/data/gaoxiang/ckpts/lila_starvla/gawm_official_C_20260919/comparison_step117000.json": "52a63647fc0e9533549c9df196a40ac675fd3eaef97b3950dc08802612b7923a",
+    "/data/gaoxiang/Code/starVLA/examples/Robotwin/audits/rgb_scene_and_color_20260907.json": "8ec4d1165773149acd14856f8d533942fde14e45a8413b67e9eb4fd37451d957",
+    "/data/gaoxiang/Code/starVLA/examples/Robotwin/audits/rgb_v2_final_failures_20260907/failure_stage_audit.json": "da3c884a66406da19645ad84cfff081242ced907c37a18b88cae62fd6a316942",
+    "/data/gaoxiang/Code/starVLA/playground/Checkpoints/qwen_gawm_ranking_20260910/development_comparison.json": "d5af4314d7c5d15d817bc3a74c1a11d65687d463bd54957c5e996d3724dc9fad"
+  }
+}

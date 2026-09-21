@@ -2501,6 +2501,10 @@ class LeRobotMixtureDataset(Dataset):
         self.set_epoch(0)
 
         self.update_metadata(metadata_config)
+        self._frame_epoch = (self.data_cfg is not None and
+                             self.data_cfg.get('sampling_mode') == 'frame_epoch')
+        if self._frame_epoch:
+            self._frame_ends = np.cumsum([len(child) for child in self.datasets])
         normalization_statistics_path = (
             self.data_cfg.get("normalization_statistics_path", None)
             if self.data_cfg is not None
@@ -2588,6 +2592,15 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             dict: The data for the trajectory and start index.
         """
+        if getattr(self, '_frame_epoch', False):
+            if not isinstance(index, (int, np.integer)) or not 0 <= index < int(self._frame_ends[-1]):
+                raise IndexError(index)
+            child_index = int(np.searchsorted(self._frame_ends, index, side='right'))
+            start = int(self._frame_ends[child_index - 1]) if child_index else 0
+            child = self.datasets[child_index]
+            self._activate_dataset_cache(child)
+            # No retry with a different frame: corrupt data must stop this recipe.
+            return child[int(index) - start]
         forced_dataset_index = None
         if isinstance(index, tuple):
             if len(index) != 2:
@@ -2692,6 +2705,8 @@ class LeRobotMixtureDataset(Dataset):
         Returns:
             int: The length of a single epoch in the mixture.
         """
+        if getattr(self, '_frame_epoch', False):
+            return int(self._frame_ends[-1])
         # Check for potential issues
         if len(self.datasets) == 0:
             return 0

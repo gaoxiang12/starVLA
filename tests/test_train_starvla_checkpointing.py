@@ -55,7 +55,8 @@ class CheckpointingTest(unittest.TestCase):
         self.assertIs(result, accelerator.return_value)
         accelerator.assert_called_once()
         call_kwargs = accelerator.call_args.kwargs
-        self.assertIs(call_kwargs["deepspeed_plugin"], deepspeed_plugin.return_value)
+        self.assertIsNone(call_kwargs["deepspeed_plugin"])
+        deepspeed_plugin.assert_not_called()
         self.assertFalse(call_kwargs["step_scheduler_with_optimizer"])
         plugin = call_kwargs["gradient_accumulation_plugin"]
         self.assertEqual(plugin.num_steps, 4)

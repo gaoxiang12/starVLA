@@ -76,6 +76,11 @@ Training configs and efficiency benchmarks for community reference.
 
 ## Overview and Key Features
 
+The default VLA training entry now uses the **C recipe**: frame-based sampling,
+Accelerate/DDP, global batch 128, and a 12+4 epoch AdamW schedule. Start with
+`bash scripts/train.sh YOUR_CONFIG.yaml --run_id NEW_RUN`. See
+[configuration, overrides and legacy reproduction](docs/training_c_default.md).
+
 ![Overview of the StarVLA framework](assets/starVLA_overview.png)
 *Overview of the StarVLA framework. StarVLA organises VLA research as a
 composable stack: a shared training infrastructure, pluggable foundation-model

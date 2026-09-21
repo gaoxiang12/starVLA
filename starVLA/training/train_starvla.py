@@ -3,7 +3,7 @@
 # Implemented by [Jinhui YE / HKUST University] in [2025].
 
 """
-StarVLA’s trainer is built directly on native PyTorch + Accelerate + DeepSpeed, keeping the loop explicit and easy to hack.
+StarVLA defaults to the C recipe on PyTorch + Accelerate/DDP. DeepSpeed is opt-in.
 Conventions:
 1. Store runtime state in dicts where possible (simplifies data info, procesing info, config, etc).
 2. Use multiple dataloaders to adapt heterogeneous data types / task mixtures.
@@ -14,8 +14,10 @@ Conventions:
 import argparse
 import json
 import os
+import shutil
 import time
 from pathlib import Path
+from functools import partial
 from typing import Tuple
 
 # Third-Party Libraries
@@ -34,7 +36,7 @@ except ImportError:
 import wandb
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
-from accelerate.utils import GradientAccumulationPlugin, set_seed
+from accelerate.utils import GradientAccumulationPlugin, set_seed, DataLoaderConfiguration, DistributedDataParallelKwargs
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -46,6 +48,8 @@ from starVLA.model.framework.base_framework import build_framework
 from starVLA.model.framework.share_tools import apply_config_compat
 from starVLA.training.trainer_utils.config_tracker import AccessTrackedConfig, wrap_config
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils, build_param_lr_groups, setup_optimizer_and_scheduler, normalize_dotlist_args
+from starVLA.training.recipe import (apply_training_recipe, resolve_training_budget,
+    prepare_parameter_precision, c_lr_multiplier, reset_stage_optimizer_if_needed, resume_contract)
 
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -65,14 +69,30 @@ def build_accelerator(cfg) -> Accelerator:
     # The trainer owns scheduler stepping below. Disabling Accelerate's
     # automatic coupling prevents AcceleratedScheduler from stepping once per
     # process.
+    backend = getattr(cfg.trainer, 'distributed_backend',
+                      'deepspeed' if getattr(cfg.trainer, 'recipe', None) == 'legacy' else 'ddp')
+    if backend not in ('deepspeed', 'ddp'):
+        raise ValueError('trainer.distributed_backend must be deepspeed or ddp')
+    if backend == 'ddp':
+        # Old accelerate launch YAMLs may export this flag. An explicit DDP
+        # choice must not be silently replaced by the launcher's DeepSpeed.
+        os.environ['ACCELERATE_USE_DEEPSPEED'] = 'false'
     return Accelerator(
-        deepspeed_plugin=DeepSpeedPlugin(),
+        mixed_precision=getattr(cfg.trainer, 'mixed_precision', 'bf16'),
+        deepspeed_plugin=DeepSpeedPlugin() if backend == 'deepspeed' else None,
+        kwargs_handlers=([DistributedDataParallelKwargs(**dict(cfg.trainer.ddp_kwargs))]
+            if backend == 'ddp' and getattr(cfg.trainer, 'ddp_kwargs', None) else []),
+        dataloader_config=DataLoaderConfiguration(even_batches=(
+            getattr(getattr(cfg, 'datasets', None), 'vla_data', {}).get('sampling_mode') not in ('frame_epoch', 'auto'))),
         gradient_accumulation_plugin=GradientAccumulationPlugin(
             num_steps=gradient_accumulation_steps,
             # DeepSpeed ZeRO-2 partitions gradients and rejects no_sync().
             # It performs accumulation internally, so keep synchronization
             # enabled for every micro-batch.
             sync_each_batch=True,
+            # Step-based runs can span loader epochs. Opt out of flushing a
+            # partial accumulation at epoch end when DeepSpeed owns boundaries.
+            sync_with_dataloader=bool(getattr(cfg.trainer, "sync_with_dataloader", True)),
         ),
         step_scheduler_with_optimizer=False,
     )
@@ -87,6 +107,10 @@ def setup_directories(cfg) -> Path:
     cfg.output_dir = os.path.join(cfg.run_root_dir, cfg.run_id)
     output_dir = Path(cfg.output_dir)
 
+    if (cfg.trainer.get('recipe') == 'c' and not cfg.trainer.is_resume
+            and (output_dir / 'config.full.yaml').exists()):
+        raise ValueError(f'Existing run at {output_dir}; use a new run_id or trainer.is_resume=true')
+
     if not dist.is_initialized() or dist.get_rank() == 0:
         os.makedirs(output_dir, exist_ok=True)
         os.makedirs(output_dir / "checkpoints", exist_ok=True)
@@ -100,7 +124,7 @@ def prepare_data(cfg, accelerator, output_dir) -> DataLoader:
     vla_train_dataloader = build_dataloader(cfg=cfg, dataset_py=cfg.datasets.vla_data.dataset_py)
 
     accelerator.dataloader_config.dispatch_batches = False
-    dist.barrier()
+    accelerator.wait_for_everyone()
     return vla_train_dataloader
 
 
@@ -113,7 +137,7 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
         betas=tuple(cfg.trainer.optimizer.betas),
         weight_decay=cfg.trainer.optimizer.weight_decay,
         eps=cfg.trainer.optimizer.eps,
-        fused=True,
+        fused=bool(cfg.trainer.optimizer.get('fused', False)),
     )
 
     if dist.is_initialized() and dist.get_rank() == 0:
@@ -122,11 +146,21 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
 
     # Strip keys unknown to transformers' get_scheduler before passing kwargs.
     sched_kwargs = {k: v for k, v in cfg.trainer.scheduler_specific_kwargs.items()}
+    if cfg.trainer.get('recipe') == 'c':
+        minimum = float(cfg.trainer.scheduler_specific_kwargs.min_lr)
+        base = float(cfg.trainer.learning_rate.base)
+        if not 0 <= minimum <= base or not 0 < float(cfg.trainer.stage2_lr_scale) <= 1:
+            raise ValueError('Invalid C minimum LR or stage2_lr_scale')
+        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, partial(
+            c_lr_multiplier, stage1_steps=int(cfg.trainer.stage1_steps),
+            period=int(cfg.trainer.lr_scheduler_total_steps), minimum_ratio=minimum/base,
+            stage2_scale=float(cfg.trainer.stage2_lr_scale)))
+        return optimizer, lr_scheduler
     lr_scheduler = get_scheduler(
         name=cfg.trainer.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=cfg.trainer.num_warmup_steps,
-        num_training_steps=cfg.trainer.max_train_steps,
+        num_training_steps=cfg.trainer.get('lr_scheduler_total_steps', cfg.trainer.max_train_steps),
         scheduler_specific_kwargs=sched_kwargs,
     )
 
@@ -144,6 +178,10 @@ class VLATrainer(TrainerUtils):
 
         self.completed_steps = 0
         self.total_batch_size = self._calculate_total_batch_size()
+        expected_batch = cfg.trainer.get('expected_global_batch_size')
+        if expected_batch is not None and self.total_batch_size != int(expected_batch):
+            raise ValueError(f'Global batch is {self.total_batch_size}, expected {expected_batch}; '
+                             'adjust per_device_batch_size or gradient_accumulation_steps')
 
     def prepare_training(self):
         rank = dist.get_rank() if dist.is_initialized() else 0
@@ -153,7 +191,9 @@ class VLATrainer(TrainerUtils):
         # Save config snapshots upfront so that even if a later setup step
         # (ckpt load / DeepSpeed init / dataloader build) crashes, the
         # produced run dir is still introspectable / from_pretrained-able.
-        self._save_initial_configs()
+        resuming_c = self.config.trainer.get('recipe') == 'c' and self.config.trainer.is_resume
+        if not resuming_c:
+            self._save_initial_configs()
 
         self._init_checkpointing()
         self._adjust_lr_scheduler_for_resume()
@@ -177,6 +217,9 @@ class VLATrainer(TrainerUtils):
         if self.resume_training_state:
             self._load_checkpoint(self.resume_training_state)
             self._repair_lr_scheduler_after_resume()
+
+        if resuming_c:
+            self._save_initial_configs()
 
         self._init_wandb()
 
@@ -249,6 +292,21 @@ class VLATrainer(TrainerUtils):
 
         if is_resume:
             resume_from_checkpoint, self.completed_steps = self._get_latest_checkpoint(self.checkpoint_dir)
+            if getattr(self.config.trainer, 'recipe', None) == 'c':
+                complete = list(Path(self.checkpoint_dir).glob('steps_*_training_state/complete.json'))
+                if not complete:
+                    raise ValueError('No complete C training state available to resume')
+                latest = max(complete, key=lambda p: int(p.parent.name.split('_')[1]))
+                meta = json.loads(latest.read_text())
+                if meta['world_size'] != self.accelerator.num_processes or meta['global_batch_size'] != self.total_batch_size:
+                    raise ValueError('C resume must preserve world size and global batch size')
+                if meta.get('contract') != resume_contract(self.config):
+                    raise ValueError('C resume changed model, data or optimizer configuration; use a new run')
+                for key in ('frames_per_epoch', 'steps_per_epoch', 'stage1_steps', 'lr_scheduler_total_steps'):
+                    if meta.get(key) != self.config.trainer.get(key):
+                        raise ValueError(f'C resume changed {key}; use a new run for changed training budgets')
+                self.completed_steps = meta['step']
+                resume_from_checkpoint = str(latest.parent)
             if resume_from_checkpoint:
                 self.resume_from_checkpoint = resume_from_checkpoint
                 training_state = os.path.join(
@@ -257,6 +315,9 @@ class VLATrainer(TrainerUtils):
                 if os.path.isdir(training_state):
                     self.resume_training_state = training_state
                 else:
+                    if not getattr(self.config.trainer, 'allow_weights_only_resume', True):
+                        raise ValueError('C resume requires full optimizer/scheduler/RNG state; '
+                                         'use is_resume=false for a weights-only warm start')
                     self.model = self.load_pretrained_backbones(
                         self.model, self.resume_from_checkpoint, reload_modules=None
                     )
@@ -346,16 +407,53 @@ class VLATrainer(TrainerUtils):
         training_state_path = checkpoint_path + "_training_state"
         self.accelerator.save_state(training_state_path)
         self.accelerator.wait_for_everyone()
+        if self.accelerator.is_main_process and getattr(self.config.trainer, 'recipe', None) == 'c':
+            meta = dict(step=self.completed_steps, world_size=self.accelerator.num_processes,
+                        global_batch_size=self.total_batch_size, contract=resume_contract(self.config))
+            for key in ('frames_per_epoch', 'steps_per_epoch', 'stage1_steps', 'lr_scheduler_total_steps'):
+                meta[key] = self.config.trainer.get(key)
+            marker = Path(training_state_path) / 'complete.json'
+            temporary = marker.with_suffix('.tmp')
+            temporary.write_text(json.dumps(meta, indent=2)+'\n')
+            temporary.replace(marker)
+            keep = int(self.config.trainer.keep_last_checkpoints)
+            if keep < 1:
+                raise ValueError('keep_last_checkpoints must be positive')
+            markers = sorted(Path(self.checkpoint_dir).glob('steps_*_training_state/complete.json'),
+                             key=lambda p: int(p.parent.name.split('_')[1]))
+            milestones = set(self.config.trainer.milestone_steps) | {self.config.trainer.stage1_steps}
+            for old in markers[:-keep]:
+                step = int(old.parent.name.split('_')[1])
+                if step not in milestones:
+                    shutil.rmtree(old.parent)
+                    for suffix in ('_pytorch_model.pt', '_model.safetensors'):
+                        (Path(self.checkpoint_dir)/f'steps_{step}{suffix}').unlink(missing_ok=True)
+        self.accelerator.wait_for_everyone()
         self.accelerator.print(f"✅ Full training state saved at {training_state_path}")
 
     def _log_metrics(self, metrics):
         """Record training metrics."""
-        if self.completed_steps % self.config.trainer.logging_frequency == 0 and dist.get_rank() == 0:
+        if (self.config.trainer.get('recipe') == 'c'
+                and self.completed_steps % self.config.trainer.logging_frequency == 0
+                and dist.is_initialized()):
+            # Different ranks can train different robot heads. Gather named
+            # scalars so per-robot metrics aren't averaged with absent values.
+            records = [None] * self.accelerator.num_processes
+            dist.all_gather_object(records, metrics)
+            metrics = {key: float(np.mean([r[key] for r in records if key in r]))
+                       for key in set().union(*(r.keys() for r in records))}
+            if any(not np.isfinite(v) for v in metrics.values()):
+                raise FloatingPointError('Non-finite metrics on a training rank')
+        if self.completed_steps % self.config.trainer.logging_frequency == 0 and self.accelerator.is_main_process:
             last_lrs = self.lr_scheduler.get_last_lr()
             for i, group in enumerate(self.optimizer.param_groups):
                 group_name = group.get("name", str(i))
                 metrics[f"learning_rate/{group_name}"] = last_lrs[i] if i < len(last_lrs) else last_lrs[-1]
-            metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
+            updates_per_epoch = self.config.trainer.get('steps_per_epoch') or (
+                len(self.vla_train_dataloader) / self.accelerator.gradient_accumulation_steps)
+            metrics["epoch"] = round(self.completed_steps / updates_per_epoch, 4)
+            metrics['global_batch_size'] = self.total_batch_size
+            metrics['anchor_draws'] = self.completed_steps * self.total_batch_size
             # Keep a local, dependency-free metric history even when W&B is
             # disabled or misconfigured. This is especially important for
             # staged runs whose checkpoint should be gated on loss quality.
@@ -383,7 +481,38 @@ class VLATrainer(TrainerUtils):
 
     def _create_data_iterators(self):
         """Create data iterators."""
-        self.vla_iter = iter(self.vla_train_dataloader)
+        loader = self.vla_train_dataloader
+        if self.config.datasets.vla_data.get('sampling_mode') == 'frame_epoch':
+            microbatches_per_epoch = len(loader)
+            accumulation = self.accelerator.gradient_accumulation_steps
+            if microbatches_per_epoch % accumulation:
+                raise ValueError('frame_epoch must contain complete optimizer updates on every rank')
+            steps_per_epoch = microbatches_per_epoch // accumulation
+            self.vla_epoch_count, step_in_epoch = divmod(self.completed_steps, steps_per_epoch)
+            loader.set_epoch(self.vla_epoch_count)
+            if step_in_epoch:
+                loader = self.accelerator.skip_first_batches(loader, step_in_epoch * accumulation)
+                loader.set_epoch(self.vla_epoch_count)
+        self.vla_iter = iter(loader)
+
+    def close_dataloader(self):
+        """Stop prefetch workers while distributed/CUDA contexts are still alive.
+
+        Leaving persistent workers to Python finalizers after NCCL teardown can
+        strand a rank during short runs or at a two-stage training boundary.
+        """
+        iterator = getattr(self, 'vla_iter', None)
+        close = getattr(iterator, 'close', None)
+        if callable(close):
+            close()
+        loader = self.vla_train_dataloader
+        base_loader = getattr(loader, 'base_dataloader', loader)
+        workers = getattr(base_loader, '_iterator', None)
+        shutdown = getattr(workers, '_shutdown_workers', None)
+        if callable(shutdown):
+            shutdown()
+            base_loader._iterator = None
+        self.vla_iter = None
 
     def _get_next_batch(self):
         """Get next batch (automatically handle data loop)."""
@@ -392,9 +521,14 @@ class VLATrainer(TrainerUtils):
         except StopIteration:
             if not hasattr(self, "vla_epoch_count"):
                 self.vla_epoch_count = 0
-            self.vla_iter, self.vla_epoch_count = TrainerUtils._reset_dataloader(
-                self.vla_train_dataloader, self.vla_epoch_count
-            )
+            if self.config.datasets.vla_data.get('sampling_mode') == 'frame_epoch':
+                self.vla_epoch_count += 1
+                self.vla_train_dataloader.set_epoch(self.vla_epoch_count)
+                self.vla_iter = iter(self.vla_train_dataloader)
+            else:
+                self.vla_iter, self.vla_epoch_count = TrainerUtils._reset_dataloader(
+                    self.vla_train_dataloader, self.vla_epoch_count
+                )
             batch_vla = next(self.vla_iter)
 
         return batch_vla
@@ -412,6 +546,9 @@ class VLATrainer(TrainerUtils):
         )
 
         while self.completed_steps < self.config.trainer.max_train_steps:
+            if self.config.trainer.get('recipe') == 'c':
+                reset_stage_optimizer_if_needed(self.optimizer, self.completed_steps,
+                                                self.config.trainer.stage1_steps)
             t_start_data = time.perf_counter()
             batch_vla = self._get_next_batch()
             t_end_data = time.perf_counter()
@@ -437,14 +574,16 @@ class VLATrainer(TrainerUtils):
                     }
                 )
 
-            if self.completed_steps % self.config.trainer.eval_interval == 0:
+            if self.config.trainer.eval_interval > 0 and self.completed_steps % self.config.trainer.eval_interval == 0:
                 step_metrics = self.eval_action_model(step_metrics)
 
             step_metrics["timing/data"] = t_end_data - t_start_data
             step_metrics["timing/model"] = t_end_model - t_start_model
             self._log_metrics(step_metrics)
 
-            if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
+            milestone = (self.config.trainer.get('recipe') == 'c' and self.completed_steps in
+                         set(self.config.trainer.milestone_steps) | {self.config.trainer.stage1_steps})
+            if (self.completed_steps % self.config.trainer.save_interval == 0 or milestone) and self.completed_steps > 0:
                 self._save_checkpoint()
 
             if self.completed_steps >= self.config.trainer.max_train_steps:
@@ -454,6 +593,9 @@ class VLATrainer(TrainerUtils):
 
     def eval_action_model(self, step_metrics: dict = None) -> float:
         """Run simple action-eval on current batch and attach score to metrics."""
+        if self.config.datasets.vla_data.get('sampling_mode') == 'frame_epoch':
+            raise ValueError('Frame-epoch validation requires a separate held-out split; '
+                             'it must not consume training frames')
         examples = self._get_next_batch()
         actions = [example["action"] for example in examples]
         output_dict = self.accelerator.unwrap_model(self.model).predict_action(
@@ -468,7 +610,7 @@ class VLATrainer(TrainerUtils):
             step_metrics["mse_score"] = score / num_pots
 
         del examples
-        dist.barrier()
+        self.accelerator.wait_for_everyone()
         return step_metrics
 
     def _log_training_config(self):
@@ -483,16 +625,14 @@ class VLATrainer(TrainerUtils):
     def _train_step(self, batch_vla, batch_vlm=None):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
-            self.optimizer.zero_grad()
-
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with self.accelerator.autocast():
                 output_dict = self.model.forward(batch_vla)
                 action_loss = output_dict["action_loss"]
                 total_loss = action_loss
 
             self.accelerator.backward(total_loss)
 
-            if self.config.trainer.gradient_clipping is not None:
+            if self.accelerator.sync_gradients and self.config.trainer.gradient_clipping is not None:
                 self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
 
             self.optimizer.step()
@@ -503,6 +643,10 @@ class VLATrainer(TrainerUtils):
             # at min_lr well before max_train_steps is reached.
             if self.accelerator.sync_gradients:
                 self.lr_scheduler.step()
+            # AcceleratedOptimizer only clears on a synchronization boundary.
+            # Clearing before backward would discard previous microbatch grads
+            # precisely on the final microbatch of an accumulated update.
+            self.optimizer.zero_grad()
 
         step_log = {"action_dit_loss": action_loss.item()}
         # Surface any auxiliary scalar losses the framework reports.
@@ -563,6 +707,8 @@ class VLATrainer(TrainerUtils):
 
     def _finalize_training(self):
         """Training end processing."""
+        if self.completed_steps % self.config.trainer.save_interval:
+            self._save_checkpoint()
         if self.accelerator.is_main_process:
             save_format = getattr(self.config.trainer, "save_format", "pt")
             final_checkpoint = os.path.join(self.config.output_dir, "final_model")
@@ -588,7 +734,14 @@ class VLATrainer(TrainerUtils):
 
 
 def main(cfg) -> None:
+    cfg = apply_training_recipe(cfg)
     accelerator = build_accelerator(cfg)
+    global_batch = (cfg.datasets.vla_data.per_device_batch_size * accelerator.num_processes
+                    * accelerator.gradient_accumulation_steps)
+    expected = cfg.trainer.get('expected_global_batch_size')
+    if expected is not None and global_batch != int(expected):
+        raise ValueError(f'Global batch is {global_batch}, expected {expected}; '
+                         'adjust per_device_batch_size or gradient_accumulation_steps')
     accelerator.print(accelerator.state)
     logger.info("VLA Training :: Warming Up")
 
@@ -599,12 +752,15 @@ def main(cfg) -> None:
     # example the predictable-innovation basis). Seed before construction so
     # the YAML seed governs those parameters, not only the later train loop.
     rank = dist.get_rank() if dist.is_initialized() else 0
-    construction_seed = cfg.seed + rank if hasattr(cfg, "seed") else rank + 3047
+    construction_seed = cfg.get('seed', 42) + (rank if cfg.trainer.recipe == 'legacy' else 0)
     set_seed(construction_seed)
 
     output_dir = setup_directories(cfg=cfg)
     vla = build_framework(cfg)
+    vla = TrainerUtils.freeze_backbones(vla, cfg.trainer.get('freeze_modules', ''))
+    prepare_parameter_precision(vla, cfg)
     vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
+    resolve_training_budget(cfg, vla_train_dataloader.dataset, global_batch)
     optimizer, lr_scheduler = setup_optimizer_and_scheduler(model=vla, cfg=cfg)
 
     trainer = VLATrainer(
@@ -617,11 +773,15 @@ def main(cfg) -> None:
     )
 
     trainer.prepare_training()
-    trainer.train()
+    try:
+        trainer.train()
+    finally:
+        trainer.close_dataloader()
 
     logger.info("... and that's all, folks!")
-    dist.barrier()
-    dist.destroy_process_group()
+    accelerator.wait_for_everyone()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -637,7 +797,7 @@ if __name__ == "__main__":
     cfg = OmegaConf.load(args.config_yaml)
     dotlist = normalize_dotlist_args(clipargs)
     cli_cfg = OmegaConf.from_dotlist(dotlist)
-    cfg = OmegaConf.merge(cfg, cli_cfg)
+    cfg = apply_training_recipe(cfg, cli_cfg)
 
     # Normalise legacy YAML keys into the current `version_id == "0.21"` schema.
     # This is idempotent and does not modify framework class signatures.

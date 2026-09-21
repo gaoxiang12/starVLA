@@ -2,6 +2,7 @@ import json
 import os
 from accelerate.logging import get_logger
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 import numpy as np
 import torch.distributed as dist
@@ -38,6 +39,7 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
     if dataset_py == "lerobot_datasets":
         from starVLA.dataloader.lerobot_datasets import (
             EmbodimentBatchSampler,
+            FrameEpochSampler,
             collate_fn,
             get_vla_dataset,
         )
@@ -47,20 +49,33 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             data_cfg=vla_dataset_cfg,
             balance_dataset_weights=vla_dataset_cfg.get("balance_dataset_weights", False),
             balance_trajectory_weights=vla_dataset_cfg.get("balance_trajectory_weights", False),
+            seed=int(cfg.get('seed', 42)),
         )
+        expected_frames = vla_dataset_cfg.get('expected_frames')
+        if expected_frames is not None and len(vla_dataset) != int(expected_frames):
+            raise ValueError(f'Dataset has {len(vla_dataset)} frames, expected {expected_frames}; '
+                             'audit the data before changing the training budget')
 
         num_workers = int(vla_dataset_cfg.get("num_workers", 4))
         dataloader_kwargs = {
             "collate_fn": collate_fn,
             "num_workers": num_workers,
             "pin_memory": bool(vla_dataset_cfg.get("pin_memory", True)),
+            "generator": torch.Generator().manual_seed(int(cfg.get('seed', 42))),
             # shuffle=True
         }
         if num_workers > 0:
             dataloader_kwargs["persistent_workers"] = bool(vla_dataset_cfg.get("persistent_workers", True))
             dataloader_kwargs["prefetch_factor"] = int(vla_dataset_cfg.get("prefetch_factor", 2))
 
-        if bool(vla_dataset_cfg.get("homogeneous_embodiment_batches", False)):
+        if vla_dataset_cfg.get('sampling_mode') == 'frame_epoch':
+            if len({child.tag for child in vla_dataset.datasets}) != 1:
+                raise ValueError('frame_epoch currently requires a single embodiment')
+            dataloader_kwargs.update(
+                batch_size=int(vla_dataset_cfg.per_device_batch_size), drop_last=True,
+                sampler=FrameEpochSampler(vla_dataset, cfg.trainer.expected_global_batch_size,
+                                          seed=int(cfg.get('seed', 42))))
+        elif bool(vla_dataset_cfg.get("homogeneous_embodiment_batches", False)):
             dataloader_kwargs["batch_sampler"] = EmbodimentBatchSampler(
                 vla_dataset,
                 batch_size=int(vla_dataset_cfg.per_device_batch_size),
@@ -77,10 +92,11 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             vla_dataset,
             **dataloader_kwargs,
         )
-        if dist.get_rank() == 0: 
+        if not dist.is_initialized() or dist.get_rank() == 0:
             
             output_dir = Path(cfg.output_dir)
-            vla_dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
+            if not (cfg.trainer.get('recipe') == 'c' and cfg.trainer.get('is_resume', False)):
+                vla_dataset.save_dataset_statistics(output_dir / "dataset_statistics.json")
         return vla_train_dataloader
     elif dataset_py == "vlm_datasets":
         vlm_data_module = make_vlm_dataloader(cfg)

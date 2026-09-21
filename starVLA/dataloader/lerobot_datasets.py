@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterator, Mapping, Sequence
 
 import numpy as np
+import torch
 from omegaconf import OmegaConf
 from torch.utils.data import Sampler
 
@@ -94,6 +95,31 @@ def _expand_dataset_manifest_entries(
 
 def collate_fn(batch):
     return batch
+
+
+class FrameEpochSampler(Sampler):
+    """Shuffle each real frame once; drop only the incomplete global batch."""
+    def __init__(self, dataset, global_batch_size, seed=42):
+        if int(global_batch_size) < 1:
+            raise ValueError('global_batch_size must be positive')
+        self.dataset, self.seed, self.epoch = dataset, int(seed), 0
+        self.usable = len(dataset) // int(global_batch_size) * int(global_batch_size)
+        if self.usable == 0:
+            raise ValueError('Dataset is smaller than one global batch')
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+        self.dataset.set_epoch(epoch)
+
+    def __len__(self):
+        return self.usable
+
+    def __iter__(self):
+        # Accelerate's BatchSamplerShard forwards epochs to the dataset rather
+        # than the nested sampler on some supported versions.
+        epoch = int(getattr(self.dataset, 'epoch', self.epoch))
+        generator = torch.Generator().manual_seed(self.seed + epoch)
+        return iter(torch.randperm(len(self.dataset), generator=generator)[:self.usable].tolist())
 
 
 class EmbodimentBatchSampler(Sampler[list[tuple[int, int]]]):
@@ -307,6 +333,21 @@ def get_vla_dataset(
     dataset_mixture = []
     for d_name, d_weight, robot_type in filtered_mixture_spec:
         dataset_mixture.append((make_LeRobotSingleDataset(Path(data_root_dir), d_name, robot_type, delete_pause_frame=delete_pause_frame, data_cfg=data_cfg), d_weight))
+
+    if data_cfg.get('sampling_mode') == 'auto':
+        tags = {child.tag for child, _ in dataset_mixture}
+        weights = {float(weight) for _, weight in dataset_mixture}
+        prioritized = any(float(data_cfg.get(key, 0)) > 0 for key in
+                          ('event_sampling_probability', 'priority_sampling_probability'))
+        if len(tags) == 1 and len(weights) == 1 and not prioritized:
+            data_cfg.sampling_mode = 'frame_epoch'
+        else:
+            data_cfg.sampling_mode = 'weighted_mixture'
+            if len(tags) > 1 and not data_cfg.get('embodiment_sampling_weights'):
+                raise ValueError('Multi-embodiment C training requires explicit embodiment_sampling_weights')
+            if len(tags) > 1 and not data_cfg.get('homogeneous_embodiment_batches', False):
+                raise ValueError('Multi-embodiment C training requires homogeneous_embodiment_batches')
+            logger.info('C uses homogeneous weighted batches; per-task weights are multiplied by frame count')
 
     return LeRobotMixtureDataset(
         dataset_mixture,

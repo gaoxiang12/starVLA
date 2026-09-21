@@ -14,7 +14,7 @@ base_vlm=playground/Pretrained_models/Qwen3-VL-4B-Instruct
 config_yaml=./examples/Robotwin/train_files/starvla_cotrain_robotwin_abs.yaml
 run_root_dir=./results/Checkpoints
 data_mix=robotwin_all_50
-run_id=0129_${data_mix}_qwen3OFT_all
+run_id=${RUN_ID:-${data_mix}_c_$(date +%Y%m%d_%H%M%S)}
 # === End of environment variable configuration ===
 ###########################################################################################
 
@@ -28,19 +28,16 @@ cp $0 ${output_dir}/
 
 
 accelerate launch \
-  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+  --config_file starVLA/config/ddp.yaml \
   --num_processes 8 \
   starVLA/training/train_starvla.py \
   --config_yaml ${config_yaml} \
   --framework.name ${Framework_name} \
   --framework.qwenvl.base_vlm ${base_vlm} \
-  --datasets.vla_data.per_device_batch_size 4 \
+  --datasets.vla_data.per_device_batch_size 16 \
   --datasets.vla_data.data_mix ${data_mix} \
   --trainer.freeze_modules ${freeze_module_list} \
-  --trainer.max_train_steps 150000 \
-  --trainer.save_interval 10000 \
-  --trainer.logging_frequency 100 \
-  --trainer.eval_interval 1000 \
+  --trainer.recipe c \
   --run_root_dir ${run_root_dir} \
   --run_id ${run_id} \
   --wandb_project starVLA_Robotwin \

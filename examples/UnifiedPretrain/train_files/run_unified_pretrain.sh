@@ -3,10 +3,10 @@ set -euo pipefail
 
 config_yaml=examples/UnifiedPretrain/train_files/starvla_gawm_unified_pretrain.yaml
 run_root_dir=playground/Checkpoints
-run_id=${RUN_ID:-starvla_gawm_unified_taskfilter_from40k_160k}
+run_id=${RUN_ID:-starvla_gawm_unified_c_$(date +%Y%m%d_%H%M%S)}
 main_port=${MAIN_PORT:-29620}
-batch=${BATCH:-8}
-steps=${STEPS:-160000}
+batch=${BATCH:-16}
+steps=${STEPS:-}
 accelerate_bin=${ACCELERATE_BIN:-.venv/bin/accelerate}
 pretrained_checkpoint=${PRETRAINED_CHECKPOINT:-}
 is_resume=${IS_RESUME:-false}
@@ -22,8 +22,12 @@ export CUDA_VISIBLE_DEVICES=${CUDA_DEVS:-0,1,2,3,4,5,6,7}
 num_processes=${NUM_PROCESSES:-$(tr ',' '\n' <<<"${CUDA_VISIBLE_DEVICES}" | wc -l)}
 
 trainer_args=(
+  --trainer.recipe "${TRAINING_RECIPE:-c}"
   --trainer.is_resume "${is_resume}"
 )
+if [[ -n "${steps}" ]]; then
+  trainer_args+=(--trainer.max_train_steps "${steps}")
+fi
 if [[ -n "${DATA_MIX:-}" ]]; then
   trainer_args+=(--datasets.vla_data.data_mix "${DATA_MIX}")
 fi
@@ -58,13 +62,12 @@ printf 'steps=%s batch_per_gpu=%s gpus=%s resume=%s pretrained=%s\n' \
   >"${run_dir}/STATUS.running"
 
 "${accelerate_bin}" launch \
-  --config_file starVLA/config/deepseeds/deepspeed_zero2.yaml \
+  --config_file "${ACCELERATE_CONFIG:-starVLA/config/ddp.yaml}" \
   --num_processes "${num_processes}" \
   --main_process_port "${main_port}" \
   starVLA/training/train_starvla.py \
   --config_yaml "${config_yaml}" \
   --datasets.vla_data.per_device_batch_size "${batch}" \
-  --trainer.max_train_steps "${steps}" \
   "${trainer_args[@]}" \
   --run_root_dir "${run_root_dir}" \
   --run_id "${run_id}"

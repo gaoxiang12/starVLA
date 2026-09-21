@@ -1,0 +1,51 @@
+# Default for train_starvla. Model/data semantics stay in the experiment YAML.
+seed: 42
+trainer:
+  recipe: c
+  distributed_backend: ddp
+  mixed_precision: bf16
+  parameter_dtype: bfloat16
+  gradient_accumulation_steps: 1
+  expected_global_batch_size: 128
+  sync_with_dataloader: false
+  ddp_kwargs:
+    broadcast_buffers: false
+    gradient_as_bucket_view: true
+    # Multi-head mixtures can use different parameters on successive steps.
+    static_graph: false
+    find_unused_parameters: true
+  max_train_steps: null
+  stage_epochs: [12, 4]
+  stage2_lr_scale: 0.2
+  scheduler_epochs: 40
+  lr_scheduler_total_steps: null
+  learning_rate:
+    base: 0.0002
+  optimizer:
+    betas: [0.9, 0.99]
+    eps: 1.0e-8
+    weight_decay: 0.01
+    fused: false
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 0.00005
+  num_warmup_steps: 0
+  gradient_clipping: 1.0
+  save_interval: 1000
+  keep_last_checkpoints: 2
+  milestone_steps: []
+  eval_interval: 0
+  logging_frequency: 20
+  is_resume: false
+  pretrained_checkpoint: null
+  allow_weights_only_resume: false
+datasets:
+  vla_data:
+    sampling_mode: auto
+    per_device_batch_size: 16
+    balance_dataset_weights: true
+    balance_trajectory_weights: true
+    homogeneous_embodiment_batches: true
+    action_valid_mask: true
+    future_obs_valid_mask: true
+    drop_last: true
