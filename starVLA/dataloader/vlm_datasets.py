@@ -721,8 +721,3 @@ def make_vlm_dataloader(cfg):
     return {
         "train_dataloader": train_dataloader,
     }
-
-
-
-if __name__ == "__main__":
-    pass

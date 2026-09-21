@@ -53,7 +53,3 @@ def data_list(dataset_names):
         else:
             raise ValueError(f"do not find {dataset_name}")
     return config_list
-
-if __name__ == "__main__":
-    print(data_list)
-    

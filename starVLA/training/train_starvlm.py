@@ -361,11 +361,4 @@ if __name__ == "__main__":
     # Store source config path for later copying to output dir
     cfg.config_yaml = args.config_yaml
 
-    if cfg.is_debug and dist.is_initialized() and dist.get_rank() == 0:
-        import debugpy
-
-        debugpy.listen(("0.0.0.0", 10092))
-        print("🔍 Rank 0 waiting for debugger attach on port 10092...")
-        debugpy.wait_for_client()
-
     main(cfg)

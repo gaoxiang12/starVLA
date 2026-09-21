@@ -60,16 +60,7 @@ action_model:
   state_dim: 18
 ```
 
-### 2. Validate the Model Forward Pass
-
-Before starting training, you can verify that the model forward pass works correctly:
-
-```bash
-python starVLA/model/framework/VLM4A/QwenOFT.py \
-    --config_yaml examples/Franka/train_files/starvla_cotrain_franka_single.yaml
-```
-
-### 3. Start Training
+### 2. Start Training
 
 Example training script:
 

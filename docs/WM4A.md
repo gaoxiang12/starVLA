@@ -55,27 +55,6 @@ Each backbone can be paired with three action head types:
 
 This gives **7 framework combinations** (including a generic `WM4A_OFT`).
 
-## Quick Start: Inspect the Data Flow
-
-Run the built-in demo to see the full forward pass (training + inference):
-
-```bash
-python starVLA/model/framework/WM4A/CosmoPredict2GR00T.py
-```
-
-This script:
-1. Loads a config and instantiates the `CosmoPredict2_GR00T` model
-2. Creates a synthetic batch with multi-view images and random actions
-3. Runs the **training forward** and prints the action loss
-4. Runs the **inference forward** and prints the predicted actions
-
-> **Note:** You need the Cosmos-Predict2-2B weights downloaded locally.
-> Set the path in the script or download via:
-> ```bash
-> huggingface-cli download nvidia/Cosmos-Predict2-2B-Video2World \
->     --local-dir ./playground/Pretrained_models/nvidia/Cosmos-Predict2-2B-Video2World
-> ```
-
 ## Training
 
 ### Recommended: LIBERO with CosmoPredict2OFT

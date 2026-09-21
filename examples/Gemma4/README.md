@@ -22,15 +22,6 @@ Integrates [Google Gemma 4 E2B](https://huggingface.co/google/gemma-4-E2B-it) (2
 - `torch >= 2.1` with CUDA support
 - Gemma 4 E2B weights: `google/gemma-4-E2B-it` from Hugging Face
 
-### Smoke Test (single GPU)
-
-```bash
-conda activate <your_env>
-export PYTHONPATH=$PWD
-CUDA_VISIBLE_DEVICES=0 python starVLA/model/modules/vlm/Gemma4.py --attn eager
-CUDA_VISIBLE_DEVICES=0 python starVLA/model/framework/VLM4A/Gemma4PI.py --attn eager
-```
-
 ### Training (multi-GPU with Slurm)
 
 ```bash

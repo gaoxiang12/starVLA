@@ -121,30 +121,6 @@ We provide a simple way to check your dataloader. Make sure you can load batched
 python starVLA/dataloader/lerobot_datasets.py --config_yaml examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml
 ```
 
-## Framework Preparation
-
-Before running, you need to ensure that your framework can `forward` and `predict_action` using a fake data example.
-
-Try the following command:
-
-```bash
-python starVLA/model/framework/VLM4A/QwenGR00T.py --config_yaml examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml
-```
-
-Note: You can modify the following code snippet to align with your dataset:
-
-```python
-    # Generate a fake sample
-    image = Image.fromarray(np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
-    # Create a sample
-    sample = {
-        "action": np.random.uniform(-1, 1, size=(16, 7)).astype(np.float16),  # action_chunk, action_dim
-        "image": [image, image],  # two views
-        "lang": "This is a fake for testing.",
-        "state": np.random.uniform(-1, 1, size=(1, 7)).astype(np.float16),  # chunk, state_dim
-    }
-```
-
 ## Training
 
 Once everything is ready, use our provided script to start training:

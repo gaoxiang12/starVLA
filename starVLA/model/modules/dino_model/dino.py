@@ -131,8 +131,3 @@ def get_dino_model(backone_name="dinov2_vits14") -> DINOv2BackBone:
         DINOv2BackBone: Initialized backbone instance.
     """
     return DINOv2BackBone(backone_name)
-
-
-if __name__ == "__main__":
-    dino = DINOv2BackBone()
-    pass

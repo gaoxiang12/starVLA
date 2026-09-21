@@ -12,13 +12,12 @@ python deployment/model_server/server_policy.py \
     --use_bf16
 ```
 
-## Connect to server for debug
+## Connect an evaluation client
 
-```bash
-python deployment/model_server/debug_server_policy.py
-
-# use server_policy.py in your eval client by referencing debug_server_policy.py
-```
+Use `deployment.model_server.tools.websocket_policy_client.WebsocketClientPolicy`
+from your evaluation client. See the benchmark interfaces in
+`examples/LIBERO/eval_files/model2libero_interface.py` and
+`examples/Robotwin/eval_files/model2robotwin_interface.py` for request construction.
 
 ---
 

@@ -169,31 +169,3 @@ class _QWen3_VL_Interface(nn.Module):
             batch_inputs["labels"] = labels
 
         return batch_inputs.to(self.model.device)
-
-
-if __name__ == "__main__":
-    import argparse
-    import os
-
-    from omegaconf import OmegaConf
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config_yaml",
-        type=str,
-        default="examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml",
-        help="Path to YAML config",
-    )
-    args, clipargs = parser.parse_known_args()
-
-    if os.getenv("DEBUGPY_ENABLE", "0") == "1":
-        import debugpy
-        debugpy.listen(("0.0.0.0", 10092))
-        print("Rank 0 waiting for debugger attach on port 10092...")
-        debugpy.wait_for_client()
-
-    cfg = OmegaConf.load(args.config_yaml)
-
-    cfg.framework.qwenvl.base_vlm = "./playground/Pretrained_models/Qwen3-VL-4B-Instruct"
-    qwen_vl = _QWen3_VL_Interface(cfg)
-    pass

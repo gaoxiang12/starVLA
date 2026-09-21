@@ -322,19 +322,12 @@ def get_vla_dataset(
 
 if __name__ == "__main__":
     import argparse
-    import os
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_yaml", type=str, default="./examples/LIBERO/train_files/bar/starvla_cotrain_libero.yaml", help="Path to YAML config")
     parser.add_argument("--data_mix", type=str, default=None, help="Override data_mix from config")
     parser.add_argument("--data_root_dir", type=str, default=None, help="Override data_root_dir from config")
     args = parser.parse_args()
-
-    if os.getenv("DEBUGPY_ENABLE", "0") == "1":
-        import debugpy
-        debugpy.listen(("0.0.0.0", 10092))
-        print("Rank 0 waiting for debugger attach on port 10092...")
-        debugpy.wait_for_client()
 
     cfg = OmegaConf.load(args.config_yaml)
     vla_dataset_cfg = cfg.datasets.vla_data

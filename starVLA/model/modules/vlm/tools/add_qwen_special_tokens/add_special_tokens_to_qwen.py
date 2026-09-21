@@ -215,18 +215,5 @@ def main():
     print(f"[DEBUG] model.embed_size(after)   = {new_model_embed_size}")
 
 
-def start_debugpy_once():
-    """start debugpy once"""
-    import debugpy
-
-    if getattr(start_debugpy_once, "_started", False):
-        return
-    debugpy.listen(("0.0.0.0", 10092))
-    print("🔍 Waiting for VSCode attach on 0.0.0.0:10092 ...")
-    debugpy.wait_for_client()
-    start_debugpy_once._started = True
-
-
 if __name__ == "__main__":
-    start_debugpy_once()
     main()

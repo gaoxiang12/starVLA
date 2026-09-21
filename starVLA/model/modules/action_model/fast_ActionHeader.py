@@ -119,37 +119,3 @@ def get_action_model(config=None):
     action_model = Fast_Action_Tokenizer()
 
     return action_model
-
-
-def start_debugpy_once():
-    """start debugpy once"""
-    import debugpy
-
-    if getattr(start_debugpy_once, "_started", False):
-        return
-    debugpy.listen(("0.0.0.0", 10094))
-    print("🔍 Waiting for VSCode attach on 0.0.0.0:10094 ...")
-    debugpy.wait_for_client()
-    start_debugpy_once._started = True
-
-
-if __name__ == "__main__":
-
-    if os.getenv("DEBUGPY_ENABLE", "0") == "1":
-        start_debugpy_once()
-
-    fast_tokenizer_name = "physical-intelligence/fast"
-    fast_tokenizer = Fast_Action_Tokenizer(fast_tokenizer_name=fast_tokenizer_name)
-    raw_actions = [np.random.randn(16, 7), np.random.randn(16, 7)]
-
-    tokenizer = AutoProcessor.from_pretrained(fast_tokenizer_name, trust_remote_code=True)
-
-    action_data = np.random.rand(2, 16, 7)
-    tokens = tokenizer(action_data)
-    decoded_actions = tokenizer.decode(tokens)
-
-    # self func test
-    vlm_tokens = fast_tokenizer.encoder_action2fastoken(raw_actions)
-    print(vlm_tokens)
-    pred_actions = fast_tokenizer.decoder_action(np.array([12, 3, 45, 87]))
-    print(pred_actions)

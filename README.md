@@ -223,15 +223,15 @@ See the full list of released models and checkpoints in [docs/model_zoo.md](docs
 ## Start Building Your VLA Like Lego!
 👇 StarVLA achieves "Lego-like" development via the following designs:
 <details>
-<summary><b>1. Smoke test any submodule</b></summary>
+<summary><b>1. Modular model and data interfaces</b></summary>
 
-StarVLA emphasizes a modular model design. Each major framework file can be run standalone for rapid debugging and smoke-testing your code. For example:
+StarVLA loads model frameworks through the shared training and policy-server entry points.
+Use the training and evaluation scripts for your benchmark under `examples/`.
+
+You can check batched dataset loading before training:
 
 ```bash
-# model
-python starVLA/model/framework/VLM4A/QwenOFT.py --config_yaml starvla_cotrain_oxe.yaml
-# dataloader
-python starVLA/dataloader/lerobot_datasets.py --config_yaml starvla_cotrain_oxe.yaml
+python starVLA/dataloader/lerobot_datasets.py --config_yaml examples/SimplerEnv/train_files/starvla_cotrain_oxe.yaml
 ```
 
 Note: `starVLA/model/framework/VLM4A/yourframework.py` is the single external API surface of the model; it should mirror (be structurally isomorphic to) the framework diagram in your paper.

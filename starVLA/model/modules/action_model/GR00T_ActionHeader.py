@@ -33,7 +33,6 @@ class CategorySpecificLinear(nn.Module):
     def forward(self, x, cat_ids):
         selected_W = self.W[cat_ids]
         selected_b = self.b[cat_ids]
-        # import ipdb; ipdb.set_trace()
         return torch.bmm(x, selected_W) + selected_b.unsqueeze(1)
 
 
@@ -440,9 +439,3 @@ def get_action_model(config=None):
         FlowmatchingActionHead: Initialized FlowMatchingActionHead.
     """
     return FlowmatchingActionHead(full_config=config)
-
-
-if __name__ == "__main__":
-    # TODO make each backbone.py can be debug independently
-
-    pass

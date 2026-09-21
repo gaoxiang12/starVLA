@@ -58,13 +58,13 @@ We have verified that `flash-attn==2.7.4.post1` works well with nvcc versions `1
 
 ## 1. Verify Your Installation
 
-Run a quick smoke test to make sure the framework loads correctly:
+Check that the training entry point is available in your environment:
 
 ```bash
-python starVLA/model/framework/VLM4A/QwenGR00T.py
+python -m starVLA.training.train_starvla --help
 ```
 
-This requires [Qwen3-VL-4B-Instruct](https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct) at `./playground/Pretrained_models/Qwen3-VL-4B-Instruct` (see [Step 3](#3-prepare-pretrained-models)). It should print the model architecture and run a forward pass on fake data without errors.
+Prepare the datasets and pretrained weights below before launching training.
 
 ---
 

@@ -81,12 +81,6 @@ datasets:
     dataset_use: sharegpt4v_coco # Must match the name registered in 2.1
 ```
 
-**Tip:** You can verify the VLM dataloader by running:
-
-```bash
-python starVLA/dataloader/vlm_datasets.py --config_yaml your_train_config.yaml
-```
-
 
 -----
 

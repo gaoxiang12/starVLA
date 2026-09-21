@@ -4,7 +4,6 @@
 
 import argparse
 import logging
-import os
 import socket
 
 from deployment.model_server.policy_wrapper import PolicyServerWrapper
@@ -49,29 +48,8 @@ def build_argparser():
     return parser
 
 
-def start_debugpy_once():
-    """start debugpy once"""
-    import debugpy
-
-    if getattr(start_debugpy_once, "_started", False):
-        return
-    debugpy.listen(("0.0.0.0", 10095))
-    print("🔍 Waiting for VSCode attach on 0.0.0.0:10095 ...")
-    debugpy.wait_for_client()
-    start_debugpy_once._started = True
-
-
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
     parser = build_argparser()
     args = parser.parse_args()
-    debug_enabled = os.getenv("DEBUG", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if debug_enabled:
-        print("🔍 DEBUGPY is enabled")
-        start_debugpy_once()
     main(args)

@@ -14,15 +14,6 @@ MiniCPM-V 4.6 uses a SigLIP2-400M vision encoder and Qwen3.5-0.8B text tower (1.
 - `av` or `torchcodec` for video/multi-modal processor support
 - MiniCPM-V 4.6 weights: `openbmb/MiniCPM-V-4.6` from Hugging Face
 
-### Smoke Test (single GPU)
-
-```bash
-conda activate <your_env>
-export PYTHONPATH=$PWD
-CUDA_VISIBLE_DEVICES=0 python starVLA/model/modules/vlm/MiniCPM_V.py --attn sdpa
-CUDA_VISIBLE_DEVICES=0 python starVLA/model/framework/VLM4A/MiniCPMPI.py --attn sdpa
-```
-
 ### Training (multi-GPU with Slurm)
 
 ```bash
