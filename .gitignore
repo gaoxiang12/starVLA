@@ -245,6 +245,7 @@ wandb/*
 # Whitelist specific docs that should be tracked
 !.github/PULL_REQUEST_TEMPLATE.md
 !docs/branching_strategy.md
+!docs/cluster_dashboard.md
 !docs/PR_readme.md
 !docs/CONTRIBUTING.md
 !docs/faq.md

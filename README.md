@@ -150,6 +150,11 @@ Achieve **state-of-the-art (SOTA) performance** on a variety of benchmarks, as f
 
 ### Live training dashboard
 
+For a multi-machine overview of training progress, GPU/CPU/memory usage, and
+loss comparisons, run `python scripts/cluster_dashboard.py` and open
+`http://localhost:6008`. Nodes and run directories are configured in
+`scripts/cluster_nodes.json`. See [the cluster dashboard guide](docs/cluster_dashboard.md).
+
 starVLA writes dependency-free local metrics to each run's `metrics.jsonl`.
 To inspect all runs below a checkpoint directory in a live browser dashboard:
 

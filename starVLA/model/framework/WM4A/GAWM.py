@@ -244,6 +244,31 @@ class CompositionalTextEncoder(nn.Module):
         return self.out_proj(self.out_norm(pooled))
 
 
+class StateResidualAdapter(nn.Module):
+    """Local spatial corrections conditioned on current robot state and task."""
+
+    def __init__(self, latent_dim, state_dim, goal_dim, hidden_dim, n_future):
+        super().__init__()
+        self.n_future = n_future
+        self.latent_dim = latent_dim
+        self.norm = nn.LayerNorm(latent_dim)
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim + state_dim + goal_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, n_future * latent_dim),
+        )
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, context, state, goal):
+        tokens = self.norm(context[:, 0])
+        count = tokens.shape[1]
+        hidden = torch.cat((tokens, state[:, None].expand(-1, count, -1),
+                            goal[:, None].expand(-1, count, -1)), dim=-1)
+        correction = self.net(hidden.to(self.net[0].weight.dtype))
+        return correction.reshape(len(tokens), count, self.n_future, self.latent_dim).permute(0, 2, 1, 3)
+
+
 @dataclass
 class GAWMDefaultConfig:
     """Defaults for the single supported unified GAWM architecture."""
@@ -272,6 +297,9 @@ class GAWMDefaultConfig:
             "visual_token_min_std": 0.1,
             "use_state_cond": True,
             "state_cond_hidden_dim": 256,
+            "condition_world_model_on_state": False,
+            "state_conditioning_mode": "goal",
+            "freeze_visual_token_pooler": False,
         }
     )
     action_model: dict = field(
@@ -394,6 +422,31 @@ class GAWM(baseframework):
             tokens_per_view=self.visual_tokens_per_view,
         )
         self.num_visual_tokens = self.visual_token_pooler.num_tokens
+        self.freeze_visual_token_pooler = bool(wm_cfg.freeze_visual_token_pooler)
+        if self.freeze_visual_token_pooler:
+            self.visual_token_pooler.requires_grad_(False)
+        # Opt-in so historical checkpoints keep exactly the same parameter set.
+        self.world_model_state_encoders = nn.ModuleDict()
+        self.state_conditioning_mode = str(wm_cfg.state_conditioning_mode)
+        if self.state_conditioning_mode not in {"goal", "residual"}:
+            raise ValueError("state_conditioning_mode must be goal or residual")
+        if bool(wm_cfg.condition_world_model_on_state):
+            for tag, spec in self.embodiment_head_specs.items():
+                if self.state_conditioning_mode == "residual":
+                    self.world_model_state_encoders[tag] = StateResidualAdapter(
+                        self.visual_token_dim, int(spec["state_dim"]), self.task_emb_dim,
+                        int(wm_cfg.state_cond_hidden_dim), self.n_future,
+                    )
+                    continue
+                state_encoder = nn.Sequential(
+                    nn.Linear(int(spec["state_dim"]), int(wm_cfg.state_cond_hidden_dim)),
+                    nn.SiLU(),
+                    nn.Linear(int(wm_cfg.state_cond_hidden_dim), self.task_emb_dim),
+                )
+                # A warm start reproduces the original prediction exactly.
+                nn.init.zeros_(state_encoder[-1].weight)
+                nn.init.zeros_(state_encoder[-1].bias)
+                self.world_model_state_encoders[tag] = state_encoder
         self.world_model = VisualTokenLatentWorldModel(
             latent_dim=self.visual_token_dim,
             goal_dim=self.task_emb_dim,
@@ -426,6 +479,30 @@ class GAWM(baseframework):
                 state_hidden_dim=int(wm_cfg.state_cond_hidden_dim),
                 num_state_tokens=int(action_cfg.act_num_state_tokens),
             )
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if not self.backbone.train_encoder:
+            self.backbone.eval()
+        if self.freeze_visual_token_pooler:
+            self.visual_token_pooler.eval()
+        return self
+
+    def condition_world_model(
+        self, task_embedding: torch.Tensor, state: torch.Tensor, robot_tag: str
+    ) -> torch.Tensor:
+        """Use the same available proprioception during training and deployment."""
+        if self.state_conditioning_mode == "goal" and robot_tag in self.world_model_state_encoders:
+            encoder = self.world_model_state_encoders[robot_tag]
+            return task_embedding + encoder(state.to(dtype=encoder[0].weight.dtype))
+        return task_embedding
+
+    def world_model_correction(self, context, task_embedding, state, robot_tag):
+        if self.state_conditioning_mode == "residual" and robot_tag in self.world_model_state_encoders:
+            if self.world_model.detach_input:
+                context = context.detach()
+            return self.world_model_state_encoders[robot_tag](context, state, task_embedding)
+        return None
 
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
         """Map the pre-rename residual predictor keys to the GAWM layout."""
@@ -752,7 +829,8 @@ class GAWM(baseframework):
             wm_out = self.world_model(
                 latent,
                 ctx_len=1,
-                goal=task_emb,
+                goal=self.condition_world_model(task_emb, current_state, robot_tag),
+                residual_correction=self.world_model_correction(latent[:, :1], task_emb, current_state, robot_tag),
                 update_stats=True,
                 loss_mask=self._wm_loss_mask_tensor(
                     examples, view_valid_mask, latent.device
@@ -796,6 +874,7 @@ class GAWM(baseframework):
 
         output = {
             "action_loss": total_loss,
+            "total_loss": total_loss.detach(),
             "l1_action_loss": l1_action_loss.detach(),
             "full_l1_action_loss": l1_action_loss.detach(),
             "latent_loss": wm_out["latent_loss"].detach(),
@@ -850,7 +929,8 @@ class GAWM(baseframework):
                 examples, latent.device, state_dim
             )
             predicted_future = self.world_model.regress_future(
-                latent, goal=task_emb
+                latent, goal=self.condition_world_model(task_emb, current_state, robot_tag),
+                residual_correction=self.world_model_correction(latent, task_emb, current_state, robot_tag),
             )
             action_queries = self._pool_visual_tokens_to_action_queries(
                 torch.cat([latent, predicted_future], dim=1),

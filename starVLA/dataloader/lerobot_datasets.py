@@ -216,6 +216,7 @@ def make_LeRobotSingleDataset(
         embodiment_tag = EmbodimentTag.NEW_EMBODIMENT
     
     video_backend = data_cfg.get("video_backend", "decord") if data_cfg else "torchvision_av"
+    video_backend_kwargs = dict(data_cfg.get("video_backend_kwargs", {})) if data_cfg else {}
     task_language_mode = configured_task_language_mode(data_cfg, embodiment_tag)
     episode_blacklist_path = getattr(data_config, "episode_blacklist_path", None)
     lerobot_version = getattr(data_config, "lerobot_version", None)
@@ -230,6 +231,7 @@ def make_LeRobotSingleDataset(
             transforms=transforms,
             embodiment_tag=embodiment_tag,
             video_backend=video_backend,
+            video_backend_kwargs=video_backend_kwargs,
             delete_pause_frame=delete_pause_frame,
             data_cfg=data_cfg,
             dataset_name=data_name,
@@ -245,6 +247,7 @@ def make_LeRobotSingleDataset(
             transforms=transforms,
             embodiment_tag=embodiment_tag,
             video_backend=video_backend, # decord is more efficiency | torchvision_av for video.av1
+            video_backend_kwargs=video_backend_kwargs,
             delete_pause_frame=delete_pause_frame,
             data_cfg=data_cfg,
             task_language_mode=task_language_mode,

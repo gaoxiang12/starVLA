@@ -775,6 +775,13 @@ def _under(prefix, mixture, robot_type):
 
 
 DATASET_NAMED_MIXTURES = {
+    "unified_libero_full_wm": [
+        (name, 1.0, "unified_libero_wm")
+        for name, _, _ in LIBERO_MIXTURES["libero_all_wm_l10_augmented_l90"]
+    ],
+    "unified_libero_goal_wm": [
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "unified_libero_wm"),
+    ],
     "unified_robotwin_generated_clean500_wm": _under(
         "RoboTwinGenerated",
         ROBOTWIN_MIXTURES["robotwin_generated_clean500_wm"],

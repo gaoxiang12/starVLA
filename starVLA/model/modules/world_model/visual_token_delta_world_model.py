@@ -3,6 +3,7 @@
 from typing import Optional
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -146,12 +147,22 @@ class VisualTokenLatentWorldModel(nn.Module):
     ) -> None:
         if mask is not None:
             weights = mask.to(device=residual.device, dtype=torch.float32)
-            denominator = (weights.sum() * residual.shape[-1]).clamp_min(1.0)
-            rms = ((residual.float().square() * weights).sum() / denominator).clamp_min(
-                self._stats_eps
-            ).sqrt()
+            denominator = weights.sum() * residual.shape[-1]
+            numerator = (residual.float().square() * weights).sum()
         else:
-            rms = residual.float().square().mean().clamp_min(self._stats_eps).sqrt()
+            numerator = residual.float().square().sum()
+            denominator = numerator.new_tensor(residual.numel())
+        # delta_scale is part of both the training target and inference model.
+        # ZeRO synchronizes gradients, not these running buffers. Pool sums and
+        # valid counts so unequal masks/batches give every rank the same RMS.
+        statistics = torch.stack((numerator, denominator))
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(statistics, op=dist.ReduceOp.SUM)
+        if statistics[1].item() == 0:
+            return
+        rms = (statistics[0] / statistics[1].clamp_min(1.0)).clamp_min(
+            self._stats_eps
+        ).sqrt()
         if float(self._delta_scale_ready) < 1.0:
             self.delta_scale.fill_(float(rms))
             self._delta_scale_ready.fill_(1.0)
@@ -164,10 +175,15 @@ class VisualTokenLatentWorldModel(nn.Module):
         self,
         context: torch.Tensor,
         goal: Optional[torch.Tensor] = None,
+        residual_correction: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if context.shape[1] != 1:
             raise ValueError(f"GAWM expects one context frame, got {context.shape[1]}")
         predicted_delta = self.residual_predictor(context, goal=goal)
+        if residual_correction is not None:
+            if residual_correction.shape != predicted_delta.shape:
+                raise ValueError("residual_correction must match the predicted delta shape")
+            predicted_delta = predicted_delta + residual_correction
         return context + predicted_delta * self.delta_scale.clamp_min(self._stats_eps)
 
     def forward(
@@ -178,6 +194,7 @@ class VisualTokenLatentWorldModel(nn.Module):
         goal: Optional[torch.Tensor] = None,
         update_stats: bool = True,
         loss_mask: Optional[torch.Tensor] = None,
+        residual_correction: Optional[torch.Tensor] = None,
     ) -> dict[str, torch.Tensor]:
         batch_size, total_frames, num_tokens = latent.shape[:3]
         if num_tokens != self.num_tokens:
@@ -209,7 +226,12 @@ class VisualTokenLatentWorldModel(nn.Module):
             self._update_delta_scale(residual, mask=residual_mask)
 
         scale = self.delta_scale.clamp_min(self._stats_eps)
-        predicted_residual = self.residual_predictor(context, goal=goal) * scale
+        predicted_delta = self.residual_predictor(context, goal=goal)
+        if residual_correction is not None:
+            if residual_correction.shape != predicted_delta.shape:
+                raise ValueError("residual_correction must match the predicted delta shape")
+            predicted_delta = predicted_delta + residual_correction
+        predicted_residual = predicted_delta * scale
         predicted_future = anchor + predicted_residual
         squared_error = (predicted_future.float() - future.detach().float()).square()
         if residual_mask is not None:
@@ -223,15 +245,21 @@ class VisualTokenLatentWorldModel(nn.Module):
             latent_loss = squared_error.mean()
             pred_cosine_input = predicted_residual.float()
             true_cosine_input = residual.float()
-        direction_cosine = F.cosine_similarity(
+        horizon_cosine = F.cosine_similarity(
             pred_cosine_input.flatten(2),
             true_cosine_input.flatten(2),
             dim=-1,
             eps=1e-8,
-        ).mean()
+        )
+        # Padded horizons and stationary targets have no direction. Including
+        # them gives an irreducible cosine penalty and biases the diagnostic.
+        direction_valid = true_cosine_input.flatten(2).square().sum(-1) > 1e-8
+        direction_count = direction_valid.sum().clamp_min(1)
+        direction_cosine = (horizon_cosine * direction_valid).sum() / direction_count
+        cosine_loss = ((1.0 - horizon_cosine) * direction_valid).sum() / direction_count
         output = {
             "latent_loss": latent_loss,
-            "latent_cosine_loss": 1.0 - direction_cosine,
+            "latent_cosine_loss": cosine_loss,
             "pred_future_latent": predicted_future,
         }
         if residual_mask is not None:
