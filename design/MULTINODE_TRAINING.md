@@ -56,7 +56,7 @@ GAWM 在视觉编码阶段使用 BF16 autocast，世界模型和动作分支显�
 发现只有 `world_model.delta_scale` 不同（约 `0.22269` 与 `0.12423`）。
 原实现仅对本 rank 的残差计算 RMS，ZeRO 的梯度同步不会同步该运行统计量。
 
-`visual_token_delta_world_model.py` 现在先对残差平方和、有效元素数进行全局
+`world_model/GAWM.py` 中的 `VisualTokenLatentWorldModel` 先对残差平方和、有效元素数进行全局
 all-reduce，再计算 RMS 和更新 EMA。按元素数汇总，避免不同 rank 的有效 mask
 数量不同时简单平均 RMS 产生偏差。参数名、形状和 checkpoint 格式保持兼容。
 

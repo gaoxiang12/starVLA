@@ -1,9 +1,10 @@
+# Requires audited head/left-wrist/right-wrist HDF5 with measured 16D endpose, then prepare_gawm_vtt.py.
 framework:
-  name: GAWM
+  name: GAWM-L
   world_model:
     encoder_spec: vitl16
     train_encoder: false
-    num_views: 2
+    num_views: 3
     n_future: 2
     ctx_len: 1
     future_time_offsets_s: null
@@ -29,21 +30,21 @@ framework:
     imagenet_normalized_inputs: true
     encoder_batch_size: 4
     sync_latent_stats: true
-    visual_frontend: lila
+    visual_frontend: gawm_l
     feat_layers:
     - -12
     - -8
     - -4
-    lila_adapter_dim: 768
-    lila_adapter_depth: 4
-    lila_adapter_heads: 8
-    lila_image_size:
+    gawm_l_adapter_dim: 768
+    gawm_l_adapter_depth: 4
+    gawm_l_adapter_heads: 8
+    gawm_l_image_size:
     - 320
     - 240
     camera_names:
     - head_camera
-    - front_camera
-    lila_bridge_norm: fixed_layernorm
+    - left_camera
+    - right_camera
   action_model:
     action_model_type: ACT
     action_horizon: 32
@@ -68,60 +69,9 @@ framework:
   lang_cond:
     type: vtt
     embed_dim: 384
-    task_vectors_path: playground/Pretrained/gawm_vtt/robotwin_official_head_front_train_20260926.json
-    task_names:
-    - aloha:adjust bottle
-    - aloha:beat block hammer
-    - aloha:blocks ranking rgb
-    - aloha:blocks ranking size
-    - aloha:click alarmclock
-    - aloha:click bell
-    - aloha:dump bin bigbin
-    - aloha:grab roller
-    - aloha:handover block
-    - aloha:handover mic
-    - aloha:hanging mug
-    - aloha:lift pot
-    - aloha:move can pot
-    - aloha:move pillbottle pad
-    - aloha:move playingcard away
-    - aloha:move stapler pad
-    - aloha:open laptop
-    - aloha:open microwave
-    - aloha:pick diverse bottles
-    - aloha:pick dual bottles
-    - aloha:place a2b left
-    - aloha:place a2b right
-    - aloha:place bread basket
-    - aloha:place bread skillet
-    - aloha:place burger fries
-    - aloha:place can basket
-    - aloha:place cans plasticbox
-    - aloha:place container plate
-    - aloha:place dual shoes
-    - aloha:place empty cup
-    - aloha:place fan
-    - aloha:place mouse pad
-    - aloha:place object basket
-    - aloha:place object scale
-    - aloha:place object stand
-    - aloha:place phone stand
-    - aloha:place shoe
-    - aloha:press stapler
-    - aloha:put bottles dustbin
-    - aloha:put object cabinet
-    - aloha:rotate qrcode
-    - aloha:scan object
-    - aloha:shake bottle
-    - aloha:shake bottle horizontally
-    - aloha:stack blocks three
-    - aloha:stack blocks two
-    - aloha:stack bowls three
-    - aloha:stack bowls two
-    - aloha:stamp seal
-    - aloha:turn switch
+    task_vectors_path: playground/Pretrained/gawm_vtt/robotwin_train.json
 seed: 42
-run_id: gawm_robotwin_head_front_lila_vtt_norm_c_12plus4
+run_id: gawm_l_robotwin_vtt_c_12plus4
 run_root_dir: playground/Checkpoints
 wandb_project: starVLA_RoboTwin
 wandb_entity: disabled
@@ -129,7 +79,7 @@ is_debug: false
 datasets:
   vla_data:
     dataset_py: robotwin_official_hdf5
-    data_root_dir: playground/Datasets/LiLaWAM_RoboTwin_Official
+    data_root_dir: playground/Datasets/RoboTwin3View_HDF5
     data_mix: robotwin_official_hdf5
     action_horizon: 32
     future_recorded_offsets:
@@ -143,11 +93,12 @@ datasets:
     prefetch_factor: 2
     persistent_workers: true
     pin_memory: true
-    expected_frames: 6120962
+    expected_frames: null
     task_language_mode: dataset_name
     cameras:
     - head_camera
-    - front_camera
+    - left_camera
+    - right_camera
     image_channel_order: rgb
     strict_camera_views: true
 trainer:

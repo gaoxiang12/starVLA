@@ -2,7 +2,7 @@
 # Licensed under the MIT License, Version 1.0 (the "License");
 """GAWM and the current fixed-DINO compact study.
 
-The current recipe pools frozen DINO features with the trainable LiLa adapter,
+The current recipe pools frozen DINO features with the trainable GAWM-L adapter,
 conditions future prediction on VTT, and decodes actions with ACT. Compact-study
 options remain available. Legacy grid/text recipes still load, while retired
 spatial-focus and contact experiments require their archived source snapshots.
@@ -28,6 +28,7 @@ if str(_workspace_root) not in sys.path:
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.model.framework.base_framework import baseframework
 from starVLA.model.framework.share_tools import merge_framework_config
+from starVLA.model.gawm_config import migrate_gawm_config
 from starVLA.model.modules.action_model.ACT_ActionHeader import (
     TurboStyleACTActionHead,
 )
@@ -37,11 +38,12 @@ from starVLA.model.modules.action_model.action_loss import (
 )
 from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.spatial_checkpoint import resize_spatial_checkpoint
-from starVLA.model.modules.world_model.visual_token_delta_world_model import (
+from starVLA.model.modules.world_model.GAWM import (
+    CompactFixedDinoWorldModel,
+    FixedDinoWorldModel,
     VisualTokenLatentWorldModel,
 )
-from starVLA.model.modules.world_model.fixed_dino_world_model import FixedDinoWorldModel
-from starVLA.model.modules.gawm_lila_vision import LiLaVisualPooler, VTTConditioner
+from starVLA.model.modules.gawm_l_vision import GAWMLVisualPooler, VTTConditioner
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
@@ -266,7 +268,6 @@ class GAWMDefaultConfig:
             "loss_latent_weight": 1.0,
             "latent_cosine_weight": 0.1,
             "detach_wm_input": True,
-            "latent_stats_momentum": 0.9,
             "residual_predictor_dim": 384,
             "residual_predictor_depth": 4,
             "residual_predictor_heads": 6,
@@ -308,6 +309,7 @@ class GAWMDefaultConfig:
     )
 
 
+@FRAMEWORK_REGISTRY.register("GAWM-L")
 @FRAMEWORK_REGISTRY.register("GAWM")
 class GAWM(baseframework):
     """Checkpoint-compatible unified geometry-aware world model."""
@@ -317,7 +319,7 @@ class GAWM(baseframework):
         # Match LeRobotSingleDataset._pack_sample, including old checkpoints
         # whose configs do not explicitly declare the RGB resize filter.
         data_cfg = self.config.datasets.vla_data
-        if getattr(self.config, "framework", {}).get("world_model", {}).get("visual_frontend", "grid") == "lila":
+        if getattr(self.config, "framework", {}).get("world_model", {}).get("visual_frontend", "grid") == "gawm_l":
             return "opencv_linear"
         if data_cfg.get("packed_image_size") is not None:
             return data_cfg.get("image_resize_resample", "bicubic")
@@ -325,10 +327,17 @@ class GAWM(baseframework):
 
     def __init__(self, config: Optional[dict] = None, **kwargs) -> None:
         super().__init__()
-        self.config = merge_framework_config(GAWMDefaultConfig, config)
+        self.config = migrate_gawm_config(merge_framework_config(GAWMDefaultConfig, config))
         wm_cfg = self.config.framework.world_model
         action_cfg = self.config.framework.action_model
         lang_cfg = self.config.framework.lang_cond
+        for retired in ("freeze_visual_token_pooler", "condition_world_model_on_state",
+                        "state_conditioning_mode"):
+            if retired in wm_cfg:
+                raise ValueError(
+                    f"{retired} has been retired from GAWM; use the experiment's "
+                    "archived source_snapshot to reproduce historical runs"
+                )
         for retired in ("spatial_focus", "contact_objective"):
             if self.config.framework.get(retired, {}).get("enabled", False):
                 raise ValueError(
@@ -351,7 +360,7 @@ class GAWM(baseframework):
         self.conditioning_type = str(lang_cfg.type).strip().lower()
         if self.conditioning_type not in ("text", "vtt"):
             raise ValueError("GAWM conditioning must be text or vtt")
-        self.lila_vision = wm_cfg.get("visual_frontend", "grid") == "lila"
+        self.gawm_l_vision = wm_cfg.get("visual_frontend", "grid") == "gawm_l"
         self.dense_temporal = float(wm_cfg.get("dense_temporal_smoothness_weight", 0.)) > 0
         if self.dense_temporal and (wm_cfg.get("future_objective") != "fixed_dino_patches"
                 or not self.config.datasets.vla_data.get("temporal_neighbors", False)):
@@ -361,22 +370,22 @@ class GAWM(baseframework):
             raise ValueError("Unknown future objective")
         if self.compact_options and not self.fixed_dino_objective:
             raise ValueError("Compact study arms require fixed DINO patch supervision")
-        if self.fixed_dino_objective and (not self.lila_vision or wm_cfg.train_encoder
-                or wm_cfg.detach_wm_input or wm_cfg.get("lila_bridge_norm") != "fixed_layernorm"
+        if self.fixed_dino_objective and (not self.gawm_l_vision or wm_cfg.train_encoder
+                or wm_cfg.detach_wm_input or wm_cfg.get("gawm_l_bridge_norm") != "fixed_layernorm"
                 or float(wm_cfg.latent_cosine_weight) != 0.):
-            raise ValueError("Fixed DINO supervision requires frozen LiLa, normalized bridge, attached input, zero legacy cosine weight")
-        if self.lila_vision:
-            self.image_size = tuple(wm_cfg.get("lila_image_size", [320, 240]))
+            raise ValueError("Fixed DINO supervision requires frozen GAWM-L, normalized bridge, attached input, zero legacy cosine weight")
+        if self.gawm_l_vision:
+            self.image_size = tuple(wm_cfg.get("gawm_l_image_size", [320, 240]))
             cameras = wm_cfg.get("camera_names")
             data_cameras = self.config.datasets.vla_data.get("cameras")
             if cameras is not None and len(cameras) != int(wm_cfg.num_views):
                 raise ValueError("Physical camera names must match num_views")
             if data_cameras is not None and cameras is not None and list(data_cameras) != list(cameras):
                 raise ValueError("Training camera order differs from model camera order")
-        if wm_cfg.get("visual_frontend", "grid") not in ("grid", "lila"):
+        if wm_cfg.get("visual_frontend", "grid") not in ("grid", "gawm_l"):
             raise ValueError("Unknown visual_frontend")
-        if self.lila_vision and wm_cfg.get("resize_spatial_embeddings_on_load", False):
-            raise ValueError("Learned LiLa queries cannot use spatial-grid checkpoint/focus operations")
+        if self.gawm_l_vision and wm_cfg.get("resize_spatial_embeddings_on_load", False):
+            raise ValueError("Learned GAWM-L queries cannot use spatial-grid checkpoint/focus operations")
 
         self.backbone = get_world_model(config=self.config)
         wm_hidden = int(self.backbone.model.config.hidden_size)
@@ -452,15 +461,15 @@ class GAWM(baseframework):
         if patch_dim is None:
             patch_dim = self.backbone.encoder.config.hidden_size
         self.visual_tokens_per_view = int(wm_cfg.visual_tokens_per_view)
-        if self.lila_vision:
-            self.visual_token_pooler = LiLaVisualPooler(
+        if self.gawm_l_vision:
+            self.visual_token_pooler = GAWMLVisualPooler(
                 patch_dim=int(patch_dim), token_dim=self.visual_token_dim,
                 num_views=self.num_views, tokens_per_view=self.visual_tokens_per_view,
                 num_layers=len(wm_cfg.get("feat_layers", [-12, -8, -4])),
-                hidden_dim=int(wm_cfg.get("lila_adapter_dim", 768)),
-                depth=int(wm_cfg.get("lila_adapter_depth", 4)),
-                heads=int(wm_cfg.get("lila_adapter_heads", 8)),
-                bridge_norm=str(wm_cfg.get("lila_bridge_norm", "none")))
+                hidden_dim=int(wm_cfg.get("gawm_l_adapter_dim", 768)),
+                depth=int(wm_cfg.get("gawm_l_adapter_depth", 4)),
+                heads=int(wm_cfg.get("gawm_l_adapter_heads", 8)),
+                bridge_norm=str(wm_cfg.get("gawm_l_bridge_norm", "none")))
         else:
             self.visual_token_pooler = VisualTokenPooler(
                 patch_dim=int(patch_dim),
@@ -470,20 +479,11 @@ class GAWM(baseframework):
                 input_grid_shape=wm_cfg.get("input_grid_shape"),
             )
         self.num_visual_tokens = self.visual_token_pooler.num_tokens
-        self.world_model = VisualTokenLatentWorldModel(
-            latent_dim=self.visual_token_dim,
-            goal_dim=self.task_emb_dim,
-            n_future=self.n_future,
-            num_tokens=self.num_visual_tokens,
-            dim=int(wm_cfg.residual_predictor_dim),
-            depth=int(wm_cfg.residual_predictor_depth),
-            num_heads=int(wm_cfg.residual_predictor_heads),
-            ffn_dim=int(wm_cfg.residual_predictor_ffn),
-            stats_momentum=float(wm_cfg.latent_stats_momentum),
-            detach_input=bool(wm_cfg.detach_wm_input),
-        )
-        self.world_model.sync_stats = bool(wm_cfg.get("sync_latent_stats", False))
         if self.fixed_dino_objective:
+            # Historical checkpoint configs contain these adapter-latent-only
+            # settings. Drop them from the resolved fixed-teacher configuration.
+            wm_cfg.pop("latent_stats_momentum", None)
+            wm_cfg.pop("sync_latent_stats", None)
             patch_size = int(getattr(self.backbone.encoder.config, "patch_size", 16))
             width, height = self.image_size
             # RoboTwin is sampled in recorded-frame coordinates; no assumed FPS.
@@ -498,7 +498,6 @@ class GAWM(baseframework):
             world_class = FixedDinoWorldModel
             compact_kwargs = {}
             if self.compact_options:
-                from starVLA.model.modules.world_model.compact_gawm import CompactFixedDinoWorldModel
                 world_class = CompactFixedDinoWorldModel
                 state_dims = {int(spec["state_dim"]) for spec in self.embodiment_head_specs.values()}
                 if len(state_dims) != 1:
@@ -520,7 +519,20 @@ class GAWM(baseframework):
                 time_offsets=objective_offsets,
                 temporal_reference_dt=reference_dt,
                 dense_smoothness_weight=float(wm_cfg.get("dense_temporal_smoothness_weight", 0.)))
-
+        else:
+            self.world_model = VisualTokenLatentWorldModel(
+                latent_dim=self.visual_token_dim,
+                goal_dim=self.task_emb_dim,
+                n_future=self.n_future,
+                num_tokens=self.num_visual_tokens,
+                dim=int(wm_cfg.residual_predictor_dim),
+                depth=int(wm_cfg.residual_predictor_depth),
+                num_heads=int(wm_cfg.residual_predictor_heads),
+                ffn_dim=int(wm_cfg.residual_predictor_ffn),
+                stats_momentum=float(wm_cfg.get("latent_stats_momentum", 0.9)),
+                detach_input=bool(wm_cfg.detach_wm_input),
+            )
+            self.world_model.sync_stats = bool(wm_cfg.get("sync_latent_stats", False))
 
         self.action_models = nn.ModuleDict()
         for tag, spec in self.embodiment_head_specs.items():
@@ -546,7 +558,7 @@ class GAWM(baseframework):
 
     def train(self, mode=True):
         super().train(mode)
-        if self.lila_vision:
+        if self.gawm_l_vision:
             self.backbone.encoder.eval()
         return self
 
@@ -656,12 +668,11 @@ class GAWM(baseframework):
     ) -> torch.Tensor:
         return action_model.decode_action_queries(visual_tokens, state=state, **({"task": task} if task is not None else {}))
 
-    def _predict_action_chunk(self, action_model, visual_tokens, state, memories,
-                              actions=None, action_valid_mask=None, task=None):
+    def _predict_action_chunk(self, action_model, visual_tokens, state, *, task=None):
         """Decode the current and predicted visual tokens with ACT."""
         queries = self._pool_visual_tokens_to_action_queries(
             visual_tokens, state=state, action_model=action_model, **({"task": task} if task is not None else {}))
-        return action_model.predict_action(queries), None, {}
+        return action_model.predict_action(queries)
 
     def _action_gripper_indices(self, robot_tag: str) -> tuple[int, ...]:
         return tuple(
@@ -776,7 +787,7 @@ class GAWM(baseframework):
 
     def _pad_inference_views(self, frame) -> tuple[list, list[bool]]:
         views = list(frame) if isinstance(frame, (list, tuple)) else [frame]
-        if self.lila_vision and len(views) != self.num_views:
+        if self.gawm_l_vision and len(views) != self.num_views:
             raise ValueError(f"Expected exactly {self.num_views} physical camera views")
         if self.config.framework.world_model.get("imagenet_normalized_inputs", False):
             if len(views) != self.num_views or not all(isinstance(v, torch.Tensor) for v in views):
@@ -941,7 +952,6 @@ class GAWM(baseframework):
                 **compact_kwargs,
                 ctx_len=1,
                 goal=task_emb,
-                update_stats=True,
                 loss_mask=self._wm_loss_mask_tensor(
                     examples, view_valid_mask, latent.device
                 ),
@@ -961,9 +971,8 @@ class GAWM(baseframework):
             variance_loss = 0.5 * (source_var + pred_var)
             mean_cosine = 0.5 * (source_cos + pred_cos)
 
-            pred_actions, _, _ = self._predict_action_chunk(
-                action_model, head_tokens, current_state, None,
-                actions=actions, action_valid_mask=action_valid_mask,
+            pred_actions = self._predict_action_chunk(
+                action_model, head_tokens, current_state,
                 **({"task": task_emb} if self.compact_act_task else {}))
             l1_action_loss = masked_action_l1_loss(
                 pred_actions, actions, action_valid_mask
@@ -993,7 +1002,7 @@ class GAWM(baseframework):
             "visual_token_variance_loss": variance_loss.detach(),
             "visual_token_mean_cosine": mean_cosine.detach(),
         }
-        if self.lila_vision:
+        if self.gawm_l_vision:
             output["visual_content_rms"] = content_latent.detach().float().square().mean().sqrt()
             output["visual_tokens_rms"] = latent.detach().float().square().mean().sqrt()
             if not self.fixed_dino_objective:
@@ -1023,7 +1032,7 @@ class GAWM(baseframework):
         inference_view_masks = []
         for example in examples:
             current, inferred_mask = self._pad_inference_views(example["image"])
-            if train_obs_image_size and not self.lila_vision:
+            if train_obs_image_size and not self.gawm_l_vision:
                 current = resize_images(current, target_size=train_obs_image_size)
             frames_per_example.append([current])
             inference_view_masks.append(
@@ -1056,8 +1065,8 @@ class GAWM(baseframework):
                     for i, e in enumerate(examples)])
             predicted_future = self.world_model.regress_future(latent, goal=task_emb, **compact_kwargs)
             head_tokens = torch.cat([latent, predicted_future], dim=1)
-            pred_actions, _, _ = self._predict_action_chunk(
-                action_model, head_tokens, current_state, None,
+            pred_actions = self._predict_action_chunk(
+                action_model, head_tokens, current_state,
                 **({"task": task_emb} if self.compact_act_task else {}))
         result = {"normalized_actions": pred_actions.detach().float().cpu().numpy()}
         if self.compact_history:

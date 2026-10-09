@@ -51,7 +51,7 @@
 34项相关测试通过；四套件真实loader核对主图像、未来图像、状态、动作及未来mask与原路径一致，轨迹边界正确屏蔽。梯度测试覆盖视觉adapter和预测器，冻结DINO无梯度，时间邻帧不泄漏给动作推理。
 
 - 基线诊断和原始时间序列：`.cache/libero_temporal_20260930/`
-- 配置：`examples/LIBERO/train_files/starvla_gawm_libero_dense_temporal_c_80k.yaml`
+- 配置：`examples/LIBERO/train_files/starvla_gawm_l_libero_dense_temporal_c_80k.yaml`
 - 控制目录：`playground/Queues/libero_dense_temporal_80k_20260930/`
 - 新训练：`playground/Checkpoints/gawm_libero_dense_temporal_c_80k_b160_20260930/`
 - 之后的闭环对照：控制目录`comparison.json`和`comparison.md`

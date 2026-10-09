@@ -7,7 +7,7 @@ import torch
 
 from examples.LiLaWAM.gawm_official import OfficialNormalizer, prepare_precision
 from starVLA.model.framework.WM4A.GAWM import VisualTokenPooler
-from starVLA.model.modules.world_model.visual_token_delta_world_model import VisualTokenLatentWorldModel
+from starVLA.model.modules.world_model.GAWM import VisualTokenLatentWorldModel
 from examples.Robotwin.eval_files.lila_wam_interface import ModelClient
 
 

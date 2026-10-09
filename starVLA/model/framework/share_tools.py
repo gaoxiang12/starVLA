@@ -474,6 +474,9 @@ def apply_config_compat(cfg, *, strict: bool = False):
             "[apply_config_compat] migrated legacy framework name to 'GAWM'"
         )
 
+    from starVLA.model.gawm_config import migrate_gawm_config
+    cfg = migrate_gawm_config(cfg)
+
     # ---- 2. action_horizon ↔ future_action_window_size ----
     am_path = "framework.action_model"
     am = OmegaConf.select(cfg, am_path, default=None)

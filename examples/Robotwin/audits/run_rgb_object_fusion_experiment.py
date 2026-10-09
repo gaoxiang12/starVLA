@@ -54,7 +54,7 @@ def main():
         'starVLA/model/modules/object_memory_fusion.py', 'starVLA/model/modules/rgb_object_core_loss.py',
         'starVLA/dataloader/rgb_object_supervision.py', 'starVLA/dataloader/rgb_object_supervision_core.py',
         'starVLA/model/modules/world_model/__init__.py', 'starVLA/training/train_starvla.py',
-        'deployment/model_server/tools/spatial_ablation.py', 'examples/Robotwin/audits/analyze_rgb_focus_usage.py')]
+        'examples/Robotwin/audits/spatial_ablation.py', 'examples/Robotwin/audits/analyze_rgb_focus_usage.py')]
     hashes = {str(path):digest(path) for path in files}
     launch = json.loads((SMOKE/'launch.json').read_text())
     assert launch['config_sha256'] == digest(SMOKE_CONFIG)
@@ -129,7 +129,7 @@ def main():
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 6696))
         execute([str(PYTHON), str(AUDITS/'run_rgb_color_diagnostic.py'), '--gpu', '6', '--port', '6696',
-            '--episodes', '10', '--orders', 'rgb', '--execute-horizon', '16', '--spatial-ablation', 'full',
+            '--episodes', '10', '--orders', 'rgb', '--execute-horizon', '16',
             '--checkpoint', str(RUN/'final_model/pytorch_model.pt'), '--output', str(RUN/'screen10')], RUN/'eval.log')
         assert json.loads((RUN/'screen10/status.json').read_text())['state'] == 'complete'
         status('complete')

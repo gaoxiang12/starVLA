@@ -14,7 +14,7 @@ from starVLA.model.framework.WM4A.GAWM import (
     VisualTokenPooler,
 )
 from starVLA.model.framework.share_tools import apply_config_compat
-from starVLA.model.modules.world_model.visual_token_delta_world_model import (
+from starVLA.model.modules.world_model.GAWM import (
     VisualTokenLatentWorldModel,
 )
 
@@ -141,6 +141,40 @@ class GAWMComponentsTest(unittest.TestCase):
         (output["latent_loss"] + output["latent_cosine_loss"]).backward()
         self.assertIsNone(latent.grad)
         self.assertIsNotNone(model.residual_predictor.anchor_proj.weight.grad)
+
+
+def small_world_model():
+    return VisualTokenLatentWorldModel(latent_dim=8, goal_dim=8, n_future=2,
+                                      num_tokens=4, dim=8, depth=1, num_heads=2, ffn_dim=16)
+
+
+def test_padding_does_not_add_cosine_loss_or_change_scale():
+    model = small_world_model().train()
+    latent = torch.randn(2, 3, 4, 8)
+    mask = torch.zeros(2, 3, 4, dtype=torch.bool)
+    old_scale = model.delta_scale.clone()
+    result = model(latent, ctx_len=1, loss_mask=mask)
+    assert result["latent_loss"].item() == 0
+    assert result["latent_cosine_loss"].item() == 0
+    assert model._delta_scale_ready.item() == 0
+    torch.testing.assert_close(old_scale, model.delta_scale)
+    (result["latent_loss"] + result["latent_cosine_loss"]).backward()
+    assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
+
+
+def test_masked_horizon_does_not_dilute_direction_accuracy():
+    model = small_world_model().eval()
+    with torch.no_grad():
+        model.residual_predictor.out.bias.fill_(1.0)
+    latent = torch.zeros(1, 3, 4, 8)
+    latent[:, 1] = 1
+    latent[:, 2] = -100
+    mask = torch.ones(1, 3, 4, dtype=torch.bool)
+    mask[:, 2] = False
+    result = model(latent, ctx_len=1, loss_mask=mask)
+    torch.testing.assert_close(result["latent_cosine_loss"], torch.tensor(0.), atol=1e-6, rtol=0)
+    torch.testing.assert_close(result["delta_direction_cosine"], torch.tensor(1.))
+    assert result["latent_loss"].item() == 0
 
 
 if __name__ == "__main__":

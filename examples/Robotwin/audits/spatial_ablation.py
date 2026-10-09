@@ -1,4 +1,7 @@
-"""Explicit inference-only interventions on GAWM spatial memories."""
+"""Offline interventions for historical GAWM source snapshots with spatial memories.
+
+Current GAWM and its policy server no longer expose this retired experiment.
+"""
 
 
 def apply_spatial_ablation(model, mode):

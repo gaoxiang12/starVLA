@@ -8,7 +8,7 @@ import numpy as np
 from omegaconf import OmegaConf
 import torch
 
-from deployment.model_server.tools.spatial_ablation import apply_spatial_ablation
+from examples.Robotwin.audits.spatial_ablation import apply_spatial_ablation
 from starVLA.dataloader.lerobot_datasets import get_vla_dataset
 from starVLA.model.framework.base_framework import build_framework
 

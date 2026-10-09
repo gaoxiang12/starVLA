@@ -16,7 +16,7 @@ from examples.LiLaWAM.run_gawm_official import snapshot, SOURCE, VENV
 BASELINE = Path('/data/gaoxiang/ckpts/lila_starvla/gawm_official_B_20260917')
 GATE = BASELINE/'eval/step316000_blocks_ranking_rgb_clean_100ep_seed0/summary.json'
 MODEL_FILES = ['examples/LiLaWAM/gawm_official.py', 'starVLA/model/framework/WM4A/GAWM.py',
-    'starVLA/model/modules/world_model/GAWM.py', 'starVLA/model/modules/world_model/visual_token_delta_world_model.py',
+    'starVLA/model/modules/world_model/GAWM.py',
     'starVLA/model/modules/action_model/ACT_ActionHeader.py', 'starVLA/model/modules/action_model/action_loss.py',
     'starVLA/task_language.py']
 

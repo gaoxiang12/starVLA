@@ -34,7 +34,7 @@ def main():
     sources=[Path(__file__),OUT/'preparation.json',OUT/'protocol.json',OUT/'data_audit.json',OUT/'integration.json',
         ROOT/'starVLA/model/framework/VLM4A/QwenGAWM.py',
         ROOT/'starVLA/model/framework/VLM4A/QwenGAWMWorld.py',
-        ROOT/'starVLA/model/modules/world_model/visual_token_delta_world_model.py',
+        ROOT/'starVLA/model/modules/world_model/GAWM.py',
         ROOT/'starVLA/model/modules/action_model/ACT_ActionHeader.py',
         ROOT/'starVLA/model/modules/vlm/QWen3.py',ROOT/'starVLA/model/framework/base_framework.py',
         ROOT/'starVLA/training/train_starvla.py',ROOT/'starVLA/dataloader/lerobot_datasets.py',

@@ -6,9 +6,9 @@ from PIL import Image
 import pytest
 import torch
 from torch import nn
-from starVLA.model.modules.world_model.fixed_dino_world_model import FixedDinoWorldModel
+from starVLA.model.modules.world_model.GAWM import FixedDinoWorldModel
 from starVLA.model.framework.WM4A.GAWM import GAWM
-from test_gawm_lila_vision import backbone, tiny_config
+from test_gawm_l_vision import backbone, tiny_config
 
 @pytest.fixture(autouse=True)
 def threads():
@@ -80,7 +80,7 @@ def test_backbone_teacher_is_final_layer_patches_and_independent_of_adapter():
 def test_framework_backward_and_policy_reload():
     cfg,tag=tiny_config(2)
     cfg.framework.world_model.update(dict(future_objective='fixed_dino_patches',detach_wm_input=False,
-        latent_cosine_weight=0.,lila_bridge_norm='fixed_layernorm',feature_decoder_dim=8,
+        latent_cosine_weight=0.,gawm_l_bridge_norm='fixed_layernorm',feature_decoder_dim=8,
         feature_decoder_depth=1,feature_decoder_heads=2))
     def encoder(**kwargs):
         b=backbone(); b.encoder.config.patch_size=8

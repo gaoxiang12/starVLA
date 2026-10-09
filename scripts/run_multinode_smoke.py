@@ -59,7 +59,7 @@ def main():
                 "scripts/gawm_accelerate.yaml", "scripts/gawm_deepspeed.json",
                 "examples/LIBERO/train_files/starvla_gawm_multinode.yaml",
                 "examples/UnifiedPretrain/train_files/data_registry/data_config.py",
-                "starVLA/model/modules/world_model/visual_token_delta_world_model.py",
+                "starVLA/model/modules/world_model/GAWM.py",
             ]:
                 sync(host, str(root / filename), f"{host}:{root / filename}")
 

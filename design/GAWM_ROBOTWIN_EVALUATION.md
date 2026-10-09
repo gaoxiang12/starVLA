@@ -2,7 +2,7 @@
 
 ## LiLa＋VTT＋归一化版本（2026-09-29）
 
-最终 step765120 的 Clean 50×10 评测已完成：**38.6%（193/500）**，详见 [本轮评测记录](GAWM_ROBOTWIN_LILA_VTT_NORM_EVALUATION.md)。实时状态以输出目录 summary.json 为准。
+最终 step765120 的 Clean 50×10 评测已完成：**38.6%（193/500）**，详见 [本轮评测记录](GAWM_L_ROBOTWIN_VTT_NORM_EVALUATION.md)。实时状态以输出目录 summary.json 为准。
 
 ## 双相机 RGB 最终权重评测（2026-09-27）
 

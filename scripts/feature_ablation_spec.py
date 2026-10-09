@@ -73,7 +73,9 @@ def _asset(path):
 
 
 def _resolved(value):
+    from starVLA.model.gawm_config import migrate_gawm_config
     cfg = apply_training_recipe(_config(value))
+    migrate_gawm_config(cfg)
     if cfg.trainer.recipe != "c":
         raise ValueError("Feature ablations require the reference C recipe")
     batch = _positive_int(cfg.trainer.expected_global_batch_size, "global batch")
@@ -148,10 +150,10 @@ def validate_config(base, candidate):
         raise ValueError("Feature ablation changed protected fields: " + ", ".join(sorted(forbidden)))
 
     wm = resolved_after.framework.world_model
-    if (wm.get("visual_frontend") != "lila" or wm.get("future_objective") != "fixed_dino_patches"
+    if (wm.get("visual_frontend") != "gawm_l" or wm.get("future_objective") != "fixed_dino_patches"
             or wm.get("train_encoder") is not False or wm.get("detach_wm_input") is not False
-            or wm.get("lila_bridge_norm") != "fixed_layernorm" or float(wm.latent_cosine_weight) != 0.):
-        raise ValueError("Reference must retain frozen LiLa features and fixed DINO patch supervision")
+            or wm.get("gawm_l_bridge_norm") != "fixed_layernorm" or float(wm.latent_cosine_weight) != 0.):
+        raise ValueError("Reference must retain frozen GAWM-L features and fixed DINO patch supervision")
     layers = list(wm.feat_layers)
     if len(layers) != 3 or layers not in VARIANTS.values():
         raise ValueError("feat_layers must be one of the four capacity-matched variants")
@@ -264,7 +266,7 @@ def asset_contract(config, *, baseline_dir=None):
         statistics = Path(baseline_dir) / "dataset_statistics.json"
         if statistics.is_file():
             assets["saved_dataset_statistics"] = _asset(statistics)
-    width, height = map(int, wm.lila_image_size)
+    width, height = map(int, wm.gawm_l_image_size)
     patch_size = int(spec["patch_size"])
     return {
         "assets": assets,

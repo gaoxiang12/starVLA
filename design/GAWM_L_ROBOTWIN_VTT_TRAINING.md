@@ -1,6 +1,6 @@
-# RoboTwin LiLa 视觉前端＋VTT：审查与正式训练
+# RoboTwin GAWM-L 视觉前端＋VTT：审查与正式训练
 
-**运行状态更新：旧 run 已按用户要求停止，最后完整 checkpoint 为 step183000。归一化修复版已从头启动，见 `GAWM_ROBOTWIN_LILA_VTT_NORM_TRAINING.md`。**
+**运行状态更新：旧 run 已按用户要求停止，最后完整 checkpoint 为 step183000。归一化修复版已从头启动，见 `GAWM_L_ROBOTWIN_VTT_NORM_TRAINING.md`。**
 
 ## 后续诊断修正（2026-09-27）
 
@@ -45,7 +45,7 @@
 - 每 1,000 步保存完整状态，保留最近两份及阶段边界；rank 0 本机保存 checkpoint。
 - 正式 run 使用短训验证过的源码快照 `playground/Checkpoints/gawm_robotwin_lila_vtt_smoke32_20260927_114306/source_snapshot`，从头初始化，没有载入短训权重或旧双相机权重。
 - Supervisor PID：`3019811`；日志：`.cache/robotwin_lila_training/gawm_robotwin_head_front_lila_vtt_c_20260927_114502.log`。
-- 配置：`examples/Robotwin/train_files/starvla_gawm_robotwin_head_front_lila_vtt_c_12plus4.yaml`；完整实际参数见 run 下 `config.full.yaml`。
+- 配置：`examples/Robotwin/train_files/starvla_gawm_l_robotwin_head_front_vtt_c_12plus4.yaml`；完整实际参数见 run 下 `config.full.yaml`。
 - 最新启动指针：`.cache/robotwin_lila_training/latest_run.json`。
 - 进度：run 下 `cluster_status.json` 和 `metrics.jsonl`。
 

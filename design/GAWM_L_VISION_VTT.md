@@ -1,8 +1,10 @@
-# GAWM 的 LiLa-WAM 视觉前端与 VTT
+# GAWM-L 视觉前端与 VTT
+
+当前主模型名称为 GAWM-L，对应冻结 DINO-L；Python 视觉模块为 `gawm_l_vision`，池化器为 `GAWMLVisualPooler`。下文保留历史运行记录和上游来源名称。
 
 ## 2026-09-27 运行更新
 
-用户确认 RoboTwin 先使用现有头部＋前方两路。全量 VTT 已生成并通过节点哈希验证；新模型审查与 32 卡短训完成，正式训练已启动。当前配置与审查限制见 `GAWM_ROBOTWIN_LILA_VTT_TRAINING.md`。以下 2026-09-26 内容为最初实现记录，其中“尚未生成/启动”和三路数据缺项属于当时状态。
+用户确认 RoboTwin 先使用现有头部＋前方两路。全量 VTT 已生成并通过节点哈希验证；新模型审查与 32 卡短训完成，正式训练已启动。当前配置与审查限制见 `GAWM_L_ROBOTWIN_VTT_TRAINING.md`。以下 2026-09-26 内容为最初实现记录，其中“尚未生成/启动”和三路数据缺项属于当时状态。
 
 2026-09-26：新增可选视觉前端和两套训练配置。未启动新训练，也未修改现有训练 run 的源码快照。
 
@@ -24,8 +26,8 @@ GAWM 的 `VisualTokenLatentWorldModel` 源文件未修改：仍为当前帧预�
 
 | 基准 | 配置 | 相机数与顺序 | 尺寸（宽×高） |
 |---|---|---|---|
-| RoboTwin | `examples/Robotwin/train_files/starvla_gawm_robotwin_lila_vtt_c_12plus4.yaml` | 头部、左腕、右腕，3 路 | 320×240 |
-| LIBERO | `examples/LIBERO/train_files/starvla_gawm_libero_lila_vtt_c_12plus4.yaml` | 主视角、腕部，2 路 | 256×256 |
+| RoboTwin | `examples/Robotwin/train_files/starvla_gawm_l_robotwin_vtt_c_12plus4.yaml` | 头部、左腕、右腕，3 路 | 320×240 |
+| LIBERO | `examples/LIBERO/train_files/starvla_gawm_l_libero_vtt_c_12plus4.yaml` | 主视角、腕部，2 路 | 256×256 |
 
 图像在训练、VTT 预计算和推理中统一使用物理 RGB、OpenCV INTER_LINEAR 与 ImageNet 归一化。LIBERO 客户端从服务器读取尺寸，避免先缩到旧尺寸再放大。RoboTwin 客户端按 checkpoint 中的相机列表取图；旧单路、双路配置仍可使用。
 
@@ -37,7 +39,7 @@ GAWM 的 `VisualTokenLatentWorldModel` 源文件未修改：仍为当前帧预�
 
 ```bash
 PYTHONPATH=. .venv/bin/python scripts/prepare_gawm_vtt.py \
-  --config examples/LIBERO/train_files/starvla_gawm_libero_lila_vtt_c_12plus4.yaml \
+  --config examples/LIBERO/train_files/starvla_gawm_l_libero_vtt_c_12plus4.yaml \
   --device cpu
 ```
 
@@ -63,7 +65,7 @@ PYTHONPATH=. .venv/bin/python scripts/prepare_gawm_vtt.py \
 复查数值对齐：
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/check_gawm_lila_vision_parity.py \
+PYTHONPATH=. .venv/bin/python scripts/check_gawm_l_vision_parity.py \
   --upstream-file .cache/gawm_lila_alignment/models/vla_model_fm.py \
   --output .cache/gawm_lila_alignment/parity.json
 ```

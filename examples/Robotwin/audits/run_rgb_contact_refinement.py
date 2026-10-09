@@ -113,7 +113,7 @@ def main():
         else:
             command = [str(PYTHON), str(ROOT / 'examples/Robotwin/audits/run_rgb_color_diagnostic.py'),
                        '--gpu', gpu, '--port', '66' + gpu + '0', '--episodes', '10', '--orders', 'rgb',
-                       '--execute-horizon', '16', '--spatial-ablation', 'full',
+                       '--execute-horizon', '16',
                        '--checkpoint', str(run / 'final_model/pytorch_model.pt'),
                        '--output', str(run / 'screen10')]
         with (run / f'{stage}.log').open('x') as stream:

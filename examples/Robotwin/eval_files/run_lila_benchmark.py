@@ -159,7 +159,6 @@ def main():
     if framework.get('name') == 'GAWMOfficial':
         files += [ROOT / 'examples/LiLaWAM/gawm_official.py', ROOT / 'starVLA/model/framework/WM4A/GAWM.py',
                   ROOT / 'starVLA/model/modules/world_model/GAWM.py',
-                  ROOT / 'starVLA/model/modules/world_model/visual_token_delta_world_model.py',
                   ROOT / 'starVLA/model/modules/action_model/ACT_ActionHeader.py', ROOT / 'starVLA/task_language.py']
     else:
         files += [Path(settings.task_cond_dir) / task / "task_cond.npy" for task in tasks]

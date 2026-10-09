@@ -1,4 +1,4 @@
-# LiLa＋VTT＋固定归一化 GAWM：RoboTwin Clean 评测
+# GAWM-L＋VTT＋固定归一化：RoboTwin Clean 评测
 
 启动时间：2026-09-29T10:13:02.696683。**已完成：38.6%（193/500），50/50任务正常结束。** 实时状态以 [summary.json](../playground/Checkpoints/gawm_robotwin_head_front_lila_vtt_norm_c_20260927_210039/evaluations/clean10_seed0_step765120_lila_vtt_norm_20260929_101302/summary.json) 为准。
 

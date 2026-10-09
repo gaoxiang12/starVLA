@@ -1,11 +1,11 @@
-run_id: gawm_libero_ablation_lila_vtt_40k_20260929
+run_id: gawm_l_libero_ablation_vtt_40k_20260929
 run_root_dir: playground/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
 wandb_project: starVLA_UnifiedPretrain
 version_id: '0.21'
 framework:
-  name: GAWM
+  name: GAWM-L
   world_model:
     encoder_spec: vitl16
     train_encoder: false
@@ -34,21 +34,21 @@ framework:
     vision_encoder_path: playground/Pretrained/dinov3-vitl16-pretrain-lvd1689m
     sync_latent_stats: true
     encoder_batch_size: 4
-    visual_frontend: lila
+    visual_frontend: gawm_l
     feat_layers:
     - -12
     - -8
     - -4
-    lila_adapter_dim: 768
-    lila_adapter_depth: 4
-    lila_adapter_heads: 8
-    lila_image_size:
+    gawm_l_adapter_dim: 768
+    gawm_l_adapter_depth: 4
+    gawm_l_adapter_heads: 8
+    gawm_l_image_size:
     - 256
     - 256
     camera_names:
     - agentview
     - eye_in_hand
-    lila_bridge_norm: fixed_layernorm
+    gawm_l_bridge_norm: fixed_layernorm
   action_model:
     action_model_type: ACT
     action_horizon: 8

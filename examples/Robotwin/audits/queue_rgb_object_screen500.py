@@ -61,7 +61,7 @@ def main():
             probe.bind(('127.0.0.1', 6694))
         command = [str(PYTHON), str(ROOT / 'examples/Robotwin/audits/run_rgb_color_diagnostic.py'),
             '--gpu', selected, '--port', '6694', '--episodes', '10', '--orders', 'rgb',
-            '--execute-horizon', '16', '--spatial-ablation', 'full',
+            '--execute-horizon', '16',
             '--checkpoint', str(WEIGHTS), '--output', str(OUTPUT)]
         env = dict(os.environ, PYTHONPATH=str(ROOT), OMP_NUM_THREADS='4', PYTHONNOUSERSITE='1',
                    NO_ALBUMENTATIONS_UPDATE='1', WANDB_MODE='disabled')

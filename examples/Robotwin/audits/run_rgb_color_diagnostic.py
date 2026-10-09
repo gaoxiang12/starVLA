@@ -26,8 +26,6 @@ def main():
     parser.add_argument("--orders", nargs="+", choices=("rgb", "bgr"), default=["rgb", "bgr"])
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--checkpoint", type=Path, default=CHECKPOINT)
-    parser.add_argument("--spatial-ablation", default="full",
-                        choices=("full", "no_focus", "no_dense", "no_local", "no_goal", "no_objects"))
     parser.add_argument("--execute-horizon", type=int)
     args = parser.parse_args()
     if args.episodes <= 0:
@@ -42,9 +40,8 @@ def main():
                     checkpoint_mtime_ns=checkpoint.stat().st_mtime_ns,
                     seed=0, episodes=args.episodes, task="blocks_ranking_rgb", mode="demo_clean",
                     gpu=args.gpu, orders=args.orders, supervisor_pid=os.getpid(),
-                    spatial_ablation=args.spatial_ablation,
                     execute_horizon=args.execute_horizon,
-                    note="Screening, not final benchmark. Checkpoint and seed fixed across color orders; explicit spatial ablation applies to every order. Videos remain RGB.")
+                    note="Screening, not final benchmark. Checkpoint and seed fixed across color orders. Videos remain RGB.")
     save(campaign / "manifest.json", manifest)
     active = None
 
@@ -67,7 +64,6 @@ def main():
                        ROBOTWIN_RANKING_METRICS_PATH=str(run / "ranking_episode_metrics.jsonl"),
                        ROBOTWIN_COLOR_SNAPSHOT_DIR=str(run / "snapshots"),
                        ROBOTWIN_POLICY_TRACE_DIR=str(run / "policy_traces"),
-                       ROBOTWIN_SPATIAL_ABLATION=args.spatial_ablation,
                        ROBOTWIN_POLICY_CHANNEL_ORDER=order, ROBOTWIN_LOG_ROOT=str(run / "logs"),
                        ROBOTWIN_EVAL_VIDEO_LOG="1", ROBOTWIN_USE_BF16="0",
                        PYTHONNOUSERSITE="1", PYTHONUNBUFFERED="1", OMP_NUM_THREADS="4")

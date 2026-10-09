@@ -20,7 +20,7 @@ from starVLA.local_settings import cluster_host, ssh_target
 REPO = Path(__file__).resolve().parents[1]
 ROOT = os.environ.get('STARVLA_ROBOTWIN_DATA', str(REPO / 'playground/Datasets/LiLaWAM_RoboTwin_Official'))
 ENCODER = str(REPO / 'playground/Pretrained/dinov3-vitl16-pretrain-lvd1689m')
-CONFIG = REPO / 'examples/Robotwin/train_files/starvla_gawm_robotwin_head_front_lila_vtt_c_12plus4.yaml'
+CONFIG = REPO / 'examples/Robotwin/train_files/starvla_gawm_l_robotwin_head_front_vtt_c_12plus4.yaml'
 
 
 def write_json(path, value):
@@ -32,7 +32,7 @@ def write_json(path, value):
 
 def main(args):
     from omegaconf import OmegaConf
-    from starVLA.model.modules.gawm_lila_vision import VTTConditioner
+    from starVLA.model.modules.gawm_l_vision import VTTConditioner
 
     work = Path(args.output).resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ print(json.dumps(json.loads(open({str(work / 'data_readiness.json')!r}).read()))
     for name in ('robotwin_official_train_vtt.json', 'data_readiness.json'):
         subprocess.run(['scp', *opts, host + ':' + str(work / name), str(work / name)], check=True, timeout=60)
     from omegaconf import OmegaConf
-    from starVLA.model.modules.gawm_lila_vision import VTTConditioner
+    from starVLA.model.modules.gawm_l_vision import VTTConditioner
     cfg = OmegaConf.load(CONFIG)
     payload = json.loads((work / 'robotwin_official_train_vtt.json').read_text())
     assert sorted(payload['vectors']) == list(cfg.framework.lang_cond.task_names)

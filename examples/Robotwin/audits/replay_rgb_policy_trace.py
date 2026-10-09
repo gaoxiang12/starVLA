@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from deployment.model_server.policy_wrapper import PolicyServerWrapper
-from deployment.model_server.tools.spatial_ablation import apply_spatial_ablation
+from examples.Robotwin.audits.spatial_ablation import apply_spatial_ablation
 from starVLA.model.framework.WM4A.GAWM import GAWM
 
 

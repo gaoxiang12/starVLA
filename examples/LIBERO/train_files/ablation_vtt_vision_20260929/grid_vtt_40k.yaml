@@ -5,7 +5,7 @@ wandb_entity: your_wandb_entity
 wandb_project: starVLA_UnifiedPretrain
 version_id: '0.21'
 framework:
-  name: GAWM
+  name: GAWM-L
   world_model:
     encoder_spec: vitl16
     train_encoder: false

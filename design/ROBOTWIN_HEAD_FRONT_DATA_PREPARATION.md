@@ -2,7 +2,7 @@
 
 ## 2026-09-27 更新
 
-VTT 已完成生成及五机同步，`queue_status.json` 为 `complete`，50×1024 向量覆盖全部 27,071 条训练轨迹。新模型正式训练已在审查和多机短训通过后启动，详情见 `GAWM_ROBOTWIN_LILA_VTT_TRAINING.md`。下文等待 GPU 的内容是 2026-09-26 的准备记录。
+VTT 已完成生成及五机同步，`queue_status.json` 为 `complete`，50×1024 向量覆盖全部 27,071 条训练轨迹。新模型正式训练已在审查和多机短训通过后启动，详情见 `GAWM_L_ROBOTWIN_VTT_TRAINING.md`。下文等待 GPU 的内容是 2026-09-26 的准备记录。
 
 更新：2026-09-26。用户确认先用现有头部＋前方两路训练 LiLa 视觉前端＋VTT；新生成的 Clean 数据因缺少原始实测末端状态，本次不使用。
 
@@ -33,7 +33,7 @@ VTT 已完成生成及五机同步，`queue_status.json` 为 `complete`，50×10
 
 ## 训练配置
 
-`examples/Robotwin/train_files/starvla_gawm_robotwin_head_front_lila_vtt_c_12plus4.yaml`
+`examples/Robotwin/train_files/starvla_gawm_l_robotwin_head_front_vtt_c_12plus4.yaml`
 
 启用 LiLa 视觉前端和 VTT，设两路相机与上述真实数据路径，固定预期帧数与 50 个任务标识。相对于原三相机 LiLa 配置，世界模型配置仅改变 `num_views` 和 `camera_names`；其他世界模型和动作头设置保持不变。原三相机配置保留，不能用当前数据冒充腕部视角。
 

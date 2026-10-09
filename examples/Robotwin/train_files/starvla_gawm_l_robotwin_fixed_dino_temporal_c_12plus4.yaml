@@ -1,6 +1,5 @@
-# Official Clean + Randomized, physical RGB head/front; requires the generated VTT asset.
 framework:
-  name: GAWM
+  name: GAWM-L
   world_model:
     encoder_spec: vitl16
     train_encoder: false
@@ -9,9 +8,8 @@ framework:
     ctx_len: 1
     future_time_offsets_s: null
     loss_latent_weight: 1.0
-    latent_cosine_weight: 0.1
-    detach_wm_input: true
-    latent_stats_momentum: 0.9
+    latent_cosine_weight: 0.0
+    detach_wm_input: false
     residual_predictor_dim: 384
     residual_predictor_depth: 4
     residual_predictor_heads: 6
@@ -29,21 +27,28 @@ framework:
     - 20
     imagenet_normalized_inputs: true
     encoder_batch_size: 4
-    sync_latent_stats: true
-    visual_frontend: lila
+    visual_frontend: gawm_l
     feat_layers:
     - -12
     - -8
     - -4
-    lila_adapter_dim: 768
-    lila_adapter_depth: 4
-    lila_adapter_heads: 8
-    lila_image_size:
+    gawm_l_adapter_dim: 768
+    gawm_l_adapter_depth: 4
+    gawm_l_adapter_heads: 8
+    gawm_l_image_size:
     - 320
     - 240
     camera_names:
     - head_camera
     - front_camera
+    gawm_l_bridge_norm: fixed_layernorm
+    future_objective: fixed_dino_patches
+    feature_decoder_dim: 384
+    feature_decoder_depth: 2
+    feature_decoder_heads: 6
+    dino_current_weight: 0.1
+    temporal_smoothness_weight: 0.0
+    dense_temporal_smoothness_weight: 0.1
   action_model:
     action_model_type: ACT
     action_horizon: 32
@@ -121,7 +126,7 @@ framework:
     - aloha:stamp seal
     - aloha:turn switch
 seed: 42
-run_id: gawm_robotwin_head_front_lila_vtt_c_12plus4
+run_id: gawm_l_robotwin_fixed_dino_temporal_c_20261001
 run_root_dir: playground/Checkpoints
 wandb_project: starVLA_RoboTwin
 wandb_entity: disabled
@@ -150,6 +155,7 @@ datasets:
     - front_camera
     image_channel_order: rgb
     strict_camera_views: true
+    temporal_neighbors: true
 trainer:
   recipe: c
   freeze_modules: ''

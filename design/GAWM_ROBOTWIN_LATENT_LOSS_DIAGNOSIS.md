@@ -24,8 +24,8 @@
 ## 具体机制与代码位置
 
 1. 原 `VisualTokenPooler` 在投影后执行 `out_norm`，再加入位置编码，见 `starVLA/model/framework/WM4A/GAWM.py:156`。
-2. 新 `LiLaVisualPooler` 在 `self.bridge(adapted)` 后直接加入相机编码，没有对应输出归一化，见 `starVLA/model/modules/gawm_lila_vision.py:91`。LiLa 适配器是 pre-norm Transformer，输入/块内归一化不等于输出幅值有界。
-3. 原世界模型对 context、anchor、future target 使用 detach，见 `starVLA/model/modules/world_model/visual_token_delta_world_model.py:209`。视觉前端仍受动作和正则分支训练，但 latent 监督不会把目标的尺度压回去。
+2. 新 `LiLaVisualPooler` 在 `self.bridge(adapted)` 后直接加入相机编码，没有对应输出归一化，见 `starVLA/model/modules/gawm_l_vision.py:91`。LiLa 适配器是 pre-norm Transformer，输入/块内归一化不等于输出幅值有界。
+3. 原世界模型对 context、anchor、future target 使用 detach，当前实现位于 `starVLA/model/modules/world_model/GAWM.py` 的 `VisualTokenLatentWorldModel`。视觉前端仍受动作和正则分支训练，但 latent 监督不会把目标的尺度压回去。
 4. 视觉 diversity loss 基于余弦，基本不约束整体幅值；variance loss 只防止方差过小，超过阈值即为零，本轮一直几乎为零。因此没有有效的输出尺度上界。
 5. LiLa 原版未来特征监督是冻结 DINO 特征上的余弦损失。把它的可学习视觉适配器接到 GAWM 原有可学习 latent 的 raw MSE 目标，需要额外维持 GAWM 的接口尺度约定。逐模块数值对齐并不能验证这种跨模块约定。
 

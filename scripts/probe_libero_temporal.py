@@ -62,7 +62,7 @@ for step in map(int,args.steps.split(',')):
         for a in range(0,n,8):
             count=min(8,n-a);goal=model._condition_task_on_embodiment(model._embed_task([clip['task']]*count,z.device,robot_tag='franka'),'franka')
             pred=model.world_model.regress_future(z[a:a+count,None],goal);preds.append(pred)
-            action,_,_=model._predict_action_chunk(model.action_models["franka"],torch.cat([z[a:a+count,None],pred],1),states[a:a+count], None)
+            action=model._predict_action_chunk(model.action_models["franka"],torch.cat([z[a:a+count,None],pred],1),states[a:a+count])
             actions.append(action[:,0])
             target=torch.stack([teacher[a+4:a+count+4],teacher[a+8:a+count+8]],1)
             decoded=model.world_model.feature_decoder(pred)

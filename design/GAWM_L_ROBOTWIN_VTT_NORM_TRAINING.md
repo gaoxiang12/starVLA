@@ -1,10 +1,10 @@
-# RoboTwin LiLa＋VTT 固定归一化重训
+# RoboTwin GAWM-L＋VTT 固定归一化重训
 
 2026-09-27：按用户要求停止发生尺度漂移的旧训练，保留完整 checkpoint；补齐视觉接口归一化，验证后从头启动新训练，并持续监控。
 
 ## 修复内容与验证
 
-- `LiLaVisualPooler` 新增显式配置 `lila_bridge_norm: fixed_layernorm`。`768→384` bridge 后、相机身份编码前，在 FP32 中计算无可训练 affine 增益的 LayerNorm，然后恢复原 dtype。
+- `GAWMLVisualPooler` 使用显式配置 `gawm_l_bridge_norm: fixed_layernorm`。`768→384` bridge 后、相机身份编码前，在 FP32 中计算无可训练 affine 增益的 LayerNorm，然后恢复原 dtype。这里采用当前命名，历史运行记录保留原名。
 - 官方 LiLa 融合和适配器内部保持原样；世界模型、ACT、VTT 和原 loss 权重未改变。世界模型源文件与旧 run 逐字节一致。
 - 未配置该字段时默认 `none`，保持旧 checkpoint 行为。新接口保存 `bridge_norm_version` 标记，严格载入会拒绝新旧模式误配，避免旧权重被静默重新解释。
 - 新增训练日志 `visual_content_rms`、`visual_tokens_rms`、`latent_mse_over_delta_scale_sq`。原始 latent MSE 和复制基线误差仍保留。
@@ -21,7 +21,7 @@
 - 数据：官方 Clean + Randomized，50 任务、27,071 轨迹、6,120,962 帧；头部＋前方两路 RGB，16D 状态，14D 动作。新生成缺末端状态的数据不使用。
 - C 配方 12+4 epochs，总 765,120 步，阶段一 573,840 步；AdamW LR2e-4、BF16、全局梯度裁剪 1.0，阶段二重置 Adam 并将 LR 乘 0.2。
 - 可训练模块从头初始化，DINO 使用本地预训练权重，不载入旧 run 或短训模型状态。
-- 训练配置：`examples/Robotwin/train_files/starvla_gawm_robotwin_head_front_lila_vtt_norm_c_12plus4.yaml`；实际完整配置见 run 的 `config.full.yaml`。
+- 训练配置：`examples/Robotwin/train_files/starvla_gawm_l_robotwin_head_front_vtt_norm_c_12plus4.yaml`；实际完整配置见 run 的 `config.full.yaml`。
 - Supervisor PID：`3299354`；启动日志：`.cache/robotwin_lila_norm_training/gawm_robotwin_head_front_lila_vtt_norm_c_20260927_210039.log`。
 - 启动指针：`.cache/robotwin_lila_norm_training/latest_run.json`，通用 `.cache/robotwin_lila_training/latest_run.json` 也已更新。
 

@@ -648,7 +648,7 @@ class VLATrainer(TrainerUtils):
         """Execute single training step."""
         with self.accelerator.accumulate(self.model):
             with self.accelerator.autocast():
-                if self.config.framework.name in {"GAWM", "GAWMObjectFusion", "GAWMCartesian", "GAWMCompactExpert"}:
+                if self.config.framework.name in {"GAWM", "GAWM-L", "GAWMObjectFusion", "GAWMCartesian", "GAWMCompactExpert"}:
                     output_dict = self.model.forward(batch_vla, optimizer_step=self.completed_steps)
                 else:
                     output_dict = self.model.forward(batch_vla)

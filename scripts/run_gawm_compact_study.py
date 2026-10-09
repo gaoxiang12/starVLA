@@ -22,6 +22,7 @@ import time
 from omegaconf import OmegaConf
 
 from starVLA.local_settings import cluster_host
+from starVLA.model.gawm_config import config_for_gawm_source, migrate_gawm_config
 
 ROOT = Path(os.environ.get("STARVLA_STUDY_ROOT", Path(__file__).resolve().parents[1]))
 DEFAULT_STUDY = ROOT / "playground/Queues/gawm_compact_improvements_20261007"
@@ -103,6 +104,7 @@ def make_config(study, name, spec, changes):
     cfg.run_root_dir = str(ROOT / "playground/Checkpoints")
     wm = cfg.framework.world_model
     wm.encoder_spec = spec
+    migrate_gawm_config(cfg)
     wm.vision_encoder_path = str(ROOT / f"playground/Pretrained/dinov3-{spec}-pretrain-lvd1689m")
     wm.feat_layers = [-6, -4, -2]
     cfg.framework.lang_cond.task_vectors_path = str(study / "assets" / spec / "robotwin_official_train_vtt.json")
@@ -110,10 +112,10 @@ def make_config(study, name, spec, changes):
     if flags:
         cfg.framework.compact_study = flags
     if "adapter_dim" in changes:
-        wm.lila_adapter_dim = changes["adapter_dim"]
-        wm.lila_adapter_depth = changes["adapter_depth"]
+        wm.gawm_l_adapter_dim = changes["adapter_dim"]
+        wm.gawm_l_adapter_depth = changes["adapter_depth"]
         # Keep head count fixed to isolate adapter width/depth.
-        wm.lila_adapter_heads = 8
+        wm.gawm_l_adapter_heads = 8
     if changes.get("history_frames", 1) > 1:
         cfg.datasets.vla_data.history_recorded_offset = 16
     if changes.get("wm_state"):
@@ -297,7 +299,7 @@ class Controller:
             (source / "initial_assets").mkdir(exist_ok=True)
             shutil.copy2(asset, source / "initial_assets/compact_robotwin_vtt.json")
             save(source.parent / "manifest.json", manifest(source))
-        cfg = OmegaConf.load(self.job["config"])
+        cfg = config_for_gawm_source(OmegaConf.load(self.job["config"]), source)
         cfg.framework.lang_cond.task_vectors_path = str(run / "source_snapshot/initial_assets/compact_robotwin_vtt.json")
         config = str(Path(self.job["directory"]) / ("preflight_config.yaml" if smoke else "runtime_config.yaml"))
         OmegaConf.save(cfg, config)

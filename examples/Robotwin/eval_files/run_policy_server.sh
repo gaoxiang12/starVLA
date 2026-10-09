@@ -16,6 +16,11 @@ gpu_id="${2:-${ROBOTWIN_SERVER_GPU:-0}}"
 port="${3:-${ROBOTWIN_SERVER_PORT:-5694}}"
 star_vla_python="${STARVLA_PYTHON:-${star_vla_python:-python}}"
 
+if [[ "${ROBOTWIN_SPATIAL_ABLATION:-full}" != "full" ]]; then
+    echo "Spatial ablation is retired; use the experiment's archived source_snapshot." >&2
+    exit 1
+fi
+
 use_bf16_flag=()
 if [[ "${ROBOTWIN_USE_BF16:-1}" != "0" ]]; then
     use_bf16_flag+=(--use_bf16)
@@ -30,5 +35,4 @@ exec env CUDA_VISIBLE_DEVICES="${gpu_id}" "${star_vla_python}" "${REPO_ROOT}/dep
     --ckpt_path "${your_ckpt}" \
     --port "${port}" \
     --idle_timeout "${ROBOTWIN_SERVER_IDLE_TIMEOUT:--1}" \
-    --spatial-ablation "${ROBOTWIN_SPATIAL_ABLATION:-full}" \
     "${use_bf16_flag[@]}"

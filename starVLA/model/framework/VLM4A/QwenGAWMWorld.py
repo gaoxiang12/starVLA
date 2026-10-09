@@ -11,7 +11,7 @@ from torch import nn
 from deployment.model_server.tools.image_tools import to_pil_preserve
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 from starVLA.model.framework.VLM4A.QwenGAWM import QwenGAWM, gather_action_features
-from starVLA.model.modules.world_model.visual_token_delta_world_model import VisualTokenLatentWorldModel
+from starVLA.model.modules.world_model.GAWM import VisualTokenLatentWorldModel
 from starVLA.model.modules.action_model.action_loss import masked_action_l1_loss, action_l1_diagnostics
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 

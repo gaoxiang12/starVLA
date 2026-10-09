@@ -5,6 +5,8 @@
 
 <p align="center">An open-source research platform for integrating and exploring cutting-edge technologies for generalist robots.</p>
 
+The current **GAWM-L** policy uses a frozen **DINO-L** backbone (DINOv3 ViT-L/16), VTT conditioning and an ACT action head. See the [LIBERO / RoboTwin training and evaluation guide](LIBERO_ROBOTWIN_TRAIN_EVAL.md) for the current recipes.
+
 <p align="center">
 <a href="https://starvla.github.io/"><img src="https://img.shields.io/badge/Project%20Page-starvla.github.io-blue?style=for-the-badge&logo=github" alt="Project Page"></a>
 <a href="https://huggingface.co/StarVLA"><img src="https://img.shields.io/badge/HuggingFace-Model%20%26%20Data-orange?style=for-the-badge&logo=huggingface" alt="Model & Data on Hugging Face"></a>

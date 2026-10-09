@@ -1,9 +1,9 @@
-"""Compare GAWM's LiLa front-end against a local upstream vla_model_fm.py.
+"""Compare GAWM's GAWM-L front-end against a local upstream vla_model_fm.py.
 
 No source download or training. Example:
-PYTHONPATH=. .venv/bin/python scripts/check_gawm_lila_vision_parity.py \
-  --upstream-file .cache/gawm_lila_alignment/models/vla_model_fm.py \
-  --output .cache/gawm_lila_alignment/parity.json
+PYTHONPATH=. .venv/bin/python scripts/check_gawm_l_vision_parity.py \
+  --upstream-file .cache/gawm_l_alignment/models/vla_model_fm.py \
+  --output .cache/gawm_l_alignment/parity.json
 """
 import argparse
 import ast
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import torch
 from torch import nn
-from starVLA.model.modules.gawm_lila_vision import LiLaVisualPooler
+from starVLA.model.modules.gawm_l_vision import GAWMLVisualPooler
 
 
 def compare(upstream_file, output):
@@ -29,7 +29,7 @@ def compare(upstream_file, output):
     exec(compile(ast.Module(body=classes,type_ignores=[]),str(path),'exec'),namespace)
     torch.set_num_threads(4)
     torch.manual_seed(42)
-    local=LiLaVisualPooler(1024,384,3,64,3,768,4,8).eval()
+    local=GAWMLVisualPooler(1024,384,3,64,3,768,4,8).eval()
     fusion=namespace['MultiLayerConcatFusion'](1024,3,1024,'linear',True).eval()
     adapter=namespace['VisualFeatureAdapter'](1024,768,64,8,4,dropout=0.).eval()
     fusion.load_state_dict(local.fusion.state_dict(),strict=True)

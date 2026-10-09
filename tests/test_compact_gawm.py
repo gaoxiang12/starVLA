@@ -8,10 +8,13 @@ from PIL import Image
 import pytest
 import torch
 
-from starVLA.model.modules.world_model.compact_gawm import CompactFixedDinoWorldModel, temporal_rope
-from starVLA.model.modules.world_model.fixed_dino_world_model import FixedDinoWorldModel
+from starVLA.model.modules.world_model.GAWM import (
+    CompactFixedDinoWorldModel,
+    FixedDinoWorldModel,
+    temporal_rope,
+)
 from starVLA.model.framework.WM4A.GAWM import GAWM
-from test_gawm_lila_vision import backbone, tiny_config
+from test_gawm_l_vision import backbone, tiny_config
 from test_robotwin_official_hdf5 import dataset
 
 
@@ -106,7 +109,7 @@ def test_framework_train_predict_alignment_and_task_condition(options):
     cfg,tag = tiny_config(2)
     cfg.framework.compact_study = options
     cfg.framework.world_model.update(dict(future_objective='fixed_dino_patches',detach_wm_input=False,
-        latent_cosine_weight=0.,lila_bridge_norm='fixed_layernorm',feature_decoder_dim=8,
+        latent_cosine_weight=0.,gawm_l_bridge_norm='fixed_layernorm',feature_decoder_dim=8,
         feature_decoder_depth=1,feature_decoder_heads=2,dense_temporal_smoothness_weight=.03))
     cfg.datasets.vla_data.temporal_neighbors = True
     def encoder(**kwargs):
@@ -126,7 +129,7 @@ def test_framework_train_predict_alignment_and_task_condition(options):
             temporal_history_images=[images,images,images])
         capture={}; original=model._predict_action_chunk
         def capture_action(*args,**kwargs):
-            result=original(*args,**kwargs);capture['actions']=result[0];return result
+            result=original(*args,**kwargs);capture['actions']=result;return result
         model._predict_action_chunk=capture_action
         result=model([sample])
         actions=capture['actions'].detach().numpy().copy()

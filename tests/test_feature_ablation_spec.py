@@ -12,9 +12,9 @@ from starVLA.training.recipe import apply_training_recipe
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINES = [
-    (ROOT / "examples/LIBERO/train_files/starvla_gawm_libero_fixed_dino_c_160k.yaml",
+    (ROOT / "examples/LIBERO/train_files/starvla_gawm_l_libero_fixed_dino_c_160k.yaml",
      80000, 160000, 6419, 77028, 256760, 5, 2),
-    (ROOT / "examples/Robotwin/train_files/starvla_gawm_robotwin_fixed_dino_temporal_c_12plus4.yaml",
+    (ROOT / "examples/Robotwin/train_files/starvla_gawm_l_robotwin_fixed_dino_temporal_c_12plus4.yaml",
      765120, 765120, 47820, 573840, 1912800, 4, 4),
 ]
 

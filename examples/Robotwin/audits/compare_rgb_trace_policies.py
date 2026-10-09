@@ -44,7 +44,7 @@ def main():
         if 'image_history' in example:
             example['image_history'] = [list(frame) for frame in example['image_history']]
         example.update(lang=meta['lang'], episode_start=meta['episode_start'])
-        assert meta['server_metadata']['spatial_ablation'] == 'full'
+        assert meta['server_metadata'].get('spatial_ablation', 'full') == 'full'
         assert meta['state_order'] == 'model: left6, right6, left_gripper, right_gripper'
         inputs[name] = dict(path=path, meta=meta, example=example, actions=actions)
     assert len(inputs) >= 2

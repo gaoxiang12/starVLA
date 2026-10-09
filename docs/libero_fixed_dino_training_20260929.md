@@ -51,7 +51,7 @@ action_L1
 
 当前没有独立留出数据验证，也没有闭环收益结论。固定教师消除了监督参照随adapter更新而移动的问题，不能保证紧凑latent坐标本身完全不漂移，更不能预先保证成功率恢复。
 
-配置：`examples/LIBERO/train_files/starvla_gawm_libero_fixed_dino_c_160k.yaml`；实际卡数对应配置在控制目录 `launch_config.yaml`。源码与资产冻结在其 `source_snapshot/`，正式运行另有快照副本。
+配置：`examples/LIBERO/train_files/starvla_gawm_l_libero_fixed_dino_c_160k.yaml`；实际卡数对应配置在控制目录 `launch_config.yaml`。源码与资产冻结在其 `source_snapshot/`，正式运行另有快照副本。
 
 ## 正式启动核对
 

@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from starVLA.model.modules.world_model.visual_token_delta_world_model import (
+from starVLA.model.modules.world_model.GAWM import (
     VisualTokenLatentWorldModel,
 )
 
@@ -23,8 +23,11 @@ def _check_statistics(rank, rendezvous):
             latent_dim=4, goal_dim=None, n_future=2, num_tokens=2,
             dim=4, depth=1, num_heads=1, ffn_dim=8, stats_momentum=0.5,
         )
-        # Production GAWM enables this from world_model.sync_latent_stats.
+        # The adapter_latent objective enables this from sync_latent_stats.
         model.sync_stats = True
+        model._update_delta_scale(torch.ones(1, 1, 2, 2), torch.zeros(1, 1, 2, 1))
+        assert model._delta_scale_ready.item() == 0
+        torch.testing.assert_close(model.delta_scale, torch.ones(1))
         # 2 valid values of 1 on rank 0; 4 valid values of 3 on rank 1.
         # Averaging per-rank RMS (2) would be wrong: pooled RMS=sqrt(38/6).
         residual = torch.full((1, 1, 2, 2), 1.0 if rank == 0 else 3.0)
@@ -43,6 +46,8 @@ def _check_statistics(rank, rendezvous):
         torch.testing.assert_close(model.delta_scale, expected)
         assert model.delta_scale.dtype == torch.float32
         assert model._delta_scale_ready.item() == 1.0
+        model._update_delta_scale(residual, torch.zeros_like(residual[..., :1]))
+        torch.testing.assert_close(model.delta_scale, expected)
     finally:
         dist.destroy_process_group()
 

@@ -10,10 +10,10 @@ import pytest
 import torch
 from torch import nn
 
-from starVLA.model.modules.gawm_lila_vision import LiLaVisualPooler, VTTConditioner, rgb_pixels
+from starVLA.model.modules.gawm_l_vision import GAWMLVisualPooler, VTTConditioner, rgb_pixels
 from starVLA.model.modules.world_model.GAWM import _GAWM_Interface
 from starVLA.model.framework.WM4A.GAWM import GAWM
-from starVLA.model.modules.world_model.visual_token_delta_world_model import VisualTokenLatentWorldModel
+from starVLA.model.modules.world_model.GAWM import VisualTokenLatentWorldModel
 from scripts.prepare_gawm_vtt import episode_difference
 
 
@@ -48,8 +48,8 @@ def backbone():
     model.num_prefix_tokens = 3
     model.encoder_batch_size = 2
     model.normalized_pixels = False
-    model.lila_vision = True
-    model.lila_image_size = (16,16)
+    model.gawm_l_vision = True
+    model.gawm_l_image_size = (16,16)
     model.feat_layers = (-4,-2,-1)
     return model
 
@@ -68,7 +68,7 @@ def test_dino_layer_order_keeps_cls_registers_and_views():
 
 def test_each_camera_uses_same_adapter_without_cross_view_mixing():
     torch.manual_seed(8)
-    pool = LiLaVisualPooler(8, 8, 3, 4, 3, 16, 1, 2).eval()
+    pool = GAWMLVisualPooler(8, 8, 3, 4, 3, 16, 1, 2).eval()
     features = torch.randn(2,2,3,3,7,8)
     output = pool.official_tokens(features)
     changed = features.clone(); changed[:,:,1] += torch.randn_like(changed[:,:,1])
@@ -122,12 +122,12 @@ def test_vtt_uses_final_minus_initial_cls_with_official_rgb_preprocessing():
 def tiny_config(views):
     bench = 'robotwin' if views == 3 else 'libero'
     folder = 'Robotwin' if views == 3 else 'LIBERO'
-    cfg=OmegaConf.load(f'examples/{folder}/train_files/starvla_gawm_{bench}_lila_vtt_c_12plus4.yaml')
+    cfg=OmegaConf.load(f'examples/{folder}/train_files/starvla_gawm_l_{bench}_vtt_c_12plus4.yaml')
     tag = 'aloha' if views == 3 else 'franka'
     cfg.framework.lang_cond.task_vectors=dict(format_version=1,split='train',vectors={f'{tag}:pick object':list(range(8))})
     cfg.framework.lang_cond.embed_dim=8
-    cfg.framework.world_model.update(dict(visual_token_dim=8,visual_tokens_per_view=4,lila_adapter_dim=16,
-        lila_adapter_depth=1,lila_adapter_heads=2,feat_layers=[-4,-2,-1],lila_image_size=[16,16],
+    cfg.framework.world_model.update(dict(visual_token_dim=8,visual_tokens_per_view=4,gawm_l_adapter_dim=16,
+        gawm_l_adapter_depth=1,gawm_l_adapter_heads=2,feat_layers=[-4,-2,-1],gawm_l_image_size=[16,16],
         imagenet_normalized_inputs=False,residual_predictor_dim=8,residual_predictor_depth=1,
         residual_predictor_heads=2,residual_predictor_ffn=16,sync_latent_stats=False))
     cfg.framework.action_model.update(dict(action_hidden_dim=8,act_num_heads=2,act_num_layers=1,
@@ -139,7 +139,7 @@ def tiny_config(views):
 @pytest.mark.parametrize('bridge_norm',['none','fixed_layernorm'])
 def test_gawm_forward_backward_reload_and_deployment(views,bridge_norm):
     cfg, tag=tiny_config(views)
-    cfg.framework.world_model.lila_bridge_norm=bridge_norm
+    cfg.framework.world_model.gawm_l_bridge_norm=bridge_norm
     with patch('starVLA.model.framework.WM4A.GAWM.get_world_model',side_effect=lambda **kwargs: backbone()):
         model=GAWM(cfg)
         assert isinstance(model.world_model, VisualTokenLatentWorldModel)
@@ -177,7 +177,7 @@ def test_gawm_forward_backward_reload_and_deployment(views,bridge_norm):
 def test_published_configs_keep_world_model_and_action_contract():
     for folder,bench,base,views in [('Robotwin','robotwin','starvla_gawm_robotwin_3view_c_12plus4.yaml',3),
                                   ('LIBERO','libero','starvla_gawm_c_12plus4.yaml',2)]:
-        cfg=OmegaConf.load(f'examples/{folder}/train_files/starvla_gawm_{bench}_lila_vtt_c_12plus4.yaml')
+        cfg=OmegaConf.load(f'examples/{folder}/train_files/starvla_gawm_l_{bench}_vtt_c_12plus4.yaml')
         old=OmegaConf.load(f'examples/{folder}/train_files/{base}')
         assert cfg.framework.action_model==old.framework.action_model
         for field in ['n_future','ctx_len','visual_token_dim','residual_predictor_dim','residual_predictor_depth',
@@ -222,7 +222,7 @@ def test_access_tracked_config_persists_vtt_and_camera_contract(tmp_path):
     tracked.save_accessed_config(path,use_original_values=False)
     saved=OmegaConf.load(path)
     assert saved.framework.lang_cond.task_names==['franka:pick object']
-    assert saved.framework.world_model.visual_frontend=='lila'
+    assert saved.framework.world_model.visual_frontend=='gawm_l'
     assert saved.framework.world_model.camera_names==['agentview','eye_in_hand']
 
 
@@ -270,7 +270,7 @@ def test_robotwin_client_sends_three_physical_cameras_in_checkpoint_order(monkey
 
 def test_fixed_bridge_norm_bounds_scale_and_marks_checkpoint():
     torch.manual_seed(42)
-    pool=LiLaVisualPooler(8,8,2,4,3,16,1,2,bridge_norm='fixed_layernorm').eval()
+    pool=GAWMLVisualPooler(8,8,2,4,3,16,1,2,bridge_norm='fixed_layernorm').eval()
     features=torch.randn(2,3,2,3,7,8)
     tokens,content=pool(features,True)
     torch.testing.assert_close(content.float().square().mean(-1),torch.ones_like(content[...,0]),atol=2e-3,rtol=0)
@@ -281,9 +281,9 @@ def test_fixed_bridge_norm_bounds_scale_and_marks_checkpoint():
     torch.testing.assert_close(pool.remove_position(scaled_tokens),scaled)
     scaled.square().mean().backward()
     assert pool.bridge.weight.grad is not None and torch.isfinite(pool.bridge.weight.grad).all()
-    legacy=LiLaVisualPooler(8,8,2,4,3,16,1,2)
+    legacy=GAWMLVisualPooler(8,8,2,4,3,16,1,2)
     legacy_state=legacy.state_dict()
     assert 'bridge_norm_version' not in legacy_state
     with pytest.raises(RuntimeError,match='bridge_norm_version'):pool.load_state_dict(legacy_state,strict=True)
     with pytest.raises(RuntimeError,match='bridge_norm_version'):legacy.load_state_dict(pool.state_dict(),strict=True)
-    with pytest.raises(ValueError,match='normalization'):LiLaVisualPooler(8,8,2,bridge_norm='typo')
+    with pytest.raises(ValueError,match='normalization'):GAWMLVisualPooler(8,8,2,bridge_norm='typo')

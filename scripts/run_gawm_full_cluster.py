@@ -73,7 +73,7 @@ def main():
     files = [config, "scripts/train_gawm_epochs.py", "scripts/activate_env.sh",
              "scripts/gawm_accelerate.yaml", "scripts/gawm_deepspeed.json",
              "examples/UnifiedPretrain/train_files/data_registry/data_config.py",
-             "starVLA/model/modules/world_model/visual_token_delta_world_model.py",
+             "starVLA/model/modules/world_model/GAWM.py",
              "starVLA/dataloader/lerobot_datasets.py", "starVLA/dataloader/gr00t_lerobot/video.py"]
     exclusions = "examples/LIBERO/train_files/libero_video_exclusions.json"
     if (root / exclusions).exists():

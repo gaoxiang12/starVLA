@@ -1,4 +1,4 @@
-"""Build LiLa-style VTTs from the exact GAWM training episodes (read-only data).
+"""Build GAWM-L VTTs from the exact GAWM training episodes (read-only data).
 
 PYTHONPATH=. .venv/bin/python scripts/prepare_gawm_vtt.py --config <yaml> --device cpu
 Writes the configured task_vectors_path and an adjacent prepared config. No
@@ -16,8 +16,9 @@ import numpy as np
 from omegaconf import OmegaConf
 import torch
 from transformers import AutoModel
+from starVLA.model.gawm_config import migrate_gawm_config
 
-from starVLA.model.modules.gawm_lila_vision import rgb_pixels, canonical_vtt_key
+from starVLA.model.modules.gawm_l_vision import rgb_pixels, canonical_vtt_key
 from starVLA.task_language import canonical_task_text, configured_task_language_mode, resolve_task_language
 
 
@@ -41,7 +42,7 @@ def training_endpoints(cfg):
                     if image is None:
                         raise ValueError(f'Invalid image: {relative}/{idx}')
                     if dataset.image_channel_order == 'bgr':
-                        raise ValueError('LiLa-aligned VTT requires physical RGB training images')
+                        raise ValueError('GAWM-L VTT requires physical RGB training images')
                     frames.append(image)
             yield canonical_vtt_key(dataset.tag, canonical_task_text(task)), frames, dict(path=relative, frames=length, camera=camera)
     elif data.dataset_py == 'lerobot_datasets':
@@ -79,9 +80,9 @@ def episode_difference(encoder, frames, size, device):
 
 
 def prepare(config, device='cpu'):
-    cfg = OmegaConf.load(config)
-    if cfg.framework.lang_cond.type != 'vtt' or cfg.framework.world_model.visual_frontend != 'lila':
-        raise ValueError('Use a GAWM LiLa-vision + VTT config')
+    cfg = migrate_gawm_config(OmegaConf.load(config))
+    if cfg.framework.lang_cond.type != 'vtt' or cfg.framework.world_model.visual_frontend != 'gawm_l':
+        raise ValueError('Use a GAWM-L vision + VTT config')
     output = Path(cfg.framework.lang_cond.task_vectors_path)
     if output.exists():
         raise FileExistsError(f'Choose a new task_vectors_path; refusing to overwrite {output}')
@@ -91,7 +92,7 @@ def prepare(config, device='cpu'):
     encoder.requires_grad_(False)
     sums, counts, provenance = {}, defaultdict(int), defaultdict(list)
     for key, frames, record in training_endpoints(cfg):
-        diff = episode_difference(encoder, frames, tuple(wm.lila_image_size), device)
+        diff = episode_difference(encoder, frames, tuple(wm.gawm_l_image_size), device)
         if not np.isfinite(diff).all():
             raise ValueError(f'Nonfinite VTT feature: {record}')
         sums[key] = sums.get(key, np.zeros_like(diff, dtype=np.float64)) + diff
@@ -105,7 +106,7 @@ def prepare(config, device='cpu'):
     vectors = {key: (sums[key]/counts[key]).astype(np.float32).tolist() for key in sorted(sums)}
     payload = dict(format_version=1, split='train', vectors=vectors, provenance=dict(provenance),
         feature='mean(last_frame_CLS-first_frame_CLS), primary camera, last_hidden_state',
-        encoder_path=str(wm.vision_encoder_path), image_size=list(wm.lila_image_size),
+        encoder_path=str(wm.vision_encoder_path), image_size=list(wm.gawm_l_image_size),
         camera_names=list(wm.camera_names), config_sha256=hashlib.sha256(Path(config).read_bytes()).hexdigest())
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix('.tmp')

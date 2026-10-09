@@ -8,7 +8,6 @@ import socket
 
 from deployment.model_server.policy_wrapper import PolicyServerWrapper
 from deployment.model_server.tools.websocket_policy_server import WebsocketPolicyServer
-from deployment.model_server.tools.spatial_ablation import apply_spatial_ablation
 
 
 def main(args) -> None:
@@ -23,9 +22,7 @@ def main(args) -> None:
         device="cuda",
         use_bf16=args.use_bf16,
     )
-    ablation = getattr(args, 'spatial_ablation', 'full')
-    apply_spatial_ablation(wrapper._framework, ablation)
-    metadata = dict(wrapper.metadata, spatial_ablation=ablation)
+    metadata = dict(wrapper.metadata)
     seed = getattr(args, 'policy_seed', None)
     if seed is not None:
         from deployment.model_server.tools.seeded_episode_policy import SeededEpisodePolicy
@@ -57,9 +54,6 @@ def build_argparser():
                         help='Opt-in reproducible Torch noise; requires episode_start on every single-example request')
     parser.add_argument('--policy-seed-log', default=None,
                         help='New JSONL file recording per-query seeds and output hashes')
-    parser.add_argument("--spatial-ablation", default="full",
-                        choices=("full", "no_focus", "no_dense", "no_local", "no_goal", "no_objects"),
-                        help="Inference-only spatial-memory intervention; checkpoint weights are unchanged")
     parser.add_argument("--idle_timeout", type=int, default=1800, help="Idle timeout in seconds, -1 means never close")
     return parser
 

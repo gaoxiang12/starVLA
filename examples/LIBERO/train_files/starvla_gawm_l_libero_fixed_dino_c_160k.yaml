@@ -1,11 +1,11 @@
-run_id: gawm_libero_dense_temporal_c_80k_b160_20260930
+run_id: gawm_l_libero_fixed_dino_c_160k_b160_20260929
 run_root_dir: playground/Checkpoints
 seed: 42
 wandb_entity: your_wandb_entity
 wandb_project: starVLA_UnifiedPretrain
 version_id: '0.21'
 framework:
-  name: GAWM
+  name: GAWM-L
   world_model:
     encoder_spec: vitl16
     train_encoder: false
@@ -23,7 +23,6 @@ framework:
     residual_predictor_heads: 6
     residual_predictor_ffn: 1024
     detach_wm_input: false
-    latent_stats_momentum: 0.9
     loss_latent_weight: 1.0
     latent_cosine_weight: 0.0
     visual_token_diversity_weight: 0.02
@@ -32,30 +31,28 @@ framework:
     use_state_cond: true
     state_cond_hidden_dim: 256
     vision_encoder_path: playground/Pretrained/dinov3-vitl16-pretrain-lvd1689m
-    sync_latent_stats: true
     encoder_batch_size: 4
-    visual_frontend: lila
+    visual_frontend: gawm_l
     feat_layers:
     - -12
     - -8
     - -4
-    lila_adapter_dim: 768
-    lila_adapter_depth: 4
-    lila_adapter_heads: 8
-    lila_image_size:
+    gawm_l_adapter_dim: 768
+    gawm_l_adapter_depth: 4
+    gawm_l_adapter_heads: 8
+    gawm_l_image_size:
     - 256
     - 256
     camera_names:
     - agentview
     - eye_in_hand
-    lila_bridge_norm: fixed_layernorm
+    gawm_l_bridge_norm: fixed_layernorm
     future_objective: fixed_dino_patches
     feature_decoder_dim: 384
     feature_decoder_depth: 2
     feature_decoder_heads: 6
     dino_current_weight: 0.1
     temporal_smoothness_weight: 0.0
-    dense_temporal_smoothness_weight: 0.1
   action_model:
     action_model_type: ACT
     action_horizon: 8
@@ -77,7 +74,7 @@ framework:
   lang_cond:
     type: vtt
     embed_dim: 384
-    task_vectors_path: playground/Queues/libero_dense_temporal_80k_20260930/libero_completed_train_vtt.json
+    task_vectors_path: playground/Queues/libero_fixed_dino_160k_20260929/libero_completed_train_vtt.json
 datasets:
   vla_data:
     dataset_py: lerobot_datasets
@@ -107,7 +104,6 @@ datasets:
     - 256
     - 256
     image_resize_resample: opencv_linear
-    temporal_neighbors: true
 trainer:
   recipe: c
   freeze_modules: ''
@@ -116,7 +112,7 @@ training_overrides:
   trainer:
     expected_global_batch_size: 160
     gradient_accumulation_steps: 1
-    max_train_steps: 80000
+    max_train_steps: 160000
     stage_epochs:
     - 12
     - 18
@@ -128,6 +124,8 @@ training_overrides:
     milestone_steps:
     - 40000
     - 80000
+    - 120000
+    - 160000
     pretrained_checkpoint: null
     is_resume: false
   datasets:

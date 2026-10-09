@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from starVLA.model.modules.world_model.temporal_regularization import temporal_curvature_loss
 from starVLA.model.framework.WM4A.GAWM import GAWM
-from test_gawm_lila_vision import backbone,tiny_config
+from test_gawm_l_vision import backbone,tiny_config
 
 @pytest.fixture(autouse=True)
 def threads():
@@ -31,7 +31,7 @@ def test_linear_motion_irregular_times_not_penalized_and_spike_is():
 def test_dense_temporal_loss_has_gradients_but_neighbors_do_not_leak_to_actions(views):
     cfg,tag=tiny_config(views)
     cfg.framework.world_model.update(dict(future_objective='fixed_dino_patches',detach_wm_input=False,
-        latent_cosine_weight=0.,lila_bridge_norm='fixed_layernorm',feature_decoder_dim=8,
+        latent_cosine_weight=0.,gawm_l_bridge_norm='fixed_layernorm',feature_decoder_dim=8,
         feature_decoder_depth=1,feature_decoder_heads=2,dense_temporal_smoothness_weight=.03))
     cfg.datasets.vla_data.temporal_neighbors=True
     def encoder(**kwargs):
@@ -55,7 +55,7 @@ def test_dense_temporal_loss_has_gradients_but_neighbors_do_not_leak_to_actions(
             assert model.world_model.temporal_reference_dt == .05
         capture={};orig=model._predict_action_chunk
         def action(*a,**kw):
-            result=orig(*a,**kw);capture['actions']=result[0];return result
+            result=orig(*a,**kw);capture['actions']=result;return result
         model._predict_action_chunk=action
         hook=model.world_model.register_forward_hook(lambda m,a,o:capture.update(wm=o))
         r=model([sample]);pred=capture['actions'].detach().clone()

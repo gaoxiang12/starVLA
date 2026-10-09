@@ -138,7 +138,7 @@ def main():
         with socket.socket() as probe:
             probe.bind(('127.0.0.1', 6690))
         execute([str(PYTHON), str(AUDITS / 'run_rgb_color_diagnostic.py'), '--gpu', '0', '--port', '6690',
-                 '--episodes', '10', '--orders', 'rgb', '--execute-horizon', '16', '--spatial-ablation', 'full',
+                 '--episodes', '10', '--orders', 'rgb', '--execute-horizon', '16',
                  '--checkpoint', str(RUN / 'final_model/pytorch_model.pt'), '--output', str(RUN / 'screen10')],
                 RUN / 'eval.log')
         assert json.loads((RUN / 'screen10/status.json').read_text())['state'] == 'complete'

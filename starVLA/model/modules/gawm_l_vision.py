@@ -1,4 +1,4 @@
-"""LiLa-WAM visual front-end and training-demonstration VTTs for GAWM.
+"""GAWM-L visual adapter and training-demonstration VTTs.
 
 The upstream fusion/adapter primitives are reused without an upstream runtime
 checkout. GAWM's 384-wide world model is connected by a separate projection;
@@ -28,7 +28,7 @@ def rgb_pixels(images, size):
                 image = image.transpose(1, 2, 0)
         image = np.asarray(image)
         if image.dtype != np.uint8 or image.ndim != 3 or image.shape[-1] != 3:
-            raise ValueError("LiLa visual input must be uint8 RGB or explicitly normalized tensors")
+            raise ValueError("GAWM-L visual input must be uint8 RGB or explicitly normalized tensors")
         if (image.shape[1], image.shape[0]) != tuple(size):
             image = cv2.resize(image, tuple(size), interpolation=cv2.INTER_LINEAR)
         arrays.append(image)
@@ -44,7 +44,7 @@ def canonical_vtt_key(tag, language):
     return f"{tag}:{text}"
 
 
-class LiLaVisualPooler(nn.Module):
+class GAWMLVisualPooler(nn.Module):
     """Shared official per-view adapter, followed by a GAWM interface bridge."""
     def __init__(self, patch_dim, token_dim, num_views, tokens_per_view=64,
                  num_layers=3, hidden_dim=768, depth=4, heads=8, bridge_norm="none"):
@@ -55,7 +55,7 @@ class LiLaVisualPooler(nn.Module):
         self.adapter = VisualFeatureAdapter(patch_dim, hidden_dim, tokens_per_view, heads, depth, dropout=0.)
         self.bridge = nn.Linear(hidden_dim, token_dim)
         if bridge_norm not in ("none", "fixed_layernorm"):
-            raise ValueError(f"Unknown LiLa bridge normalization: {bridge_norm}")
+            raise ValueError(f"Unknown GAWM-L bridge normalization: {bridge_norm}")
         self.bridge_norm = bridge_norm
         if bridge_norm == "fixed_layernorm":
             # Distinguish the new interface in strict checkpoint loading even
@@ -74,7 +74,7 @@ class LiLaVisualPooler(nn.Module):
             raise ValueError("Expected features [B,T,V,L,N,D]")
         b, t, v, layers, n, d = features.shape
         if v != self.num_views or layers != self.fusion.num_layers:
-            raise ValueError("LiLa camera/layer count mismatch")
+            raise ValueError("GAWM-L camera/layer count mismatch")
         per_layer = [features[:, :, :, i].reshape(b*t*v, n, d) for i in range(layers)]
         return self.adapter(self.fusion(per_layer)).reshape(b, t, v, self.tokens_per_view, -1)
 
@@ -84,7 +84,7 @@ class LiLaVisualPooler(nn.Module):
         # Both requested benchmarks have every physical camera. Reject missing
         # views instead of allowing zero keys into the unchanged world model.
         if not bool(views.all()):
-            raise ValueError("LiLa-aligned GAWM requires every configured physical camera")
+            raise ValueError("GAWM-L requires every configured physical camera")
         return views.to(dtype).repeat_interleave(self.tokens_per_view, 1)[:, None, :, None]
 
     def remove_position(self, tokens, view_valid_mask=None):
