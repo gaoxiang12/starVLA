@@ -407,6 +407,20 @@ class VLATrainer(TrainerUtils):
         training_state_path = checkpoint_path + "_training_state"
         self.accelerator.save_state(training_state_path)
         self.accelerator.wait_for_everyone()
+        if self.config.trainer.get('collect_rng_states', False):
+            # DDP model/optimizer states are replicated, but RNG files are per
+            # rank. Consolidate them before marking a node-local save complete.
+            rank = self.accelerator.process_index
+            local_rng = Path(training_state_path) / f'random_states_{rank}.pkl'
+            gathered = [None] * self.accelerator.num_processes if rank == 0 else None
+            if dist.is_initialized():
+                dist.gather_object(local_rng.read_bytes(), gathered, dst=0)
+            else:
+                gathered = [local_rng.read_bytes()]
+            if rank == 0:
+                for saved_rank, payload in enumerate(gathered):
+                    (Path(training_state_path) / f'random_states_{saved_rank}.pkl').write_bytes(payload)
+            self.accelerator.wait_for_everyone()
         if self.accelerator.is_main_process and getattr(self.config.trainer, 'recipe', None) == 'c':
             meta = dict(step=self.completed_steps, world_size=self.accelerator.num_processes,
                         global_batch_size=self.total_batch_size, contract=resume_contract(self.config))
@@ -659,7 +673,10 @@ class VLATrainer(TrainerUtils):
             # precisely on the final microbatch of an accumulated update.
             self.optimizer.zero_grad()
 
-        step_log = {"action_dit_loss": action_loss.item()}
+        # Historical action_dit_loss includes auxiliary objectives in GAWM.
+        # Keep the alias for dashboards; use total_loss and l1_action_loss to
+        # distinguish the optimization objective from ACT prediction error.
+        step_log = {"total_loss": total_loss.item(), "action_dit_loss": action_loss.item()}
         # Surface any auxiliary scalar losses the framework reports.
         for k in (
             "l1_action_loss",
@@ -682,6 +699,9 @@ class VLATrainer(TrainerUtils):
             "visual_token_diversity_loss",
             "visual_token_variance_loss",
             "visual_token_mean_cosine",
+            "visual_content_rms",
+            "visual_tokens_rms",
+            "latent_mse_over_delta_scale_sq",
         ):
             v = output_dict.get(k) if isinstance(output_dict, dict) else None
             if torch.is_tensor(v):
@@ -689,7 +709,7 @@ class VLATrainer(TrainerUtils):
         if isinstance(output_dict, dict):
             for k, v in output_dict.items():
                 if (
-                    k.startswith(("latent_loss_horizon_", "spatial_", "object_", "tcp_", "contact_", "cartesian_", "compact_"))
+                    k.startswith(("dino_", "temporal_", "predicted_latent_", "latent_batch_", "latent_loss_horizon_", "spatial_", "object_", "tcp_", "contact_", "cartesian_", "compact_"))
                     or k == "gripper_transition_l1"
                 ) and torch.is_tensor(v):
                     step_log[k] = v.item()
@@ -701,6 +721,7 @@ class VLATrainer(TrainerUtils):
         if len(robot_tags) == 1:
             robot_tag = next(iter(robot_tags))
             for metric_name in (
+                "total_loss",
                 "action_dit_loss",
                 "l1_action_loss",
                 "continuous_action_l1",

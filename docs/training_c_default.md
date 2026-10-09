@@ -6,7 +6,7 @@
 ## 启动
 
 ```bash
-STARVLA_PYTHON=/data/gaoxiang/Code/.venvs/starVLA/bin/python \
+STARVLA_PYTHON=.venv/bin/python \
   bash scripts/train.sh YOUR_MODEL_AND_DATA.yaml --run_id new_c_run
 ```
 
@@ -16,11 +16,27 @@ STARVLA_PYTHON=/data/gaoxiang/Code/.venvs/starVLA/bin/python \
 
 公共启动脚本不固定任何模型、数据路径或归一化方案。RoboTwin、LIBERO 和 UnifiedPretrain 的主启动脚本已切换为此默认流程。
 
+### DINOv3 预训练权重
+
+DINOv3 默认从 ModelScope 下载，存放于项目的 `playground/Pretrained/`，并检查发布方 SHA256：
+
+```bash
+.venv/bin/python scripts/download_dinov3.py                 # 默认 ViT-L/16
+.venv/bin/python scripts/download_dinov3.py --encoder-spec vitb16
+```
+
+可通过 `--output-dir` 指定存储目录。GAWM 的 `framework.world_model.vision_encoder_path`
+既支持本地目录，也支持 `facebook/dinov3-vitl16-pretrain-lvd1689m` 这样的模型 ID；
+模型 ID 统一从 ModelScope 解析。`encoder_spec` 应与权重型号一致，例如 `vitl16`。
+离线运行应先下载权重，或直接填写已有本地路径。
+未指定 `vision_encoder_path` / `base_wm` 时，仍保留原有随机构造、由完整 GAWM checkpoint
+提供编码器权重的行为，不会隐式下载或改变旧 checkpoint 的初始化方式。
+
 ## 默认行为
 
 | 项目 | 默认值 |
 |---|---|
-| 后端 | Accelerate/DDP，BF16；可训练浮点参数转 BF16，保留冻结参数和 FP32 buffers |
+| 后端 | Accelerate/DDP，BF16 autocast；可训练参数保持 FP32（`parameter_dtype: float32`），冻结参数和 buffers 不变。BF16 主权重会吞掉小于半个 ulp 的 AdamW 更新，旧 run 的 LayerNorm gain 全程停在 1.0 |
 | 全局 batch | 128 |
 | 种子 | 配置 seed，未指定时 42；构造模型前各 rank 使用相同种子 |
 | AdamW | lr=2e-4，betas=(0.9,0.99)，weight_decay=0.01，eps=1e-8，fused=false |

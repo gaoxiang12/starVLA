@@ -36,7 +36,7 @@ def save_dataset_statistics(dataset_statistics, run_dir):
 
 def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here only is get dataset, we need mv dataloader to here
 
-    if dataset_py == "lerobot_datasets":
+    if dataset_py in ("lerobot_datasets", "robotwin_official_hdf5"):
         from starVLA.dataloader.lerobot_datasets import (
             EmbodimentBatchSampler,
             FrameEpochSampler,
@@ -45,12 +45,23 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
         )
         vla_dataset_cfg = cfg.datasets.vla_data
 
-        vla_dataset = get_vla_dataset(
-            data_cfg=vla_dataset_cfg,
-            balance_dataset_weights=vla_dataset_cfg.get("balance_dataset_weights", False),
-            balance_trajectory_weights=vla_dataset_cfg.get("balance_trajectory_weights", False),
-            seed=int(cfg.get('seed', 42)),
-        )
+        if dataset_py == 'robotwin_official_hdf5':
+            from starVLA.dataloader.robotwin_official_hdf5 import RoboTwinOfficialDataset
+            vla_dataset = RoboTwinOfficialDataset(vla_dataset_cfg)
+            expected_views = int(cfg.framework.world_model.num_views)
+            if len(vla_dataset.cameras) != expected_views:
+                raise ValueError(f'Model expects {expected_views} views, dataset provides {vla_dataset.cameras}')
+            if vla_dataset_cfg.get('sampling_mode') == 'auto':
+                vla_dataset_cfg.sampling_mode = 'frame_epoch'
+            if vla_dataset_cfg.get('sampling_mode') != 'frame_epoch':
+                raise ValueError('Official RoboTwin HDF5 requires frame_epoch sampling')
+        else:
+            vla_dataset = get_vla_dataset(
+                data_cfg=vla_dataset_cfg,
+                balance_dataset_weights=vla_dataset_cfg.get("balance_dataset_weights", False),
+                balance_trajectory_weights=vla_dataset_cfg.get("balance_trajectory_weights", False),
+                seed=int(cfg.get('seed', 42)),
+            )
         expected_frames = vla_dataset_cfg.get('expected_frames')
         if expected_frames is not None and len(vla_dataset) != int(expected_frames):
             raise ValueError(f'Dataset has {len(vla_dataset)} frames, expected {expected_frames}; '
@@ -69,7 +80,7 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             dataloader_kwargs["prefetch_factor"] = int(vla_dataset_cfg.get("prefetch_factor", 2))
 
         if vla_dataset_cfg.get('sampling_mode') == 'frame_epoch':
-            if len({child.tag for child in vla_dataset.datasets}) != 1:
+            if len({child.tag for child in getattr(vla_dataset, 'datasets', [vla_dataset])}) != 1:
                 raise ValueError('frame_epoch currently requires a single embodiment')
             dataloader_kwargs.update(
                 batch_size=int(vla_dataset_cfg.per_device_batch_size), drop_last=True,

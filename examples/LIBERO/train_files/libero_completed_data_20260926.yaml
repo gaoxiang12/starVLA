@@ -1,0 +1,28 @@
+# Data-only override for the completed LIBERO mixture; merge into a training recipe.
+# Original corrupt Goal episode 82 remains excluded; its complete source-state
+# reconstruction is included in the separate Goal recovery dataset.
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: playground/Datasets/LIBERO_FULL
+    data_mix: unified_libero_completed_20260926_wm
+    per_device_batch_size: 4
+    obs_image_size:
+    - 224
+    - 224
+    target_num_views: 3
+    video_backend: torchvision_av
+    video_backend_kwargs:
+      num_threads: 1
+    future_obs_frames: true
+    future_obs_valid_mask: true
+    include_state: true
+    action_valid_mask: true
+    task_language_mode: metadata
+    num_workers: 2
+    pin_memory: true
+    load_all_data_for_training: true
+    expected_frames: 1027125
+    persistent_workers: true
+    episode_exclusions_file: examples/LIBERO/train_files/libero_video_exclusions.json
+    sampling_mode: frame_epoch

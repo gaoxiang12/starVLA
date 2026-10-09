@@ -1,0 +1,18 @@
+{
+  "reason": "Full sequential decode fails with both libdav1d and libaom-av1 after 105 frames; original and training copy have identical SHA256.",
+  "source_sha256": "b3788859f4e52d882478ef3b2ffdc73d8419508e245940430efc047bd41ef732",
+  "videos_checked": 11448,
+  "excluded_episodes": {
+    "libero_goal_no_noops_1.0.0_lerobot": [
+      82
+    ]
+  },
+  "excluded_frames": 129,
+  "bad_videos": [
+    {
+      "path": "playground/Datasets/LIBERO_FULL/libero_goal_no_noops_1.0.0_lerobot/videos/chunk-000/observation.images.wrist_image/episode_000082.mp4",
+      "decoded_frames": 105,
+      "error": "InvalidDataError(1094995529, 'Invalid data found when processing input')"
+    }
+  ]
+}

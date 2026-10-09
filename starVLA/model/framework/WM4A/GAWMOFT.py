@@ -20,8 +20,6 @@ class GAWMOFT(GAWM):
     def __init__(self, config):
         super().__init__(config)
         settings = self.config.framework.oft_action
-        if self.spatial_focus is not None or self.contact_objective is not None:
-            raise ValueError('GAWMOFT uses current RGB tokens without spatial/state/Cartesian auxiliary branches')
         spec = self.embodiment_head_specs['aloha']
         if (int(spec['action_dim']) != 14 or int(spec['action_horizon']) != 16
                 or spec['action_spec_id'] != 'aloha_dual_joint_contgrip_next_recorded_14'):

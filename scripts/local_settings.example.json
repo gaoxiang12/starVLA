@@ -1,0 +1,10 @@
+{
+  "hosts": {
+    "controller": "controller.example.invalid",
+    "worker-1": "worker-1.example.invalid",
+    "worker-2": "worker-2.example.invalid",
+    "worker-3": "worker-3.example.invalid",
+    "worker-4": "worker-4.example.invalid"
+  },
+  "ssh_user": ""
+}

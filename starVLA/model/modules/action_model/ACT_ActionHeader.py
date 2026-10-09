@@ -105,6 +105,7 @@ class TurboStyleACTActionHead(nn.Module):
         num_state_tokens: int = 2,
         output_activation: str = "tanh",
         gripper_indices: tuple[int, ...] = (),
+        task_dim: int = 0,
     ) -> None:
         super().__init__()
         self.hidden_dim = int(hidden_dim)
@@ -169,11 +170,14 @@ class TurboStyleACTActionHead(nn.Module):
             int(mlp_hidden_dim),
             self.action_dim,
         )
+        with torch.random.fork_rng(devices=[]):
+            self.task_projection = nn.Linear(int(task_dim), self.hidden_dim) if task_dim else None
 
     def build_memory(
         self,
         visual_tokens: torch.Tensor,
         state: Optional[torch.Tensor] = None,
+        task: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if visual_tokens.ndim != 4:
             raise ValueError(
@@ -205,14 +209,19 @@ class TurboStyleACTActionHead(nn.Module):
                 raise ValueError("state-conditioned ACT requires current state")
             state = state.to(device=memory.device, dtype=memory.dtype)
             memory = torch.cat([memory, self.state_projection(state)], dim=1)
+        if self.task_projection is not None:
+            if task is None:
+                raise ValueError("Task-conditioned ACT requires the current task vector")
+            memory = torch.cat([memory, self.task_projection(task.to(memory.dtype))[:, None]], dim=1)
         return memory
 
     def decode_action_queries(
         self,
         visual_tokens: torch.Tensor,
         state: Optional[torch.Tensor] = None,
+        task: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        memory = self.build_memory(visual_tokens, state=state)
+        memory = self.build_memory(visual_tokens, state=state, task=task)
         queries = self.action_queries.weight.to(dtype=memory.dtype)
         queries = queries.unsqueeze(0).expand(memory.shape[0], -1, -1)
         return self.decoder(tgt=queries, memory=memory)

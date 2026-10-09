@@ -60,13 +60,15 @@ class ModelClient:
             )
         self._server_metadata = meta
 
-        self.image_size: tuple = tuple(image_size)
+        # Framework image_size is (W,H); the legacy client argument is (H,W).
+        self.image_size: tuple = tuple(reversed(meta['image_size'])) if meta.get('image_size') else tuple(image_size)
         resample_name = meta.get('image_resize_resample', 'bilinear')
         resample_modes = {'bilinear': Image.Resampling.BILINEAR,
                           'bicubic': Image.Resampling.BICUBIC}
-        if resample_name not in resample_modes:
+        self.image_resize_resample = resample_name
+        if resample_name not in resample_modes and resample_name != 'opencv_linear':
             raise ValueError(f'Unsupported policy image resize mode: {resample_name}')
-        self.image_resample = resample_modes[resample_name]
+        self.image_resample = resample_modes.get(resample_name)
         self.policy_setup = policy_setup
         self.unnorm_key = unnorm_key
         print(
@@ -143,11 +145,15 @@ class ModelClient:
             for img in example["image"]:
                 arr = np.asarray(img)
                 if arr.shape[:2] != target_hw:
-                    arr = np.asarray(
-                        Image.fromarray(arr).resize(
-                            (target_hw[1], target_hw[0]), self.image_resample
+                    if self.image_resize_resample == 'opencv_linear':
+                        import cv2
+                        arr = cv2.resize(arr, (target_hw[1], target_hw[0]), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        arr = np.asarray(
+                            Image.fromarray(arr).resize(
+                                (target_hw[1], target_hw[0]), self.image_resample
+                            )
                         )
-                    )
                 resized.append(arr)
             example = {**example, "image": resized}
 

@@ -200,3 +200,29 @@ DATASET_NAMED_MIXTURES = {
     "robocasa365_target_human_all":           _entries({**_TARGET_HUMAN_ATOMIC,
                                                        **_TARGET_HUMAN_COMPOSITE}),
 }
+
+
+class PandaOmronRoboCasa365MirrorWMDataConfig(PandaOmronRoboCasa365WMDataConfig):
+    """Verified v3 mirrors: retain 16D state and normalize by training statistics."""
+    control_hz = 20.0
+    future_time_offsets_s = [0.0, 0.4, 0.8]
+    action_spec_id = 'panda_omron_eef_delta_base_mode_12'
+    state_spec_id = 'panda_omron_base_eef_quaternion_gripper_16'
+
+    def transform(self):
+        keys = self.state_keys + self.action_keys
+        return ComposedModalityTransform(transforms=[
+            StateActionToTensor(apply_to=keys),
+            StateActionTransform(apply_to=keys, normalization_modes={key: 'min_max' for key in keys}),
+        ])
+
+
+_MIRROR_WM_TAG = 'panda_omron_robocasa365_mirror_wm'
+ROBOT_TYPE_CONFIG_MAP[_MIRROR_WM_TAG] = PandaOmronRoboCasa365MirrorWMDataConfig()
+DATASET_NAMED_MIXTURES['robocasa365_target50_mirror_wm'] = [
+    (name, 1.0, _MIRROR_WM_TAG) for name in (
+        'robocasa365-target-atomic',
+        'robocasa365-target-composite-seen',
+        'robocasa365-target-composite-unseen',
+    )
+]

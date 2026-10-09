@@ -153,6 +153,8 @@ Achieve **state-of-the-art (SOTA) performance** on a variety of benchmarks, as f
 
 > **📖 New to StarVLA?** Check out our step-by-step [**Quick Start Guide**](docs/starVLA_guideline.md) — a complete walkthrough from installation to training to evaluation using the LIBERO benchmark.
 
+Design notes, training plans, data checks, and evaluation records are indexed in [design/README.md](design/README.md).
+
 ### Live training dashboard
 
 starVLA writes dependency-free local metrics to each run's `metrics.jsonl`.

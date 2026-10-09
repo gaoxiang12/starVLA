@@ -1,0 +1,9 @@
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: DEEPSPEED
+deepspeed_config:
+  deepspeed_config_file: scripts/gawm_deepspeed.json
+  deepspeed_multinode_launcher: standard
+  zero3_init_flag: false
+num_machines: 1
+num_processes: 2

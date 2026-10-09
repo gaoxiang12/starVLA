@@ -1,0 +1,124 @@
+run_id: gawm_libero_ablation_grid_text_40k_20260929
+run_root_dir: playground/Checkpoints
+seed: 42
+wandb_entity: your_wandb_entity
+wandb_project: starVLA_UnifiedPretrain
+version_id: '0.21'
+framework:
+  name: GAWM
+  world_model:
+    encoder_spec: vitl16
+    train_encoder: false
+    num_views: 2
+    ctx_len: 1
+    n_future: 2
+    future_time_offsets_s:
+    - 0.0
+    - 0.2
+    - 0.4
+    visual_tokens_per_view: 16
+    visual_token_dim: 384
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    detach_wm_input: true
+    latent_stats_momentum: 0.9
+    loss_latent_weight: 1.0
+    latent_cosine_weight: 0.1
+    visual_token_diversity_weight: 0.02
+    visual_token_variance_weight: 0.02
+    visual_token_min_std: 0.1
+    use_state_cond: true
+    state_cond_hidden_dim: 256
+    vision_encoder_path: playground/Pretrained/dinov3-vitl16-pretrain-lvd1689m
+    sync_latent_stats: true
+    encoder_batch_size: 4
+    visual_frontend: grid
+    camera_names:
+    - agentview
+    - eye_in_hand
+  action_model:
+    action_model_type: ACT
+    action_horizon: 8
+    action_hidden_dim: 384
+    act_num_heads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_mlp_hidden_dim: 512
+    act_dropout: 0.1
+    act_num_state_tokens: 2
+    embodiment_heads:
+      franka:
+        action_spec_id: franka_eef_delta_7
+        action_dim: 7
+        action_horizon: 8
+        state_dim: 8
+        gripper_indices:
+        - 6
+  lang_cond:
+    type: text
+    embed_dim: 384
+    text_hidden_dim: 256
+    text_depth: 2
+    text_heads: 4
+    text_ffn_dim: 512
+    text_max_length: 128
+    text_dropout: 0.1
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: playground/Datasets/LIBERO_FULL
+    data_mix: unified_libero_completed_20260926_wm
+    per_device_batch_size: 5
+    obs_image_size:
+    - 224
+    - 224
+    target_num_views: 2
+    video_backend: torchvision_av
+    video_backend_kwargs:
+      num_threads: 1
+    future_obs_frames: true
+    future_obs_valid_mask: true
+    include_state: true
+    action_valid_mask: true
+    task_language_mode: metadata
+    num_workers: 2
+    pin_memory: true
+    load_all_data_for_training: true
+    expected_frames: 1027125
+    persistent_workers: true
+    episode_exclusions_file: examples/LIBERO/train_files/libero_video_exclusions.json
+    strict_camera_views: true
+    packed_image_size:
+    - 224
+    - 224
+    image_resize_resample: bicubic
+trainer:
+  recipe: c
+  freeze_modules: ''
+is_debug: false
+training_overrides:
+  trainer:
+    expected_global_batch_size: 160
+    gradient_accumulation_steps: 1
+    max_train_steps: 40000
+    stage_epochs:
+    - 12
+    - 18
+    parameter_dtype: float32
+    mixed_precision: bf16
+    collect_rng_states: true
+    save_interval: 10000
+    keep_last_checkpoints: 2
+    milestone_steps:
+    - 10000
+    - 20000
+    - 40000
+    pretrained_checkpoint: null
+    is_resume: false
+  datasets:
+    vla_data:
+      per_device_batch_size: 5
+      sampling_mode: frame_epoch
+      num_workers: 2

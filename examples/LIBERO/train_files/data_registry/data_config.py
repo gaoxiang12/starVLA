@@ -225,3 +225,15 @@ DATASET_NAMED_MIXTURES = {
         ("LEROBOT_LIBERO_DATA/libero_10_no_noops_1.0.0_lerobot", 1.0, "libero_franka"),
     ],
 }
+
+
+# Opt-in completion from official recorded pre-action states. Original mixtures
+# retain their historical membership. With full-data epoch traversal, every
+# included frame is visited; sampling-based runs should choose weights explicitly.
+DATASET_NAMED_MIXTURES["libero_all_wm_completed_20260926"] = [
+    *DATASET_NAMED_MIXTURES["libero_all_wm_l10_augmented_l90"],
+    *[
+        (f"{suite}_state_recovered_20260926_lerobot", 1.0, "libero_franka_wm")
+        for suite in ("libero_spatial", "libero_object", "libero_goal", "libero_10", "libero_90")
+    ],
+]

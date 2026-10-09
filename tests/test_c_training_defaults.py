@@ -63,10 +63,22 @@ def test_precision_preserves_frozen_weights_and_nonpersistent_buffers():
     model.register_buffer('rope', torch.tensor([1.234567]), persistent=False)
     original = model.rope.clone()
     prepare_parameter_precision(model, apply_training_recipe(config()))
+    assert model.weight.dtype == torch.float32
+    prepare_parameter_precision(model, apply_training_recipe(
+        config(), OmegaConf.from_dotlist(['trainer.parameter_dtype=bfloat16'])))
     assert model.weight.dtype == torch.bfloat16
     assert model.bias.dtype == torch.float32
     assert model.rope.dtype == torch.float32
     torch.testing.assert_close(model.rope, original, rtol=0, atol=0)
+
+
+def test_default_precision_keeps_small_adamw_updates():
+    model = torch.nn.LayerNorm(8)
+    prepare_parameter_precision(model, apply_training_recipe(config()))
+    opt = torch.optim.AdamW(model.parameters(), lr=4e-5, weight_decay=0.01)
+    model(torch.randn(4, 8)).square().mean().backward()
+    opt.step()
+    assert not torch.all(model.weight == 1)
 
 
 def test_auto_sampling_uses_frames_and_preserves_robot_weights(monkeypatch):
@@ -150,6 +162,7 @@ cfg=apply_training_recipe(OmegaConf.create(dict(framework=dict(name='Test'),
     'trainer.expected_global_batch_size=4','trainer.gradient_accumulation_steps=2',
     'datasets.vla_data.per_device_batch_size=2','datasets.vla_data.sampling_mode=frame_epoch',
     'trainer.save_interval=2','trainer.logging_frequency=1',
+    'trainer.collect_rng_states=true',
     f'trainer.max_train_steps={steps}',f'trainer.is_resume={str(resume).lower()}']))
 class Frames(Dataset):
     epoch=0

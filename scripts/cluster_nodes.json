@@ -1,0 +1,10 @@
+{
+  "paths": ["{repo}/playground/Checkpoints", "{repo}/.cache/multinode/runs"],
+  "nodes": [
+    {"id": "local", "name": "主节点 · 本机", "expected_gpus": 8},
+    {"id": "node-03", "name": "训练节点 03", "host": "worker-1.example.invalid", "expected_gpus": 8, "known_hosts": "{repo}/.cache/multinode/known_hosts_worker-1.example.invalid"},
+    {"id": "node-02", "name": "训练节点 02", "host": "worker-2.example.invalid", "expected_gpus": 8, "known_hosts": "{repo}/.cache/multinode/known_hosts_worker-2.example.invalid"},
+    {"id": "node-11", "name": "训练节点 11", "host": "worker-3.example.invalid", "expected_gpus": 8, "known_hosts": "{repo}/.cache/multinode/known_hosts_worker-3.example.invalid"},
+    {"id": "node-39", "name": "训练节点 39", "host": "worker-4.example.invalid", "expected_gpus": 8, "known_hosts": "{repo}/.cache/multinode/known_hosts_worker-4.example.invalid"}
+  ]
+}

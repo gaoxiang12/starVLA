@@ -1,0 +1,28 @@
+# Data-only configuration; use after every PREPARATION_COMPLETE.json has passed.
+# action_mode=abs means preserve stored commands: do not difference EEF deltas again.
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets
+    data_root_dir: playground/Datasets/robocasa365
+    data_mix: robocasa365_target50_mirror_wm
+    lerobot_version: v3.0
+    action_mode: abs
+    include_state: true
+    action_valid_mask: true
+    future_obs_frames: true
+    future_obs_valid_mask: true
+    target_num_views: 3
+    strict_camera_views: true
+    video_channel_order: rgb
+    video_backend: torchvision_av
+    video_backend_kwargs:
+      num_threads: 1
+    obs_image_size: [256, 256]
+    packed_image_size: [256, 256]
+    packed_numeric_dtype: float32
+    image_resize_resample: opencv_linear
+    task_language_mode: metadata
+    delete_pause_frame: false
+    load_all_data_for_training: true
+    num_workers: 2
+    per_device_batch_size: 4

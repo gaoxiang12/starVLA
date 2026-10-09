@@ -246,6 +246,12 @@ def get_frames_by_timestamps(
         reader = None
         try:
             reader = torchvision.io.VideoReader(video_path, "video")
+            # PyAV ignores VideoReader's num_threads argument. Bound the codec
+            # before decoding to avoid accumulating automatic AV1 worker pools.
+            num_threads = int(video_backend_kwargs.get("num_threads", 1))
+            if num_threads < 1:
+                raise ValueError("torchvision_av num_threads must be positive")
+            reader.container.streams.video[0].codec_context.thread_count = num_threads
             
             for target_ts in timestamps:
                 # Reset reader state

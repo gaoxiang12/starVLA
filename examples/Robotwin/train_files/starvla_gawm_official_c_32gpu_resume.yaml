@@ -1,0 +1,158 @@
+seed: 42
+trainer:
+  recipe: c
+  distributed_backend: ddp
+  mixed_precision: bf16
+  parameter_dtype: bfloat16
+  gradient_accumulation_steps: 1
+  expected_global_batch_size: 128
+  sync_with_dataloader: false
+  ddp_kwargs:
+    broadcast_buffers: false
+    gradient_as_bucket_view: true
+    static_graph: false
+    find_unused_parameters: true
+  max_train_steps: 765120
+  stage_epochs:
+  - 12
+  - 4
+  stage2_lr_scale: 0.2
+  scheduler_epochs: 40
+  lr_scheduler_total_steps: 1912800
+  learning_rate:
+    base: 0.0002
+  optimizer:
+    betas:
+    - 0.9
+    - 0.99
+    eps: 1.0e-08
+    weight_decay: 0.01
+    fused: false
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 5.0e-05
+  num_warmup_steps: 0
+  gradient_clipping: 1.0
+  save_interval: 1000
+  keep_last_checkpoints: 2
+  milestone_steps:
+  - 573840
+  eval_interval: 0
+  logging_frequency: 20
+  is_resume: true
+  pretrained_checkpoint: null
+  allow_weights_only_resume: false
+  freeze_modules: ''
+  collect_rng_states: true
+  frames_per_epoch: 6120962
+  steps_per_epoch: 47820
+  stage1_steps: 573840
+datasets:
+  vla_data:
+    sampling_mode: frame_epoch
+    per_device_batch_size: 4
+    balance_dataset_weights: true
+    balance_trajectory_weights: true
+    homogeneous_embodiment_batches: true
+    action_valid_mask: true
+    future_obs_valid_mask: true
+    drop_last: true
+    dataset_py: robotwin_official_hdf5
+    data_root_dir: playground/Datasets/LiLaWAM_RoboTwin_Official
+    data_mix: robotwin_official_hdf5
+    action_horizon: 32
+    future_recorded_offsets:
+    - 0
+    - 16
+    - 32
+    obs_image_size:
+    - 320
+    - 240
+    num_workers: 4
+    prefetch_factor: 2
+    persistent_workers: true
+    pin_memory: true
+    expected_frames: 6120962
+    task_language_mode: dataset_name
+framework:
+  name: GAWM
+  world_model:
+    encoder_spec: vitl16
+    train_encoder: false
+    num_views: 1
+    n_future: 2
+    ctx_len: 1
+    future_time_offsets_s: null
+    loss_latent_weight: 1.0
+    latent_cosine_weight: 0.1
+    detach_wm_input: true
+    latent_stats_momentum: 0.9
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    visual_tokens_per_view: 64
+    visual_token_dim: 384
+    visual_token_diversity_weight: 0.02
+    visual_token_variance_weight: 0.02
+    visual_token_min_std: 0.1
+    use_state_cond: true
+    state_cond_hidden_dim: 256
+    vision_encoder_path: playground/Pretrained/dinov3-vitl16-pretrain-lvd1689m
+    input_grid_shape:
+    - 15
+    - 20
+    imagenet_normalized_inputs: true
+    encoder_batch_size: 8
+    sync_latent_stats: true
+  action_model:
+    action_model_type: ACT
+    action_horizon: 32
+    action_hidden_dim: 384
+    act_num_heads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_mlp_hidden_dim: 512
+    act_dropout: 0.1
+    act_num_state_tokens: 2
+    embodiment_heads:
+      aloha:
+        action_dim: 14
+        state_dim: 16
+        action_horizon: 32
+        gripper_indices:
+        - 6
+        - 13
+        output_activation: tanh
+        action_spec_id: robotwin_official_absolute_dual_joint_native_14
+        state_spec_id: robotwin_official_endpose_native_16
+    future_action_window_size: 31
+    past_action_window_size: 0
+  lang_cond:
+    type: text
+    embed_dim: 384
+    text_hidden_dim: 256
+    text_depth: 2
+    text_heads: 4
+    text_ffn_dim: 512
+    text_max_length: 128
+    text_dropout: 0.1
+run_id: gawm_robotwin_c_12plus4_32gpu
+run_root_dir: playground/Checkpoints
+wandb_project: starVLA_RoboTwin
+wandb_entity: disabled
+is_debug: false
+training_overrides:
+  datasets:
+    vla_data:
+      per_device_batch_size: 4
+      sampling_mode: frame_epoch
+  trainer:
+    collect_rng_states: true
+    milestone_steps:
+    - 573840
+    is_resume: true
+recipe_resolved: true
+version_id: '0.21'
+config_yaml: playground/Checkpoints/gawm_robotwin_c_12plus4_16gpu_20260923_213541/input_config.yaml
+output_dir: playground/Checkpoints/gawm_robotwin_c_12plus4_32gpu

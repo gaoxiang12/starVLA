@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>starVLA · 集群训练总览</title>
+<style>
+:root{color-scheme:dark;--bg:#090e18;--panel:#101827;--border:#243044;--text:#e5edf9;--muted:#8a9ab3;--accent:#80b3ff;--green:#65dfb0;--red:#ff808c;--yellow:#ecc17a;font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 55% -35%,#1b3054 0,transparent 65%),var(--bg);color:var(--text)}button,input,select{font:inherit}button,select,input{background:#141f31;border:1px solid var(--border);border-radius:8px;color:var(--text);padding:8px 12px}button{cursor:pointer}button:hover{border-color:var(--accent)}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}button:disabled{opacity:.5;cursor:wait}.shell{max-width:1740px;margin:auto;padding:30px 34px 48px}.topbar,.heading,.card-head,.row,.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px}.topbar{padding-bottom:24px;border-bottom:1px solid var(--border)}.brand{font-size:21px;font-weight:750;letter-spacing:-.6px}.brand b{color:var(--accent);margin-right:9px}.brand span{font-size:12px;font-weight:500;letter-spacing:2px;margin-left:14px;color:var(--muted)}.pill{border:1px solid var(--border);padding:5px 10px;border-radius:20px;font-size:12px;white-space:nowrap}.pill.live{color:var(--green);background:#65dfb00a}.pill.live:before{content:'●';font-size:10px;margin-right:7px}.muted{color:var(--muted)}.tiny{font-size:11px}.heading{margin:27px 0 22px}.heading h1{font-size:27px;letter-spacing:-.7px;margin:0 0 5px}.heading p{margin:0;color:var(--muted);font-size:13px}.actions{display:flex;gap:9px;align-items:center}.summary{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:29px}.summary-card{padding:19px 21px;border:1px solid var(--border);border-radius:12px;background:linear-gradient(120deg,#172339a8,#101827)}.eyebrow{font-size:12px;color:var(--muted)}.big{font-size:31px;font-weight:650;letter-spacing:-1px;margin:7px 0 3px;font-variant-numeric:tabular-nums}.big small{font-size:16px;color:var(--muted);font-weight:400;margin-left:5px}.summary-card:nth-child(2) .big{color:var(--green)}.section-title{font-size:16px;margin:0;font-weight:650}.section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;gap:15px}.legend{display:flex;gap:16px;font-size:11px;color:var(--muted)}.legend i{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:5px}.machines{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:28px}.machine{border:1px solid var(--border);border-radius:12px;background:var(--panel);padding:16px;min-width:0;cursor:pointer;text-align:left;color:inherit;transition:border-color .15s}.machine:hover,.machine.selected{border-color:var(--accent)}.machine.selected{box-shadow:0 0 0 1px #80b3ff33}.machine.offline{border-color:#694552}.machine h3{font-size:13px;margin:0}.machine .address{font:11px ui-monospace,monospace;color:var(--muted);margin:5px 0 17px}.status{font-size:10px;color:var(--green);white-space:nowrap}.status.offline{color:var(--red)}.status.connecting{color:var(--yellow)}.gpu-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:10px 0 12px}.gpu{position:relative;min-height:42px;border-radius:5px;background:#162438;border:1px solid #2b3c52;text-align:center;padding:5px 1px;font:10px/1.5 ui-monospace,monospace}.gpu.busy{background:#153c39;border-color:#29675b;color:#91edcc}.gpu.hot{background:#463620;border-color:#836239;color:#f2cc87}.gpu.unknown{background:#221c2b;border-color:#4c3549;color:var(--muted)}.gpu strong{display:block;font-size:12px}.resource{margin-top:9px}.resource .row{font-size:10px;color:var(--muted);gap:5px}.track{height:4px;background:#253047;border-radius:5px;overflow:hidden;margin-top:5px}.fill{height:100%;background:var(--accent);border-radius:5px}.fill.mem{background:#a792f3}.machine-footer{margin-top:15px;padding-top:11px;border-top:1px solid var(--border);color:var(--muted);font-size:11px}.workspace{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(330px,1fr);gap:18px;align-items:start}.panel{border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}.panel-title{padding:17px 19px;border-bottom:1px solid var(--border)}.panel-title h2{font-size:15px;margin:0}.toolbar{justify-content:flex-start;flex-wrap:wrap;padding:13px 19px;border-bottom:1px solid var(--border)}.toolbar label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:7px}.toolbar select{max-width:245px;font-size:12px;padding:5px 8px}.toolbar input{font-size:12px;min-width:120px;flex:1;width:160px;padding:6px 9px}.chart-wrap{position:relative;padding:12px 12px 0}canvas{display:block;width:100%;height:300px}.chart-empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);pointer-events:none;font-size:13px}.chart-empty[hidden]{display:none}.chart-legend{padding:10px 19px 16px;display:flex;gap:10px 18px;flex-wrap:wrap;font-size:11px}.chart-legend span{overflow-wrap:anywhere}.chart-legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}.chart-note{padding:0 19px 15px;color:var(--muted);font-size:11px}.tooltip{position:absolute;pointer-events:none;background:#080d17f5;border:1px solid #435472;border-radius:8px;padding:10px;max-width:310px;font-size:11px;box-shadow:0 8px 30px #0008;z-index:2}.tooltip[hidden]{display:none}.runs{max-height:470px;overflow:auto}.run{padding:15px 19px;border-bottom:1px solid var(--border)}.run:last-child{border:0}.run-label{display:flex;align-items:flex-start;gap:9px;font-size:12px;font-weight:550;cursor:pointer;overflow-wrap:anywhere}.run-label input{accent-color:var(--accent);margin:3px 0;flex:none}.run-meta{font-size:11px;color:var(--muted);margin:5px 0 9px 23px;display:flex;justify-content:space-between;gap:10px}.run .row{font-size:11px}.badge{padding:2px 7px;background:#26334a;border-radius:4px;color:var(--muted);font-size:10px;white-space:nowrap}.badge.running{color:var(--green);background:#173a35}.badge.failed,.badge.stale{color:var(--red);background:#382433}.badge.complete,.badge.target_reached{color:var(--accent);background:#21324d}.empty{padding:36px 20px;color:var(--muted);text-align:center;font-size:13px}.banner{padding:12px 16px;margin:12px 0;background:#392330;border:1px solid #713e50;border-radius:9px;color:#ffabb4;font-size:12px}.banner[hidden]{display:none}.detail{margin-top:20px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap;font-size:12px}th{font-size:10px;letter-spacing:.4px;color:var(--muted);font-weight:500;background:#131d2d}th,td{padding:11px 19px;border-bottom:1px solid #202c40}td.numeric{font-family:ui-monospace,monospace}tbody tr:last-child td{border-bottom:0}.foot{margin-top:22px;font-size:11px;color:var(--muted);display:flex;justify-content:space-between;gap:12px}details{margin-top:12px;font-size:12px;color:var(--muted)}details pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel);padding:14px;border:1px solid var(--border);border-radius:8px}#filter-label{color:var(--accent);font-size:12px}button.link{border:0;background:none;color:var(--accent);padding:0;font-size:12px}@media(min-width:1450px){canvas{height:325px}}@media(max-width:1150px){.machines{grid-template-columns:repeat(3,1fr)}.workspace{grid-template-columns:1fr}.runs{max-height:320px}}@media(max-width:700px){.shell{padding:18px 14px}.heading{align-items:flex-start;flex-direction:column}.summary{grid-template-columns:repeat(2,1fr);gap:9px}.summary-card{padding:14px}.big{font-size:25px}.machines{grid-template-columns:repeat(2,minmax(0,1fr))}.machine{padding:12px}.brand span{display:none}.legend{gap:8px}.section-head{flex-wrap:wrap}.foot{flex-direction:column}.toolbar select{max-width:180px}canvas{height:260px}}
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="topbar"><div class="brand"><b>✳</b>starVLA<span>TRAINING OBSERVATORY</span></div><span id="connection" class="pill">正在连接</span></div>
+<header class="heading"><div><h1>集群训练总览</h1><p>每一台机器，每一次迭代。集中查看训练与资源状态。</p></div><div class="actions"><span id="updated" class="muted tiny">等待首次采集</span><button id="pause">暂停刷新</button><button id="refresh" aria-label="立即刷新数据">↻ 刷新</button></div></header>
+<div id="error" class="banner" role="alert" hidden></div>
+<section class="summary" aria-label="集群统计">
+<div class="summary-card"><div class="eyebrow">在线机器</div><div id="online" class="big">—<small>/ —</small></div><div class="tiny muted">各节点独立采集 · 故障隔离</div></div>
+<div class="summary-card"><div class="eyebrow">已占用 GPU</div><div id="occupied" class="big">—<small>/ —</small></div><div id="gpu-caption" class="tiny muted">进程 / 显存 / 利用率综合判断</div></div>
+<div class="summary-card"><div class="eyebrow">平均 GPU 利用率</div><div id="utilization" class="big">—</div><div class="tiny muted">仅统计在线节点的有效采样</div></div>
+<div class="summary-card"><div class="eyebrow">GPU 显存使用</div><div id="vram" class="big">—</div><div id="vram-caption" class="tiny muted">已使用 / 已采集总容量</div></div>
+</section>
+<section><div class="section-head"><h2 class="section-title">机器与资源 <span id="filter-label"></span></h2><div class="legend"><span><i style="background:#65dfb0"></i>占用</span><span><i style="background:#496381"></i>空闲</span><span><i style="background:#ecc17a"></i>≥ 85°C</span><button class="link" id="show-all">显示全部机器</button></div></div><div id="machines" class="machines"><div class="empty">正在采集机器状态…</div></div></section>
+<div class="workspace">
+<section class="panel"><div class="panel-title card-head"><h2>Loss 曲线对比</h2><span id="series-count" class="tiny muted">选择任务进行对比</span></div>
+<div class="toolbar"><label>指标 <select id="metric" aria-label="曲线指标"></select></label><label>平滑 <select id="smooth"><option value="1">关闭</option><option value="5">5 点均值</option><option value="10" selected>10 点均值</option><option value="20">20 点均值</option></select></label><label>范围 <select id="range"><option value="0" selected>全程</option><option value="600">最近 600 点</option><option value="200">最近 200 点</option><option value="50">最近 50 点</option></select></label><label>Y 轴 <select id="scale"><option value="linear">线性</option><option value="log">对数</option></select></label></div>
+<div class="chart-wrap"><canvas id="chart" role="img" aria-label="所选任务的训练 loss 曲线，横轴为训练步数"></canvas><div id="chart-empty" class="chart-empty">等待训练指标</div><div id="tooltip" class="tooltip" hidden></div></div><div id="chart-legend" class="chart-legend"></div><div class="chart-note">横轴：训练步数 · 淡线：原始值 · 实线：平滑值 · 悬停查看数值。全程显示当前任务日志中的全部 loss 读数；续训前的记录可勾选原任务对比。<div id="history-note" role="status"></div></div></section>
+<section class="panel"><div class="panel-title card-head"><h2>训练任务</h2><div class="actions"><span id="run-count" class="tiny muted">—</span><button id="clear-runs" type="button" title="取消所有任务勾选，清空全部曲线">清空</button></div></div><div class="toolbar"><input id="search" type="search" placeholder="搜索任务名称…" aria-label="搜索任务"><label>状态 <select id="run-state"><option value="all">全部状态</option><option value="running">运行中</option><option value="finished">已完成 / 达到目标</option><option value="attention">异常 / 未知</option></select></label></div><div id="runs" class="runs"><div class="empty">正在发现训练任务…</div></div></section>
+</div>
+<section class="panel detail"><div class="panel-title card-head"><h2 id="detail-title">GPU 详情 · 全部机器</h2><span class="tiny muted">点击上方机器卡片筛选</span></div><div class="table-wrap"><table><thead><tr><th>机器 / GPU</th><th>型号</th><th>利用率</th><th>显存</th><th>温度</th><th>功耗</th><th>计算进程 PID</th></tr></thead><tbody id="gpu-table"></tbody></table></div></section>
+<details id="diagnostics"><summary id="diagnostic-label">采集详情</summary><pre id="diagnostic-text"></pre></details>
+<footer class="foot"><span>只读监控 · 不启动或停止训练 · 同一分布式任务的各节点日志分别展示</span><span id="poll-note">每 5 秒采集 · SSH + 本地系统指标</span></footer>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const colors = ['#80b3ff','#65dfb0','#c39bfa','#f0bb74','#f687a6','#69d2e3'];
+const labels = {running:'运行中',complete:'已完成',target_reached:'已达目标步数',failed:'失败',stopped:'已停止',stale:'进程已退出',unknown:'状态未知'};
+const state = {nodes:[],selected:new Set(),initializedNodes:new Set(),autoSelect:true,filter:null,paused:false,busy:false,lastSuccess:null,interval:5,series:[],histories:new Map()};
+const fmt = (v, digits=1) => Number.isFinite(v) ? v.toLocaleString('zh-CN',{maximumFractionDigits:digits}) : '—';
+const pct = v => Number.isFinite(v) ? fmt(v)+'%' : '—';
+const esc = v => String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const clamp = v => Number.isFinite(v) ? Math.max(0,Math.min(100,v)) : 0;
+const ratio = (a,b) => Number.isFinite(a)&&b>0 ? 100*a/b : null;
+const age = t => {if(!Number.isFinite(t))return '无采样';const s=Math.max(0,Date.now()/1000-t);return s<60?`${Math.floor(s)} 秒前`:s<3600?`${Math.floor(s/60)} 分钟前`:`${fmt(s/3600)} 小时前`;};
+const live = n => n.connection === 'online';
+const occupied = (n,g) => (g['utilization.gpu'] || 0)>5 || (g['memory.used'] || 0)>256 || (n.processes||[]).some(p=>p.gpu_uuid===g.uuid);
+const key = (n,r) => n.id+'::'+r.id;
+const allRuns = () => state.nodes.flatMap(n=>(n.runs||[]).map(r=>({...r,node:n,key:key(n,r)})));
+const scopedNodes = () => state.nodes.filter(n=>!state.filter || n.id===state.filter);
+function track(v,cls=''){return `<div class="track"><div class="fill ${cls}" style="width:${clamp(v)}%"></div></div>`;}
+function summary(){
+ const online=state.nodes.filter(live),gpus=online.flatMap(n=>n.gpus||[]),valid=gpus.filter(g=>Number.isFinite(g['utilization.gpu']));
+ $('online').innerHTML=`${online.length}<small>/ ${state.nodes.length}</small>`;
+ $('occupied').innerHTML=`${gpus.length?online.reduce((a,n)=>a+(n.gpus||[]).filter(g=>occupied(n,g)).length,0):'—'}<small>/ ${gpus.length} 已采集</small>`;
+ $('gpu-caption').textContent=`配置 ${state.nodes.reduce((a,n)=>a+n.expected_gpus,0)} 张 GPU · ${online.length}/${state.nodes.length} 节点在线`;
+ $('utilization').textContent=valid.length?pct(valid.reduce((a,g)=>a+g['utilization.gpu'],0)/valid.length):'—';
+ const mem=gpus.filter(g=>Number.isFinite(g['memory.used'])&&Number.isFinite(g['memory.total']));
+ $('vram').innerHTML=mem.length?`${fmt(mem.reduce((a,g)=>a+g['memory.used'],0)/1024)}<small>GiB</small>`:'—';
+ $('vram-caption').textContent=mem.length?`共 ${fmt(mem.reduce((a,g)=>a+g['memory.total'],0)/1024)} GiB · ${mem.length} 张卡有效采样`:'暂无显存数据';
+}
+function machines(){
+ const host=$('machines');host.replaceChildren();
+ for(const n of state.nodes){
+  const button=document.createElement('button');button.className=`machine ${n.connection} ${state.filter===n.id?'selected':''}`;button.setAttribute('aria-pressed',String(state.filter===n.id));
+  const gpus=n.gpus||[],r=n.resources||{},memory=ratio(r.memory_used,r.memory_total),fresh=live(n);
+  const gpuCells=gpus.map(g=>`<div class="gpu ${!fresh?'unknown':g['temperature.gpu']>=85?'hot':occupied(n,g)?'busy':''}" title="${esc(g.name)} · 显存 ${fmt(g['memory.used']/1024)} / ${fmt(g['memory.total']/1024)} GiB · ${fmt(g['temperature.gpu'])}°C"><span>GPU ${esc(g.index)}</span><strong>${fresh?pct(g['utilization.gpu']):'过期'}</strong></div>`).join('');
+  button.innerHTML=`<div class="card-head"><h3>${esc(n.name)}</h3><span class="status ${n.connection}">● ${fresh?'在线':n.connection==='offline'?'离线':'连接中'}</span></div><div class="address">${esc(n.host)}</div><div class="row tiny muted"><span>${gpus.length?esc(gpus[0].name.replace('NVIDIA ','')):'等待 GPU 数据'}</span><span>${gpus.length} GPU</span></div><div class="gpu-grid">${gpuCells||'<span class="tiny muted">暂无采样</span>'}</div><div class="resource"><div class="row"><span>CPU${fresh?'':' · 上次采样'}</span><span>${pct(r.cpu_percent)}</span></div>${track(r.cpu_percent)}</div><div class="resource"><div class="row"><span>内存</span><span>${r.memory_total?fmt(r.memory_used/2**30)+' / '+fmt(r.memory_total/2**30)+' GiB':'—'}</span></div>${track(memory,'mem')}</div><div class="machine-footer">${fresh?`${(n.runs||[]).filter(x=>x.state==='running').length} 个已确认运行任务`:'采集未就绪 / 数据可能过期'} · ${age(n.received_at)}</div>`;
+  button.addEventListener('click',()=>{state.filter=state.filter===n.id?null:n.id;render();});host.append(button);
+ }
+ $('filter-label').textContent=state.filter?' / '+state.nodes.find(n=>n.id===state.filter)?.name:'';
+}
+function visibleRuns(){return allRuns().filter(r=>!state.filter||r.node.id===state.filter);}
+function runs(){
+ const search=$('search').value.toLowerCase(),filter=$('run-state').value;
+ const list=visibleRuns().filter(r=>(r.name+' '+r.node.name).toLowerCase().includes(search)).filter(r=>filter==='all'||(filter==='running'?r.state==='running'&&live(r.node):filter==='finished'?['complete','target_reached'].includes(r.state):!['complete','target_reached','running'].includes(r.state)||!live(r.node)));
+ list.sort((a,b)=>(b.state==='running')-(a.state==='running')||b.updated_at-a.updated_at);
+ $('run-count').textContent=`${list.length} 条节点日志`;const host=$('runs');host.replaceChildren();
+ for(const r of list){
+  const article=document.createElement('article');article.className='run';const progress=ratio(r.step,r.target);
+  article.innerHTML=`<label class="run-label"><input type="checkbox" ${state.selected.has(r.key)?'checked':''}><span>${esc(r.name)}</span></label><div class="run-meta"><span>${esc(r.node.name)} · ${age(r.updated_at)}</span><span class="badge ${esc(r.state)}">${live(r.node)?esc(labels[r.state]||r.state):'离线 · 历史数据'}</span></div><div class="row"><span class="muted">Step ${fmt(r.step,0)} / ${fmt(r.target,0)}</span><span>${progress===null?'目标未配置':pct(progress)}</span></div>${track(progress)}`;
+  article.querySelector('input').addEventListener('change',e=>{e.target.checked?state.selected.add(r.key):state.selected.delete(r.key);metrics();draw();loadHistories();});host.append(article);
+ }
+ if(!list.length)host.innerHTML='<div class="empty">暂无匹配的训练日志<br><span class="tiny">启动训练并写入 metrics.jsonl 后自动出现</span></div>';
+}
+function metrics(){
+ const old=$('metric').value,names=new Set();for(const r of visibleRuns().filter(r=>state.selected.has(r.key)))for(const row of chartRecords(r))for(const k of Object.keys(row))if(k!=='step'&&/loss|mse|error/i.test(k))names.add(k);
+ const sorted=[...names].sort();$('metric').replaceChildren(...sorted.map(name=>{const o=document.createElement('option');o.value=name;o.textContent=name;return o;}));
+ if(names.has(old))$('metric').value=old;else if(names.has('l1_action_loss'))$('metric').value='l1_action_loss';
+}
+function details(){
+ const nodes=scopedNodes();$('detail-title').textContent='GPU 详情 · '+(state.filter?nodes[0]?.name:'全部机器');
+ $('gpu-table').innerHTML=nodes.flatMap(n=>(n.gpus||[]).map(g=>{const p=(n.processes||[]).filter(p=>p.gpu_uuid===g.uuid);return `<tr><td>${esc(n.name)} / ${esc(g.index)}${live(n)?'':' <span class="badge stale">过期</span>'}</td><td>${esc(g.name)}</td><td class="numeric">${pct(g['utilization.gpu'])}</td><td class="numeric">${Number.isFinite(g['memory.used'])?fmt(g['memory.used']/1024):'—'} / ${Number.isFinite(g['memory.total'])?fmt(g['memory.total']/1024):'—'} GiB</td><td class="numeric" style="color:${g['temperature.gpu']>=85?'var(--yellow)':'inherit'}">${fmt(g['temperature.gpu'])} °C</td><td class="numeric">${fmt(g['power.draw'],0)} / ${fmt(g['power.limit'],0)} W</td><td title="${esc(p.map(p=>p.process_name).join(', '))}" class="numeric">${p.length?esc(p.map(p=>p.pid).join(', ')):'—'}</td></tr>`;})).join('')||'<tr><td colspan="7" class="empty">暂无 GPU 数据，请查看采集详情</td></tr>';
+ const notes=state.nodes.flatMap(n=>[...(n.error&& !live(n)?[`${n.name}: ${n.error}`]:[]),...(n.warnings||[]).map(w=>`${n.name}: ${w}`),...(n.run_count>30?[`${n.name}: 共 ${n.run_count} 条日志，显示最近更新的 30 条`]:[])]);
+ $('diagnostic-label').textContent=`采集详情${notes.length?' · '+notes.length+' 条提示':' · 正常'}`;$('diagnostic-text').textContent=notes.join('\n')||'各节点采集正常。仅 train.pid 存活时标记为运行中；没有状态文件时保留未知状态。';
+}
+function smooth(values,size){let sum=0,count=0;return values.map((v,i)=>{if(Number.isFinite(v)){sum+=v;count++;}if(i>=size&&Number.isFinite(values[i-size])){sum-=values[i-size];count--;}return Number.isFinite(v)&&count?sum/count:null;});}
+function draw(){
+ const canvas=$('chart'),ctx=canvas.getContext('2d'),rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height,dpr=window.devicePixelRatio||1;
+ canvas.width=w*dpr;canvas.height=h*dpr;ctx.scale(dpr,dpr);$('tooltip').hidden=true;
+ const metric=$('metric').value,range=Number($('range').value),windowSize=Number($('smooth').value),log=$('scale').value==='log';
+ const transform=v=>Number.isFinite(v)&&(!log||v>0)?(log?Math.log10(v):v):null;
+ const series=visibleRuns().filter(r=>state.selected.has(r.key)).map((r,i)=>{const rows=range? r.records.slice(-range):chartRecords(r),raw=rows.map(x=>Number.isFinite(x[metric])?x[metric]:null);return {run:r,color:colors[i%colors.length],rows,raw,smoothed:smooth(raw,windowSize)};}).filter(s=>s.raw.some(v=>transform(v)!==null));
+ state.series=series;$('series-count').textContent=`${series.length} 条曲线 · ${fmt(series.reduce((n,s)=>n+s.rows.length,0),0)} 个读数`;historyNote();$('chart-empty').hidden=!!series.length;
+ $('chart-empty').textContent=metric?(log?'没有可绘制的正值，请切换线性坐标':'所选任务暂无该指标'):'勾选训练任务以查看 loss 曲线';
+ $('chart-legend').innerHTML=series.map(s=>`<span><i style="background:${s.color}"></i>${esc(s.run.node.name)} / ${esc(s.run.name)}${live(s.run.node)?'':' · 历史数据'}</span>`).join('');
+ if(!series.length)return;
+ let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+ series.forEach(s=>s.rows.forEach((r,i)=>{const y=transform(s.raw[i]);if(y!==null){minX=Math.min(minX,r.step);maxX=Math.max(maxX,r.step);minY=Math.min(minY,y);maxY=Math.max(maxY,y);}}));
+ if(minX===maxX){minX-=1;maxX+=1;}if(minY===maxY){minY-=.1;maxY+=.1;}const pad=(maxY-minY)*.12;minY-=pad;maxY+=pad;
+ const left=65,right=w-20,top=18,bottom=h-32,mapX=v=>left+(v-minX)/(maxX-minX)*(right-left),mapY=v=>bottom-(transform(v)-minY)/(maxY-minY)*(bottom-top);
+ state.axes={mapX,mapY,left,right,top,bottom,minX,maxX};ctx.font='10px ui-monospace,monospace';
+ for(let i=0;i<=4;i++){const y=top+(bottom-top)*i/4,val=maxY-(maxY-minY)*i/4;ctx.strokeStyle='#243044';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(right,y);ctx.stroke();ctx.fillStyle='#8a9ab3';const v=log?10**val:val;ctx.fillText(Math.abs(v)<.001&&v!==0?v.toExponential(1):fmt(v,4),3,y+3);const x=left+(right-left)*i/4;ctx.fillText(fmt(minX+(maxX-minX)*i/4,0),x-12,h-10);}
+ for(const s of series){
+  const line=(values,alpha,width)=>{ctx.beginPath();let started=false;values.forEach((v,i)=>{if(transform(v)===null){started=false;return;}const x=mapX(s.rows[i].step),y=mapY(v);if(started)ctx.lineTo(x,y);else ctx.moveTo(x,y);started=true;});ctx.strokeStyle=s.color;ctx.globalAlpha=alpha;ctx.lineWidth=width;ctx.stroke();};
+  line(s.raw,windowSize>1?.22:.95,1.5);if(windowSize>1)line(s.smoothed,1,2);ctx.globalAlpha=1;
+  const last=s.smoothed.map((v,i)=>({v,i})).filter(p=>transform(p.v)!==null).pop();if(last){ctx.fillStyle=s.color;ctx.beginPath();ctx.arc(mapX(s.rows[last.i].step),mapY(last.v),3,0,Math.PI*2);ctx.fill();}
+ }
+}
+$('chart').addEventListener('pointermove',e=>{
+ if(!state.series.length)return;const rect=e.target.getBoundingClientRect(),x=e.clientX-rect.left,a=state.axes,step=a.minX+(x-a.left)/(a.right-a.left)*(a.maxX-a.minX);
+ const tip=$('tooltip');tip.replaceChildren();for(const s of state.series){let best=null;for(let i=0;i<s.rows.length;i++)if(Number.isFinite(s.raw[i])&&(!best||Math.abs(s.rows[i].step-step)<Math.abs(best.step-step)))best={step:s.rows[i].step,value:s.raw[i]};if(best){const row=document.createElement('div');row.style.color=s.color;row.textContent=`${s.run.node.name} · ${s.run.name}: step ${fmt(best.step,0)} / ${fmt(best.value,6)}`;tip.append(row);}}
+ tip.hidden=false;tip.style.left=Math.max(10,Math.min(x+20,rect.width-tip.offsetWidth-10))+'px';tip.style.top='25px';
+});
+$('chart').addEventListener('pointerleave',()=>{$('tooltip').hidden=true;});
+function chartRecords(run){
+ return $('range').value==='0' ? (state.histories.get(run.key)?.records||[]) : run.records;
+}
+function historyNote(){
+ if($('range').value!=='0'){$('history-note').textContent='最近记录模式：最多读取日志末尾 2 MiB。';return;}
+ const selected=visibleRuns().filter(r=>state.selected.has(r.key));
+ if(!selected.length){$('history-note').textContent='';return;}
+ const loading=selected.filter(r=>state.histories.get(r.key)?.loading).length;
+ const errors=selected.filter(r=>state.histories.get(r.key)?.error).map(r=>`${r.node.name} / ${r.name}：${state.histories.get(r.key).error}`);
+ const pending=selected.filter(r=>!state.histories.get(r.key)?.complete).length;
+ const malformed=selected.reduce((n,r)=>n+(state.histories.get(r.key)?.parseErrors||0),0);
+ $('history-note').textContent=[loading?`正在加载 ${loading} 个任务的全程记录…`:pending?'部分全程记录尚未加载完成':'已加载全程记录',...errors,malformed?`跳过 ${malformed} 行无效记录`:''].filter(Boolean).join(' · ');
+}
+async function loadHistory(run){
+ let entry=state.histories.get(run.key);
+ if(!entry){entry={records:[],offset:0,identity:null,stamp:null,loading:false,complete:false,parseErrors:0};state.histories.set(run.key,entry);}
+ if(entry.loading || entry.stamp===run.updated_at || !live(run.node))return;
+ entry.loading=true;entry.error=null;historyNote();
+ try{
+  while(state.selected.has(run.key)&&$('range').value==='0'){
+   const query=new URLSearchParams({node:run.node.id,run:run.id,offset:String(entry.offset)});
+   if(entry.identity)query.set('identity',entry.identity);
+   const response=await fetch('/api/history?'+query,{signal:AbortSignal.timeout(30000)});
+   const data=await response.json();if(!response.ok)throw Error(data.error||`HTTP ${response.status}`);
+   if(data.reset){entry.records=[];entry.parseErrors=0;entry.complete=false;}
+   // Append without spread: large histories may exceed the JS argument limit.
+   for(const record of data.records)entry.records.push(record);
+   entry.parseErrors+=data.parse_errors;entry.offset=data.offset;entry.identity=data.identity;
+   if(data.done){entry.stamp=run.updated_at;entry.complete=true;break;}
+  }
+ }catch(error){entry.error='全程加载失败，稍后重试：'+error.message;}
+ finally{entry.loading=false;metrics();draw();}
+}
+function loadHistories(){
+ if($('range').value==='0')for(const run of visibleRuns().filter(r=>state.selected.has(r.key)))void loadHistory(run);
+}
+function render(){summary();machines();runs();metrics();details();draw();loadHistories();}
+async function refresh(){
+ if(state.busy)return;state.busy=true;$('refresh').disabled=true;
+ try{const response=await fetch('/api/cluster',{signal:AbortSignal.timeout(10000)});if(!response.ok)throw Error(`HTTP ${response.status}`);const data=await response.json();state.nodes=data.nodes;state.interval=data.interval;state.lastSuccess=Date.now();
+  for(const n of state.nodes)if(!state.initializedNodes.has(n.id)&&n.runs?.length){state.initializedNodes.add(n.id);if(state.autoSelect)state.selected.add(key(n,n.runs[0]));}
+  $('error').hidden=true;const online=state.nodes.filter(live).length;$('connection').className=online===state.nodes.length?'pill live':'pill';$('connection').textContent=state.paused?'刷新已暂停':`${online} / ${state.nodes.length} 节点在线`;
+  $('updated').textContent='页面更新 '+new Date().toLocaleTimeString('zh-CN');$('poll-note').textContent=`每 ${data.interval} 秒采集 · SSH + 本地系统指标`;render();
+ }catch(error){$('error').textContent=`无法更新监控数据：${error.message}。当前显示为上次成功采集的数据。`;$('error').hidden=false;$('connection').className='pill';$('connection').textContent='连接中断 · 数据过期';state.nodes=state.nodes.map(n=>({...n,connection:'offline'}));render();}
+ finally{state.busy=false;$('refresh').disabled=false;}
+}
+$('refresh').addEventListener('click',refresh);$('pause').addEventListener('click',()=>{state.paused=!state.paused;$('pause').textContent=state.paused?'继续刷新':'暂停刷新';$('connection').className='pill';$('connection').textContent=state.paused?'刷新已暂停':'正在连接';if(!state.paused)refresh();});
+$('clear-runs').addEventListener('click',()=>{state.autoSelect=false;state.selected.clear();runs();metrics();draw();});
+$('show-all').addEventListener('click',()=>{state.filter=null;render();});['metric','smooth','scale'].forEach(id=>$(id).addEventListener('change',draw));$('range').addEventListener('change',()=>{metrics();draw();loadHistories();});$('search').addEventListener('input',runs);$('run-state').addEventListener('change',runs);window.addEventListener('resize',draw);
+async function poll(){if(!state.paused)await refresh();setTimeout(poll,state.interval*1000);}poll();
+</script>
+</body>
+</html>

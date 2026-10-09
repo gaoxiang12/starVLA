@@ -821,6 +821,13 @@ def _under(prefix, mixture, robot_type):
 
 
 DATASET_NAMED_MIXTURES = {
+    "unified_libero_full_wm": [
+        (name, 1.0, "unified_libero_wm")
+        for name, _, _ in LIBERO_MIXTURES["libero_all_wm_l10_augmented_l90"]
+    ],
+    "unified_libero_goal_wm": [
+        ("libero_goal_no_noops_1.0.0_lerobot", 1.0, "unified_libero_wm"),
+    ],
     "robotwin_rgb_grasp_precision": [
         ("RoboTwinGenerated/Clean/blocks_ranking_rgb", .8, "robotwin_continuous_next_wm"),
         ("RoboTwinPregraspCorrections_20260909/train20_converted/RoboTwinGenerated/Clean/blocks_ranking_rgb",
@@ -928,3 +935,11 @@ DATASET_NAMED_MIXTURES[
     + DATASET_NAMED_MIXTURES["unified_kuka_wm"]
     + DATASET_NAMED_MIXTURES["unified_so_family_wm"]
 )
+
+
+# Same full-frame traversal as unified_libero_full_wm, with separately audited
+# official source-state recoveries. Existing runs keep the previous mixture.
+DATASET_NAMED_MIXTURES["unified_libero_completed_20260926_wm"] = [
+    (name, 1.0, "unified_libero_wm")
+    for name, _, _ in LIBERO_MIXTURES["libero_all_wm_completed_20260926"]
+]

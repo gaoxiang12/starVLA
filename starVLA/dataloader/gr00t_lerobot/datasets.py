@@ -1253,6 +1253,11 @@ class LeRobotSingleDataset(Dataset):
         for config in self.modality_configs.values():
             for key in config.modality_keys:
                 delta_indices[key] = np.array(config.delta_indices)
+        if self.data_cfg is not None and self.data_cfg.get("temporal_neighbors", False):
+            for key in self.modality_keys["video"]:
+                if list(delta_indices[key]) != [0, 4, 8]:
+                    raise ValueError("LIBERO temporal neighbors require video offsets [0,4,8]")
+                delta_indices[key] = np.asarray([0, 4, 8, -1, 1])
         return delta_indices
 
     def _init_action_mode(self) -> None:
@@ -1501,6 +1506,8 @@ class LeRobotSingleDataset(Dataset):
             if self.data_cfg is not None
             else len(step_images)
         )
+        if self.data_cfg is not None and self.data_cfg.get("strict_camera_views", False) and len(step_images) != target_num_views:
+            raise ValueError(f"Expected {target_num_views} physical cameras, found {len(step_images)} in {self.dataset_name}")
         if len(step_images) > target_num_views:
             raise ValueError(
                 f"dataset {self.dataset_name} provides {len(step_images)} views, "
@@ -1552,7 +1559,7 @@ class LeRobotSingleDataset(Dataset):
                 frames = data[video_key]  # (T, H, W, C)
                 fut = [
                     pack_image(frames[t])
-                    for t in range(1, len(frames))
+                    for t in range(1, 3 if self.data_cfg.get("temporal_neighbors", False) else len(frames))
                 ]
                 future_per_view.append(fut)
             n_future = len(future_per_view[0]) if future_per_view else 0
@@ -1568,6 +1575,11 @@ class LeRobotSingleDataset(Dataset):
                         for _ in range(target_num_views - len(frames))
                     )
                 sample["future_images"] = future_images
+
+        if self.data_cfg is not None and self.data_cfg.get("temporal_neighbors", False):
+            sample["temporal_neighbor_images"] = [
+                [pack_image(data[key][i]) for key in self.modality_keys["video"]]
+                for i in (3, 4)]
 
         if self.data_cfg is not None and self.data_cfg.get("include_state", False) not in ["False", False]:
             state = []
@@ -1647,6 +1659,9 @@ class LeRobotSingleDataset(Dataset):
         if not video_keys:
             raise ValueError("future_obs_valid_mask requires a video modality")
         offsets = np.asarray(self.delta_indices[video_keys[0]], dtype=np.int64)
+        dense_temporal = self.data_cfg.get("temporal_neighbors", False)
+        if dense_temporal:
+            offsets = offsets[:3]
         trajectory_index = self.get_trajectory_index(trajectory_id)
         trajectory_length = int(self.trajectory_lengths[trajectory_index])
         absolute_steps = offsets + int(base_index)
@@ -1664,6 +1679,18 @@ class LeRobotSingleDataset(Dataset):
             else:
                 seen_offsets.add(offset)
         sample["future_frame_valid_mask"] = valid_mask
+        if dense_temporal:
+            indices = np.asarray([base_index-1, base_index, base_index+1])
+            sample["temporal_neighbor_valid"] = bool((indices >= 0).all() and (indices < trajectory_length).all())
+            indices = indices.clip(0, trajectory_length-1)
+            sample["temporal_neighbor_times"] = self.curr_traj_data["timestamp"].to_numpy()[indices].astype(np.float32)
+            if self.tag != "franka" or "action" not in self.curr_traj_data:
+                raise ValueError("Temporal event weighting currently supports LIBERO franka action data")
+            actions = np.stack(self.curr_traj_data["action"].iloc[max(0,base_index-2):min(trajectory_length,base_index+3)])
+            if actions.shape[-1] != 7:
+                raise ValueError("Expected LIBERO 7D action with final gripper channel")
+            event = bool((np.abs(np.diff(actions[:,-1])) > .5).any())
+            sample["temporal_event_weight"] = .25 if event else 1.
         return sample
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:

@@ -4,7 +4,8 @@ trainer:
   recipe: c
   distributed_backend: ddp
   mixed_precision: bf16
-  parameter_dtype: bfloat16
+  # BF16 master weights drop AdamW steps below half-ulp (LayerNorm gains never left 1.0).
+  parameter_dtype: float32
   gradient_accumulation_steps: 1
   expected_global_batch_size: 128
   sync_with_dataloader: false

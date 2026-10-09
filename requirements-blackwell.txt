@@ -1,0 +1,5 @@
+# Use with uv, because requirements.txt pins torchvision for older GPUs:
+# uv pip install -r requirements.txt --overrides requirements-blackwell.txt
+# PyTorch's Linux x86_64 PyPI wheels bundle the CUDA 12.8 runtime.
+torch==2.8.0
+torchvision==0.23.0

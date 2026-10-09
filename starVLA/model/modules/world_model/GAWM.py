@@ -44,6 +44,11 @@ class _GAWM_Interface(nn.Module):
         wm_cfg = config.framework.get("world_model", {})
         self.config = config
         self.train_encoder = bool(wm_cfg.get("train_encoder", False))
+        self.lila_vision = wm_cfg.get("visual_frontend", "grid") == "lila"
+        self.feat_layers = tuple(wm_cfg.get("feat_layers", [-12, -8, -4]))
+        self.lila_image_size = tuple(wm_cfg.get("lila_image_size", [320, 240]))
+        if self.lila_vision and self.train_encoder:
+            raise ValueError("LiLa visual alignment requires a frozen DINO encoder")
         encoder_spec = str(wm_cfg.get("encoder_spec", "vitb16")).strip().lower()
         model_name = wm_cfg.get("base_wm")
         hf_path = wm_cfg.get("vision_encoder_path")
@@ -55,6 +60,8 @@ class _GAWM_Interface(nn.Module):
         if hf_path:
             if model_name:
                 raise ValueError("Choose either vision_encoder_path or base_wm")
+            from starVLA.model.dinov3_assets import resolve_dinov3_path
+            hf_path = resolve_dinov3_path(hf_path)
             from transformers import AutoModel
             self.encoder = AutoModel.from_pretrained(hf_path, local_files_only=True, torch_dtype=torch.bfloat16)
             if self.encoder.config.model_type != "dinov3_vit":
@@ -122,6 +129,9 @@ class _GAWM_Interface(nn.Module):
             if values.ndim != 4 or values.shape[1] != 3 or not values.is_floating_point():
                 raise ValueError("Expected ImageNet-normalized CHW float tensors")
             return values
+        if self.lila_vision:
+            from starVLA.model.modules.gawm_lila_vision import rgb_pixels
+            return rgb_pixels(flat, self.lila_image_size)
         if self.processor is not None:
             # Run resize/normalize on the encoder's device (GPU) when possible to
             # avoid a CPU-bound bottleneck (worsened by OMP_NUM_THREADS=1) when
@@ -204,7 +214,7 @@ class _GAWM_Interface(nn.Module):
         vec = vec.view(B, T, V, vec.shape[-1]).reshape(B, T, V * vec.shape[-1])  # (B, T, V*2D)
         return vec
 
-    def encode_patch_frames(self, frames_per_example: List) -> torch.Tensor:
+    def encode_patch_frames(self, frames_per_example: List, *, return_teacher=False) -> torch.Tensor:
         """Encode frames into raw per-view patch tokens.
 
         ``frames_per_example`` has the same structure as ``encode_frames``.
@@ -227,6 +237,7 @@ class _GAWM_Interface(nn.Module):
             batch_size=len(frames_per_example),
             time_steps=T,
             num_views=V,
+            return_teacher=return_teacher,
         )
 
     def encode_patch_image_tensor(self, images: torch.Tensor) -> torch.Tensor:
@@ -279,12 +290,27 @@ class _GAWM_Interface(nn.Module):
         batch_size: int,
         time_steps: int,
         num_views: int,
+        return_teacher: bool = False,
     ) -> torch.Tensor:
         """Run DINOv3 on already preprocessed pixels and restore B/T/V axes."""
         if self.normalized_pixels:
             pixel_values = pixel_values.to(dtype=next(self.encoder.parameters()).dtype)
         with torch.set_grad_enabled(self.train_encoder):
             chunk_size = self.encoder_batch_size or len(pixel_values)
+            if self.lila_vision:
+                encoded, teachers = [], []
+                for chunk in pixel_values.split(chunk_size):
+                    outputs = self.encoder(pixel_values=chunk.to(next(self.encoder.parameters()).dtype),
+                                           output_hidden_states=True, return_dict=True)
+                    encoded.append(torch.stack([outputs.hidden_states[i] for i in self.feat_layers], dim=1))
+                    if return_teacher:
+                        teachers.append(outputs.last_hidden_state[:, self.num_prefix_tokens:].detach())
+                features = torch.cat(encoded)
+                features = features.reshape(batch_size, time_steps, num_views, *features.shape[1:])
+                if return_teacher:
+                    teacher = torch.cat(teachers)
+                    return features, teacher.reshape(batch_size, time_steps, num_views, *teacher.shape[1:])
+                return features
             patches = torch.cat([
                 self.encoder(pixel_values=chunk).last_hidden_state[:, self.num_prefix_tokens:]
                 for chunk in pixel_values.split(chunk_size)

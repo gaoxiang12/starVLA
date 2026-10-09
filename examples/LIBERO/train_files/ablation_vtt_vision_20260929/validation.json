@@ -1,0 +1,53 @@
+{
+  "checked_at": "2026-09-29 20:25:47 CST",
+  "configs": [
+    {
+      "arm": "grid_text",
+      "config": "examples/LIBERO/train_files/ablation_vtt_vision_20260929/grid_text_40k.yaml",
+      "status": "prepared_not_launched",
+      "steps": 40000,
+      "global_batch": 160,
+      "stage1_steps": 77028,
+      "lr_period": 256760
+    },
+    {
+      "arm": "grid_vtt",
+      "config": "examples/LIBERO/train_files/ablation_vtt_vision_20260929/grid_vtt_40k.yaml",
+      "status": "prepared_not_launched",
+      "steps": 40000,
+      "global_batch": 160,
+      "stage1_steps": 77028,
+      "lr_period": 256760
+    },
+    {
+      "arm": "lila_text",
+      "config": "examples/LIBERO/train_files/ablation_vtt_vision_20260929/lila_text_40k.yaml",
+      "status": "prepared_not_launched",
+      "steps": 40000,
+      "global_batch": 160,
+      "stage1_steps": 77028,
+      "lr_period": 256760
+    },
+    {
+      "arm": "lila_vtt",
+      "config": "examples/LIBERO/train_files/ablation_vtt_vision_20260929/lila_vtt_40k.yaml",
+      "status": "prepared_not_launched",
+      "steps": 40000,
+      "global_batch": 160,
+      "stage1_steps": 77028,
+      "lr_period": 256760
+    }
+  ],
+  "active_run": "playground/Checkpoints/gawm_libero_lila_vtt_norm_c_160k_b160_20260929",
+  "step": 1280,
+  "all_logged_metrics_finite": true,
+  "recent_model_plus_data_seconds": 0.36669136301449423,
+  "remaining_compute_hours_estimate": 16.167014760461257,
+  "estimate_excludes_checkpoint_and_evaluation_overhead": true,
+  "last_metrics": {
+    "l1_action_loss": 0.12046106113120914,
+    "latent_loss": 0.04751067020697519,
+    "delta_to_copy_ratio": 0.7639580387622118,
+    "visual_content_rms": 0.9999998211860657
+  }
+}

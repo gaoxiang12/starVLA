@@ -1,11 +1,11 @@
 # Copyright 2025 starVLA community. All rights reserved.
 # Licensed under the MIT License, Version 1.0 (the "License");
-"""GAWM: the geometry-aware world model used by the unified checkpoint.
+"""GAWM and the current fixed-DINO compact study.
 
-A DINOv3 encoder produces spatial patch features for three camera views. Fixed
-grid pooling preserves their geometry, a task-conditioned residual transformer
-predicts two future token grids, and an embodiment-specific ACT head decodes an
-action chunk from current and predicted tokens.
+The current recipe pools frozen DINO features with the trainable LiLa adapter,
+conditions future prediction on VTT, and decodes actions with ACT. Compact-study
+options remain available. Legacy grid/text recipes still load, while retired
+spatial-focus and contact experiments require their archived source snapshots.
 """
 
 import math
@@ -37,10 +37,11 @@ from starVLA.model.modules.action_model.action_loss import (
 )
 from starVLA.model.modules.world_model import get_world_model
 from starVLA.model.modules.spatial_checkpoint import resize_spatial_checkpoint
-from starVLA.model.modules.spatial_focus import SpatialFocus, native_crops
 from starVLA.model.modules.world_model.visual_token_delta_world_model import (
     VisualTokenLatentWorldModel,
 )
+from starVLA.model.modules.world_model.fixed_dino_world_model import FixedDinoWorldModel
+from starVLA.model.modules.gawm_lila_vision import LiLaVisualPooler, VTTConditioner
 from starVLA.model.tools import FRAMEWORK_REGISTRY
 from starVLA.training.trainer_utils.trainer_tools import resize_images
 
@@ -311,12 +312,35 @@ class GAWMDefaultConfig:
 class GAWM(baseframework):
     """Checkpoint-compatible unified geometry-aware world model."""
 
+    @property
+    def image_resize_resample(self) -> str:
+        # Match LeRobotSingleDataset._pack_sample, including old checkpoints
+        # whose configs do not explicitly declare the RGB resize filter.
+        data_cfg = self.config.datasets.vla_data
+        if getattr(self.config, "framework", {}).get("world_model", {}).get("visual_frontend", "grid") == "lila":
+            return "opencv_linear"
+        if data_cfg.get("packed_image_size") is not None:
+            return data_cfg.get("image_resize_resample", "bicubic")
+        return "bicubic"
+
     def __init__(self, config: Optional[dict] = None, **kwargs) -> None:
         super().__init__()
         self.config = merge_framework_config(GAWMDefaultConfig, config)
         wm_cfg = self.config.framework.world_model
         action_cfg = self.config.framework.action_model
         lang_cfg = self.config.framework.lang_cond
+        for retired in ("spatial_focus", "contact_objective"):
+            if self.config.framework.get(retired, {}).get("enabled", False):
+                raise ValueError(
+                    f"{retired} has been retired from GAWM; use the experiment's "
+                    "archived source_snapshot to reproduce historical runs"
+                )
+        self.compact_options = dict(self.config.framework.get("compact_study", {}))
+        self.compact_history = int(self.compact_options.get("history_frames", 1)) == 2
+        self.compact_act_task = bool(self.compact_options.get("act_task", False))
+        allowed_compact = {"wm_state", "act_task", "temporal_rope", "history_frames", "motion_weight"}
+        if set(self.compact_options) - allowed_compact:
+            raise ValueError("Unknown compact GAWM study option")
 
         if int(wm_cfg.ctx_len) != 1 or int(wm_cfg.n_future) != 2:
             raise ValueError("GAWM supports only ctx_len=1 and n_future=2")
@@ -324,8 +348,35 @@ class GAWM(baseframework):
             raise ValueError("GAWM requires normalized proprioceptive state conditioning")
         if str(action_cfg.action_model_type).strip().upper() != "ACT":
             raise ValueError("GAWM supports only ACT action heads")
-        if str(lang_cfg.type).strip().lower() != "text":
-            raise ValueError("GAWM supports only compositional text conditioning")
+        self.conditioning_type = str(lang_cfg.type).strip().lower()
+        if self.conditioning_type not in ("text", "vtt"):
+            raise ValueError("GAWM conditioning must be text or vtt")
+        self.lila_vision = wm_cfg.get("visual_frontend", "grid") == "lila"
+        self.dense_temporal = float(wm_cfg.get("dense_temporal_smoothness_weight", 0.)) > 0
+        if self.dense_temporal and (wm_cfg.get("future_objective") != "fixed_dino_patches"
+                or not self.config.datasets.vla_data.get("temporal_neighbors", False)):
+            raise ValueError("Dense temporal supervision requires fixed DINO and neighbor loading")
+        self.fixed_dino_objective = wm_cfg.get("future_objective", "adapter_latent") == "fixed_dino_patches"
+        if wm_cfg.get("future_objective", "adapter_latent") not in ("adapter_latent", "fixed_dino_patches"):
+            raise ValueError("Unknown future objective")
+        if self.compact_options and not self.fixed_dino_objective:
+            raise ValueError("Compact study arms require fixed DINO patch supervision")
+        if self.fixed_dino_objective and (not self.lila_vision or wm_cfg.train_encoder
+                or wm_cfg.detach_wm_input or wm_cfg.get("lila_bridge_norm") != "fixed_layernorm"
+                or float(wm_cfg.latent_cosine_weight) != 0.):
+            raise ValueError("Fixed DINO supervision requires frozen LiLa, normalized bridge, attached input, zero legacy cosine weight")
+        if self.lila_vision:
+            self.image_size = tuple(wm_cfg.get("lila_image_size", [320, 240]))
+            cameras = wm_cfg.get("camera_names")
+            data_cameras = self.config.datasets.vla_data.get("cameras")
+            if cameras is not None and len(cameras) != int(wm_cfg.num_views):
+                raise ValueError("Physical camera names must match num_views")
+            if data_cameras is not None and cameras is not None and list(data_cameras) != list(cameras):
+                raise ValueError("Training camera order differs from model camera order")
+        if wm_cfg.get("visual_frontend", "grid") not in ("grid", "lila"):
+            raise ValueError("Unknown visual_frontend")
+        if self.lila_vision and wm_cfg.get("resize_spatial_embeddings_on_load", False):
+            raise ValueError("Learned LiLa queries cannot use spatial-grid checkpoint/focus operations")
 
         self.backbone = get_world_model(config=self.config)
         wm_hidden = int(self.backbone.model.config.hidden_size)
@@ -352,15 +403,24 @@ class GAWM(baseframework):
         self.action_model = None
 
         self.task_emb_dim = int(lang_cfg.embed_dim or wm_hidden)
-        self.task_embedding = CompositionalTextEncoder(
-            output_dim=self.task_emb_dim,
-            hidden_dim=int(lang_cfg.text_hidden_dim),
-            depth=int(lang_cfg.text_depth),
-            num_heads=int(lang_cfg.text_heads),
-            ffn_dim=int(lang_cfg.text_ffn_dim),
-            max_length=int(lang_cfg.text_max_length),
-            dropout=float(lang_cfg.text_dropout),
-        )
+        if self.conditioning_type == "vtt":
+            self.task_embedding = VTTConditioner(lang_cfg, self.backbone.encoder.config.hidden_size,
+                                                 self.task_emb_dim)
+            if config is not None:
+                if isinstance(config, dict):
+                    config["framework"]["lang_cond"]["task_names"] = self.task_embedding.names
+                else:
+                    config.framework.lang_cond.task_names = self.task_embedding.names
+        else:
+            self.task_embedding = CompositionalTextEncoder(
+                output_dim=self.task_emb_dim,
+                hidden_dim=int(lang_cfg.text_hidden_dim),
+                depth=int(lang_cfg.text_depth),
+                num_heads=int(lang_cfg.text_heads),
+                ffn_dim=int(lang_cfg.text_ffn_dim),
+                max_length=int(lang_cfg.text_max_length),
+                dropout=float(lang_cfg.text_dropout),
+            )
         self.embodiment_tags = tuple(sorted(self.embodiment_head_specs))
         self.embodiment_tag_to_index = {
             tag: index for index, tag in enumerate(self.embodiment_tags)
@@ -392,13 +452,23 @@ class GAWM(baseframework):
         if patch_dim is None:
             patch_dim = self.backbone.encoder.config.hidden_size
         self.visual_tokens_per_view = int(wm_cfg.visual_tokens_per_view)
-        self.visual_token_pooler = VisualTokenPooler(
-            patch_dim=int(patch_dim),
-            token_dim=self.visual_token_dim,
-            num_views=self.num_views,
-            tokens_per_view=self.visual_tokens_per_view,
-            input_grid_shape=wm_cfg.get("input_grid_shape"),
-        )
+        if self.lila_vision:
+            self.visual_token_pooler = LiLaVisualPooler(
+                patch_dim=int(patch_dim), token_dim=self.visual_token_dim,
+                num_views=self.num_views, tokens_per_view=self.visual_tokens_per_view,
+                num_layers=len(wm_cfg.get("feat_layers", [-12, -8, -4])),
+                hidden_dim=int(wm_cfg.get("lila_adapter_dim", 768)),
+                depth=int(wm_cfg.get("lila_adapter_depth", 4)),
+                heads=int(wm_cfg.get("lila_adapter_heads", 8)),
+                bridge_norm=str(wm_cfg.get("lila_bridge_norm", "none")))
+        else:
+            self.visual_token_pooler = VisualTokenPooler(
+                patch_dim=int(patch_dim),
+                token_dim=self.visual_token_dim,
+                num_views=self.num_views,
+                tokens_per_view=self.visual_tokens_per_view,
+                input_grid_shape=wm_cfg.get("input_grid_shape"),
+            )
         self.num_visual_tokens = self.visual_token_pooler.num_tokens
         self.world_model = VisualTokenLatentWorldModel(
             latent_dim=self.visual_token_dim,
@@ -413,17 +483,45 @@ class GAWM(baseframework):
             detach_input=bool(wm_cfg.detach_wm_input),
         )
         self.world_model.sync_stats = bool(wm_cfg.get("sync_latent_stats", False))
+        if self.fixed_dino_objective:
+            patch_size = int(getattr(self.backbone.encoder.config, "patch_size", 16))
+            width, height = self.image_size
+            # RoboTwin is sampled in recorded-frame coordinates; no assumed FPS.
+            objective_offsets = self.future_time_offsets_s
+            reference_dt = .05
+            if objective_offsets is None:
+                data_cfg = self.config.datasets.vla_data
+                if data_cfg.get("dataset_py") != "robotwin_official_hdf5":
+                    raise ValueError("Fixed DINO requires physical times or RoboTwin recorded offsets")
+                objective_offsets = data_cfg.get("future_recorded_offsets", [0, 16, 32])
+                reference_dt = 1.
+            world_class = FixedDinoWorldModel
+            compact_kwargs = {}
+            if self.compact_options:
+                from starVLA.model.modules.world_model.compact_gawm import CompactFixedDinoWorldModel
+                world_class = CompactFixedDinoWorldModel
+                state_dims = {int(spec["state_dim"]) for spec in self.embodiment_head_specs.values()}
+                if len(state_dims) != 1:
+                    raise ValueError("Compact study requires a shared state dimension")
+                compact_kwargs = dict(compact_options=self.compact_options, state_dim=state_dims.pop())
+            self.world_model = world_class(
+                **compact_kwargs,
+                latent_dim=self.visual_token_dim, goal_dim=self.task_emb_dim, n_future=self.n_future,
+                num_tokens=self.num_visual_tokens, num_views=self.num_views,
+                tokens_per_view=self.visual_tokens_per_view, feature_dim=int(patch_dim),
+                num_patches=(width // patch_size) * (height // patch_size),
+                dim=int(wm_cfg.residual_predictor_dim), depth=int(wm_cfg.residual_predictor_depth),
+                num_heads=int(wm_cfg.residual_predictor_heads), ffn_dim=int(wm_cfg.residual_predictor_ffn),
+                decoder_dim=int(wm_cfg.get("feature_decoder_dim", 384)),
+                decoder_depth=int(wm_cfg.get("feature_decoder_depth", 2)),
+                decoder_heads=int(wm_cfg.get("feature_decoder_heads", 6)),
+                reconstruction_weight=float(wm_cfg.get("dino_current_weight", .1)),
+                smoothness_weight=float(wm_cfg.get("temporal_smoothness_weight", 0.)),
+                time_offsets=objective_offsets,
+                temporal_reference_dt=reference_dt,
+                dense_smoothness_weight=float(wm_cfg.get("dense_temporal_smoothness_weight", 0.)))
 
-        self.visual_action_head = None
-        self.focus_cfg = self.config.framework.get("spatial_focus", {})
-        self.spatial_focus = None
-        if self.focus_cfg.get("enabled", False):
-            self.focus_robot_tag = str(self.focus_cfg.get("robot_tag", "aloha"))
-            self.spatial_focus = SpatialFocus(
-                int(patch_dim), self.action_hidden_dim,
-                int(self.embodiment_head_specs[self.focus_robot_tag]["state_dim"]),
-                self.task_emb_dim, self.num_views, self.focus_cfg,
-            )
+
         self.action_models = nn.ModuleDict()
         for tag, spec in self.embodiment_head_specs.items():
             self.action_models[tag] = TurboStyleACTActionHead(
@@ -443,25 +541,14 @@ class GAWM(baseframework):
                 num_state_tokens=int(action_cfg.act_num_state_tokens),
                 output_activation=str(spec.get("output_activation", "tanh")),
                 gripper_indices=tuple(int(i) for i in spec.get("gripper_indices", ())),
+                task_dim=self.task_emb_dim if self.compact_act_task else 0,
             )
-        self.contact_objective = None
-        contact_cfg = self.config.framework.get("contact_objective", {})
-        if contact_cfg.get("enabled", False):
-            self.contact_robot_tag = str(contact_cfg.get("robot_tag", "aloha"))
-            spec = self.embodiment_head_specs[self.contact_robot_tag]
-            if (self.contact_robot_tag != "aloha" or int(spec["action_dim"]) != 14
-                    or int(spec["state_dim"]) != 14
-                    or spec.get("action_spec_id") != "aloha_dual_joint_contgrip_next_recorded_14"
-                    or tuple(spec.get("gripper_indices", ())) != (12, 13)):
-                raise ValueError("Contact objective requires continuous next-recorded Aloha joint semantics")
-            from starVLA.model.modules.robotwin_contact_objective import RoboTwinContactObjective
-            self.contact_objective = RoboTwinContactObjective(
-                contact_cfg["urdf_path"], self.config.datasets.vla_data.normalization_statistics_path,
-                position_weight=float(contact_cfg.get("position_weight", .1)),
-                gripper_weight=float(contact_cfg.get("gripper_weight", .02)),
-                contact_boost=float(contact_cfg.get("contact_boost", 4.)),
-                transition_radius=int(contact_cfg.get("transition_radius", 3)),
-            )
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.lila_vision:
+            self.backbone.encoder.eval()
+        return self
 
     def remap_checkpoint_state_dict(self, state_dict: dict) -> dict:
         """Map the pre-rename residual predictor keys to the GAWM layout."""
@@ -565,16 +652,15 @@ class GAWM(baseframework):
         visual_tokens: torch.Tensor,
         state: torch.Tensor,
         action_model: nn.Module,
+        task: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        return action_model.decode_action_queries(visual_tokens, state=state)
+        return action_model.decode_action_queries(visual_tokens, state=state, **({"task": task} if task is not None else {}))
 
     def _predict_action_chunk(self, action_model, visual_tokens, state, memories,
-                              actions=None, action_valid_mask=None):
-        """Default ACT path; alternative experts may return their own loss."""
+                              actions=None, action_valid_mask=None, task=None):
+        """Decode the current and predicted visual tokens with ACT."""
         queries = self._pool_visual_tokens_to_action_queries(
-            visual_tokens, state=state, action_model=action_model)
-        if memories is not None:
-            queries = self.spatial_focus.refine_queries(queries, memories)
+            visual_tokens, state=state, action_model=action_model, **({"task": task} if task is not None else {}))
         return action_model.predict_action(queries), None, {}
 
     def _action_gripper_indices(self, robot_tag: str) -> tuple[int, ...]:
@@ -690,6 +776,8 @@ class GAWM(baseframework):
 
     def _pad_inference_views(self, frame) -> tuple[list, list[bool]]:
         views = list(frame) if isinstance(frame, (list, tuple)) else [frame]
+        if self.lila_vision and len(views) != self.num_views:
+            raise ValueError(f"Expected exactly {self.num_views} physical camera views")
         if self.config.framework.world_model.get("imagenet_normalized_inputs", False):
             if len(views) != self.num_views or not all(isinstance(v, torch.Tensor) for v in views):
                 raise ValueError("Normalized tensor inference requires every configured camera")
@@ -745,50 +833,11 @@ class GAWM(baseframework):
         return diversity_loss, variance_loss, cosine.masked_select(off_diag).mean()
 
     def _embed_task(
-        self, instructions: List[str], device: torch.device
+        self, instructions: List[str], device: torch.device, robot_tag=None
     ) -> torch.Tensor:
+        if self.conditioning_type == "vtt":
+            return self.task_embedding(instructions, robot_tag=robot_tag, device=device)
         return self.task_embedding(instructions, device=device)
-
-    def _focus_memory(self, patches, state, task, views, examples, robot_tag, step=0, supervision=False):
-        if self.spatial_focus is None:
-            return None, None, patches.new_zeros(()), {}, None
-        if robot_tag != self.focus_robot_tag:
-            raise ValueError("Spatial focus experiment only supports its configured embodiment")
-        focus = self.spatial_focus
-        dense, logits, xy = focus.locate(patches[:,0], state, task)
-        memory, valid = focus.pack_dense(dense, views)
-        memories = {"dense": (memory,valid)}
-        if focus.goal_readout is not None:
-            # Always predicted, including during teacher-crop training. No
-            # detach: action loss can now train waypoint selection directly.
-            memories["goal"] = focus.goal_readout.pack(dense, logits, xy, views)
-        loss, metrics = patches.new_zeros(()), {}
-        target, target_valid = xy.detach(), torch.zeros_like(xy[...,0],dtype=torch.bool)
-        if supervision and self.focus_cfg.get("use_local", False):
-            loss, target, target_valid, metrics = focus.supervision(logits, xy, examples)
-        if self.focus_cfg.get("use_local", False):
-            centers, teacher_probability = focus.crop_centers(xy,target,target_valid,step)
-            native = [x.get("native_images") for x in examples]
-            if any(x is None for x in native):
-                raise ValueError("Local branch requires native_images before resizing, in training AND deployment")
-            crops, boxes = native_crops(native,centers,float(self.focus_cfg.get("crop_fraction",.4)))
-            with torch.autocast("cuda",dtype=torch.bfloat16):
-                local_patches = self.backbone.encode_patch_frames(crops)[:,0]
-            local_memory, local_valid = focus.pack_local(local_patches,boxes,views)
-            memories["local"] = (local_memory,local_valid)
-            metrics["spatial_teacher_probability"] = xy.new_tensor(teacher_probability)
-        metrics["spatial_dense_gate"] = focus.residual_scales()[0].detach()
-        metrics["spatial_local_gate"] = focus.residual_scales()[1].detach()
-        if focus.object_readout is not None:
-            head_valid = views[:, 0]
-            images, arrays = focus.object_readout.head_images(examples, head_valid, patches.device)
-            memories['objects'], object_prediction = focus.object_readout.encode(images, head_valid)
-            if supervision:
-                object_loss, object_metrics = focus.object_readout.supervision(
-                    object_prediction, arrays, head_valid, self.focus_cfg)
-                loss = loss + object_loss
-                metrics.update(object_metrics)
-        return memories, None, loss, metrics, xy
 
     def forward(self, examples: List[dict] = None, **kwargs) -> dict[str, torch.Tensor]:
         if not examples:
@@ -824,10 +873,26 @@ class GAWM(baseframework):
             future = example.get("future_images")
             if future is None or len(future) != 2:
                 raise KeyError("GAWM requires exactly two 'future_images'")
-            frames_per_example.append([example["image"], *list(future)])
+            frames = [example["image"], *list(future)]
+            if self.dense_temporal:
+                neighbors = example.get("temporal_neighbor_images")
+                if neighbors is None or len(neighbors) != 2:
+                    raise ValueError("Expected previous and next observation images")
+                frames += list(neighbors)
+            if self.compact_history:
+                histories = example.get("temporal_history_images" if self.dense_temporal else "history_images")
+                if histories is None or len(histories) != (3 if self.dense_temporal else 1):
+                    raise ValueError("Explicit past observations are required for the history arm")
+                frames += list(histories)
+            frames_per_example.append(frames)
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            patch_tokens = self.backbone.encode_patch_frames(frames_per_example)
-        if patch_tokens.shape[1] != 3:
+            teacher_patches = None
+            if self.fixed_dino_objective:
+                patch_tokens, teacher_patches = self.backbone.encode_patch_frames(frames_per_example, return_teacher=True)
+            else:
+                patch_tokens = self.backbone.encode_patch_frames(frames_per_example)
+        expected_frames = (5 if self.dense_temporal else 3) + ((3 if self.dense_temporal else 1) if self.compact_history else 0)
+        if patch_tokens.shape[1] != expected_frames:
             raise ValueError(f"expected three temporal frames, got {patch_tokens.shape[1]}")
 
         core_dtype = next(self.visual_token_pooler.parameters()).dtype
@@ -840,14 +905,40 @@ class GAWM(baseframework):
                 return_content=True,
                 view_valid_mask=view_valid_mask,
             )
+            temporal_kwargs = {}
+            compact_kwargs = {}
+            if self.compact_history:
+                past_start = 5 if self.dense_temporal else 3
+                past_index = past_start + int(self.dense_temporal)
+                compact_kwargs["history"] = latent[:, past_index:past_index+1]
+                if self.dense_temporal:
+                    compact_kwargs["temporal_history"] = latent[:, past_start:past_start+3]
+            if self.dense_temporal:
+                temporal_kwargs = dict(temporal_latent=latent[:, [3, 0, 4]],
+                    temporal_times=torch.as_tensor(np.asarray([e["temporal_neighbor_times"] for e in examples]),device=latent.device),
+                    temporal_valid=torch.as_tensor([e["temporal_neighbor_valid"] for e in examples],device=latent.device,dtype=torch.bool),
+                    temporal_event_weight=torch.as_tensor([e["temporal_event_weight"] for e in examples],device=latent.device))
+                latent, content_latent = latent[:, :3], content_latent[:, :3]
+                patch_tokens, teacher_patches = patch_tokens[:, :3], teacher_patches[:, :3]
+            if self.compact_history:
+                latent, content_latent = latent[:, :3], content_latent[:, :3]
+                patch_tokens, teacher_patches = patch_tokens[:, :3], teacher_patches[:, :3]
             task_emb = self._condition_task_on_embodiment(
-                self._embed_task(instructions, device=latent.device), robot_tag
+                self._embed_task(instructions, device=latent.device, robot_tag=robot_tag), robot_tag
             )
             current_state = self._current_state_tensor(
                 examples, latent.device, state_dim
             )
+            if self.compact_options.get("wm_state"):
+                compact_kwargs["state"] = current_state
+                if self.dense_temporal:
+                    compact_kwargs["temporal_state"] = torch.as_tensor(
+                        np.asarray([e["temporal_neighbor_states"] for e in examples]), device=latent.device)
             wm_out = self.world_model(
                 latent,
+                **({"teacher_patches": teacher_patches} if self.fixed_dino_objective else {}),
+                **temporal_kwargs,
+                **compact_kwargs,
                 ctx_len=1,
                 goal=task_emb,
                 update_stats=True,
@@ -870,15 +961,10 @@ class GAWM(baseframework):
             variance_loss = 0.5 * (source_var + pred_var)
             mean_cosine = 0.5 * (source_cos + pred_cos)
 
-            extra, extra_valid, focus_loss, focus_metrics, _ = self._focus_memory(
-                patch_tokens.float(),current_state,task_emb,view_valid_mask,examples,robot_tag,
-                step=int(kwargs.get("optimizer_step",0)),supervision=True,
-            )
-            if self.spatial_focus is not None and not self.focus_cfg.get("use_future_context",True):
-                head_tokens = head_tokens[:,:1]
-            pred_actions, expert_loss, expert_metrics = self._predict_action_chunk(
-                action_model, head_tokens, current_state, extra,
-                actions=actions, action_valid_mask=action_valid_mask)
+            pred_actions, _, _ = self._predict_action_chunk(
+                action_model, head_tokens, current_state, None,
+                actions=actions, action_valid_mask=action_valid_mask,
+                **({"task": task_emb} if self.compact_act_task else {}))
             l1_action_loss = masked_action_l1_loss(
                 pred_actions, actions, action_valid_mask
             )
@@ -888,20 +974,13 @@ class GAWM(baseframework):
                 action_valid_mask,
                 gripper_indices=gripper_indices,
             )
-            contact_loss = l1_action_loss.new_zeros(())
-            contact_metrics = {}
-            if self.contact_objective is not None and robot_tag == self.contact_robot_tag:
-                contact_loss, contact_metrics = self.contact_objective(
-                    pred_actions, actions, current_state, action_valid_mask
-                )
             total_loss = (
-                (l1_action_loss if expert_loss is None else expert_loss)
+                l1_action_loss
                 + self.loss_latent_weight * wm_out["latent_loss"]
                 + self.latent_cosine_weight * wm_out["latent_cosine_loss"]
                 + self.visual_token_diversity_weight * diversity_loss
                 + self.visual_token_variance_weight * variance_loss
-                + focus_loss
-                + contact_loss
+                + wm_out.get("auxiliary_loss", 0.)
             )
 
         output = {
@@ -914,12 +993,17 @@ class GAWM(baseframework):
             "visual_token_variance_loss": variance_loss.detach(),
             "visual_token_mean_cosine": mean_cosine.detach(),
         }
+        if self.lila_vision:
+            output["visual_content_rms"] = content_latent.detach().float().square().mean().sqrt()
+            output["visual_tokens_rms"] = latent.detach().float().square().mean().sqrt()
+            if not self.fixed_dino_objective:
+                output["latent_mse_over_delta_scale_sq"] = (
+                    wm_out["latent_loss"].detach().float()
+                    / self.world_model.delta_scale.detach().float().square().clamp_min(1e-8)
+                )
         output.update({name: value.detach() for name, value in action_metrics.items()})
-        output.update({name: value.detach() for name, value in focus_metrics.items()})
-        output.update({name: value.detach() for name, value in contact_metrics.items()})
-        output.update({name: value.detach() for name, value in expert_metrics.items()})
         for name, value in wm_out.items():
-            if name.startswith("latent_loss_horizon_") or name.startswith("delta_"):
+            if name.startswith(("latent_loss_horizon_", "delta_", "dino_", "temporal_", "predicted_latent_", "latent_batch_")):
                 output[name] = value.detach()
         return output
 
@@ -939,7 +1023,7 @@ class GAWM(baseframework):
         inference_view_masks = []
         for example in examples:
             current, inferred_mask = self._pad_inference_views(example["image"])
-            if train_obs_image_size:
+            if train_obs_image_size and not self.lila_vision:
                 current = resize_images(current, target_size=train_obs_image_size)
             frames_per_example.append([current])
             inference_view_masks.append(
@@ -958,22 +1042,24 @@ class GAWM(baseframework):
                 patch_tokens.to(dtype=core_dtype), view_valid_mask=view_valid_mask
             )
             task_emb = self._condition_task_on_embodiment(
-                self._embed_task(instructions, device=latent.device), robot_tag
+                self._embed_task(instructions, device=latent.device, robot_tag=robot_tag), robot_tag
             )
             current_state = self._current_state_tensor(
                 examples, latent.device, state_dim
             )
-            predicted_future = self.world_model.regress_future(
-                latent, goal=task_emb
-            )
-            extra, extra_valid, _, _, focus_xy = self._focus_memory(
-                patch_tokens.float(),current_state,task_emb,view_valid_mask,examples,robot_tag)
-            head_tokens = torch.cat([latent,predicted_future],dim=1)
-            if self.spatial_focus is not None and not self.focus_cfg.get("use_future_context",True):
-                head_tokens = latent
+            compact_kwargs = {}
+            if self.compact_options.get("wm_state"):
+                compact_kwargs["state"] = current_state
+            if self.compact_history:
+                compact_kwargs["history"] = torch.stack([
+                    e["history_latent"].to(latent) if e.get("history_latent") is not None else latent[i]
+                    for i, e in enumerate(examples)])
+            predicted_future = self.world_model.regress_future(latent, goal=task_emb, **compact_kwargs)
+            head_tokens = torch.cat([latent, predicted_future], dim=1)
             pred_actions, _, _ = self._predict_action_chunk(
-                action_model, head_tokens, current_state, extra)
+                action_model, head_tokens, current_state, None,
+                **({"task": task_emb} if self.compact_act_task else {}))
         result = {"normalized_actions": pred_actions.detach().float().cpu().numpy()}
-        if focus_xy is not None and self.focus_cfg.get("use_local",False):
-            result["spatial_predicted_xy"] = focus_xy.detach().cpu().numpy()
+        if self.compact_history:
+            result["_current_visual_latent"] = latent.detach()
         return result

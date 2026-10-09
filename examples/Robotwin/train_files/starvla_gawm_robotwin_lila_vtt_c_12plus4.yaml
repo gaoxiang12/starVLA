@@ -1,0 +1,116 @@
+# Requires audited head/left-wrist/right-wrist HDF5 with measured 16D endpose, then prepare_gawm_vtt.py.
+framework:
+  name: GAWM
+  world_model:
+    encoder_spec: vitl16
+    train_encoder: false
+    num_views: 3
+    n_future: 2
+    ctx_len: 1
+    future_time_offsets_s: null
+    loss_latent_weight: 1.0
+    latent_cosine_weight: 0.1
+    detach_wm_input: true
+    latent_stats_momentum: 0.9
+    residual_predictor_dim: 384
+    residual_predictor_depth: 4
+    residual_predictor_heads: 6
+    residual_predictor_ffn: 1024
+    visual_tokens_per_view: 64
+    visual_token_dim: 384
+    visual_token_diversity_weight: 0.02
+    visual_token_variance_weight: 0.02
+    visual_token_min_std: 0.1
+    use_state_cond: true
+    state_cond_hidden_dim: 256
+    vision_encoder_path: playground/Pretrained/dinov3-vitl16-pretrain-lvd1689m
+    input_grid_shape:
+    - 15
+    - 20
+    imagenet_normalized_inputs: true
+    encoder_batch_size: 4
+    sync_latent_stats: true
+    visual_frontend: lila
+    feat_layers:
+    - -12
+    - -8
+    - -4
+    lila_adapter_dim: 768
+    lila_adapter_depth: 4
+    lila_adapter_heads: 8
+    lila_image_size:
+    - 320
+    - 240
+    camera_names:
+    - head_camera
+    - left_camera
+    - right_camera
+  action_model:
+    action_model_type: ACT
+    action_horizon: 32
+    action_hidden_dim: 384
+    act_num_heads: 8
+    act_num_layers: 3
+    act_dim_feedforward: 2048
+    act_mlp_hidden_dim: 512
+    act_dropout: 0.1
+    act_num_state_tokens: 2
+    embodiment_heads:
+      aloha:
+        action_dim: 14
+        state_dim: 16
+        action_horizon: 32
+        gripper_indices:
+        - 6
+        - 13
+        output_activation: tanh
+        action_spec_id: robotwin_official_absolute_dual_joint_native_14
+        state_spec_id: robotwin_official_endpose_native_16
+  lang_cond:
+    type: vtt
+    embed_dim: 384
+    task_vectors_path: playground/Pretrained/gawm_vtt/robotwin_train.json
+seed: 42
+run_id: gawm_robotwin_lila_vtt_c_12plus4
+run_root_dir: playground/Checkpoints
+wandb_project: starVLA_RoboTwin
+wandb_entity: disabled
+is_debug: false
+datasets:
+  vla_data:
+    dataset_py: robotwin_official_hdf5
+    data_root_dir: playground/Datasets/RoboTwin3View_HDF5
+    data_mix: robotwin_official_hdf5
+    action_horizon: 32
+    future_recorded_offsets:
+    - 0
+    - 16
+    - 32
+    obs_image_size:
+    - 320
+    - 240
+    num_workers: 4
+    prefetch_factor: 2
+    persistent_workers: true
+    pin_memory: true
+    expected_frames: null
+    task_language_mode: dataset_name
+    cameras:
+    - head_camera
+    - left_camera
+    - right_camera
+    image_channel_order: rgb
+    strict_camera_views: true
+trainer:
+  recipe: c
+  freeze_modules: ''
+training_overrides:
+  datasets:
+    vla_data:
+      per_device_batch_size: 4
+      sampling_mode: frame_epoch
+  trainer:
+    collect_rng_states: true
+    milestone_steps: []
+    is_resume: false
+    pretrained_checkpoint: null
